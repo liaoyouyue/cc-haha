@@ -28,6 +28,7 @@ import { useTranslation } from '../i18n'
 import { LoadingState } from '@/components/ui/LoadingState'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { BrandSeal } from '@/components/composite/BrandSeal'
+import { StartupHealthCard } from '@/components/startup/StartupHealthCard'
 import { NewSessionStarter } from '@/components/layout/NewSessionStarter'
 import { getSessionProjectKey, getSessionWorkspaceLabel } from '@/components/layout/sidebarTaskGroups'
 import { resolveProjectDisplayName } from '../stores/projectDisplayNameStore'
@@ -941,6 +942,7 @@ export function ActiveSession({ sessionId, active = true }: { sessionId?: string
                   {t('empty.heroSubtitle')}
                 </p>
               </div>
+              <StartupHealthCard />
             </div>
           ) : (
             <>

@@ -8,8 +8,12 @@ import type { OpenWithItem } from '../../lib/openWithItems'
 import { MessageActionBar, type MessageBranchAction } from './MessageActionBar'
 import { useMessageActionMenu } from './useMessageActionMenu'
 import { TurnCompletionStamp } from './TurnCompletionStamp'
+import { ActionEvidenceNotice } from './ActionEvidenceNotice'
+import { MemoryHitNotice } from './MemoryHitNotice'
 import type { TurnCompletion } from '../../lib/turnCompletion'
 import { ImageGalleryModal } from './ImageGalleryModal'
+import type { ActionEvidenceIssue } from '../../lib/actionEvidence'
+import type { MemoryHitSummary } from '../../lib/memoryHits'
 import { InlineImageGallery } from './InlineImageGallery'
 import { InlineVideoGallery } from './InlineVideoGallery'
 import { AssistantOutputTargetCard } from './AssistantOutputTargetCard'
@@ -43,6 +47,10 @@ type Props = {
   isTurnOutputOwner?: boolean
   /** Set only on the last reply of a finished turn: when it ended and how long it took. */
   turnCompletion?: TurnCompletion
+  /** 这轮结论声称完成、但整轮没有成功落地的写操作时给出警告（行动证据契约）。 */
+  actionEvidence?: ActionEvidenceIssue
+  /** 本轮碰过记忆时的汇总（命中可视化）。 */
+  memoryHits?: MemoryHitSummary
 }
 
 const MAX_CARDS = 3
@@ -56,6 +64,8 @@ export const AssistantMessage = memo(function AssistantMessage({
   turnOutputEvidence,
   isTurnOutputOwner = true,
   turnCompletion,
+  actionEvidence,
+  memoryHits,
 }: Props) {
   const t = useTranslation()
   const workDir = useWorkspaceContentStore((s) => (sessionId ? s.statusBySession[sessionId]?.workDir : undefined))
@@ -274,6 +284,10 @@ export const AssistantMessage = memo(function AssistantMessage({
           Being rare now, it stays visible instead of waiting for a hover.
           Mid-turn text is still copyable by selecting it (SelectableChatMessage).
         */}
+        {!isStreaming && memoryHits && <MemoryHitNotice summary={memoryHits} />}
+
+        {!isStreaming && actionEvidence && <ActionEvidenceNotice issue={actionEvidence} />}
+
         {showTurnCompletion && (
           <MessageActionBar
             copyText={actionMenu.enabled ? undefined : content}

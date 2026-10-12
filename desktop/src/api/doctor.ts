@@ -34,8 +34,10 @@ export type DoctorReport = {
 }
 
 export const doctorApi = {
-  report: (cwd?: string) => {
+  // timeout is caller-tunable: the startup health card runs during boot while the
+  // sidecar is still warming up, where the interactive 3s budget is too tight.
+  report: (cwd?: string, options: { timeout?: number } = {}) => {
     const query = cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''
-    return api.get<{ report: DoctorReport }>(`/api/doctor/report${query}`, { timeout: 3_000 })
+    return api.get<{ report: DoctorReport }>(`/api/doctor/report${query}`, { timeout: options.timeout ?? 3_000 })
   },
 }

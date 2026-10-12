@@ -55,6 +55,8 @@ import { formatTokenCount } from '../../lib/formatTokenCount'
 import { formatDurationMs, hasRunningBackgroundTasks as hasAnyRunningBackgroundTasks } from '../../lib/backgroundTasks'
 import { buildTurnCompletionByMessageId, type TurnCompletion } from '../../lib/turnCompletion'
 import type { TurnOutputEvidence } from '../../lib/assistantOutputTargets'
+import { buildActionEvidenceByMessageId, type ActionEvidenceIssue } from '../../lib/actionEvidence'
+import { buildMemoryHitsByMessageId, memoryFileLabel, type MemoryHitSummary } from '../../lib/memoryHits'
 import { isTouchH5Document } from '../../lib/touchH5'
 import { findChatRenderTarget } from '../../lib/trajectory/chatTarget'
 import { useTrajectoryViewStore } from '../../stores/trajectoryViewStore'
@@ -1536,11 +1538,6 @@ function normalizeTurnCheckpoints(response: unknown): SessionTurnCheckpoint[] {
   return checkpoints.filter(isSessionTurnCheckpoint)
 }
 
-function memoryFileLabel(path: string) {
-  const normalized = path.replace(/\\/g, '/')
-  return normalized.split('/').pop() || normalized
-}
-
 function openMemorySettings(path?: string) {
   const ui = useUIStore.getState()
   if (path) ui.setPendingMemoryPath(path)
@@ -2934,6 +2931,14 @@ export function MessageList({
     () => buildTurnCompletionByMessageId(deferredMessages, { turnActive: chatState !== 'idle' }),
     [deferredMessages, chatState],
   )
+  const actionEvidenceByMessageId = useMemo(
+    () => buildActionEvidenceByMessageId(deferredMessages, { turnActive: chatState !== 'idle' }),
+    [deferredMessages, chatState],
+  )
+  const memoryHitsByMessageId = useMemo(
+    () => buildMemoryHitsByMessageId(deferredMessages, { turnActive: chatState !== 'idle' }),
+    [deferredMessages, chatState],
+  )
   const latestCompletedTurnId =
     completedTurnTargets.length > 0
       ? completedTurnTargets[completedTurnTargets.length - 1]?.messageId ?? null
@@ -3792,6 +3797,8 @@ export function MessageList({
               turnOutputEvidence={changedFilesByRenderIndex.get(index) ?? (turnEvidenceUnavailable ? UNKNOWN_TURN_OUTPUT_EVIDENCE : undefined)}
               isTurnOutputOwner={turnOutputOwnerIndexes.has(index)}
               turnCompletion={turnCompletionByMessageId.get(item.message.id)}
+              actionEvidence={actionEvidenceByMessageId.get(item.message.id)}
+              memoryHits={memoryHitsByMessageId.get(item.message.id)}
               supersededAskUserQuestionIds={supersededAskUserQuestionIds}
               decisionsInComposer={decisionsInComposer}
               navigationHighlighted={
@@ -4044,6 +4051,8 @@ export const MessageBlock = memo(function MessageBlock({
   turnOutputEvidence,
   isTurnOutputOwner,
   turnCompletion,
+  actionEvidence,
+  memoryHits,
   supersededAskUserQuestionIds,
   decisionsInComposer = false,
   navigationHighlighted = false,
@@ -4064,6 +4073,8 @@ export const MessageBlock = memo(function MessageBlock({
   turnOutputEvidence?: TurnOutputEvidence
   isTurnOutputOwner?: boolean
   turnCompletion?: TurnCompletion
+  actionEvidence?: ActionEvidenceIssue
+  memoryHits?: MemoryHitSummary
   supersededAskUserQuestionIds?: ReadonlySet<string>
   decisionsInComposer?: boolean
   /** A "locate in chat" jump landed on this tool call. */
@@ -4124,6 +4135,8 @@ export const MessageBlock = memo(function MessageBlock({
             turnOutputEvidence={turnOutputEvidence}
             isTurnOutputOwner={isTurnOutputOwner}
             turnCompletion={turnCompletion}
+            actionEvidence={actionEvidence}
+            memoryHits={memoryHits}
           />
         </SelectableChatMessage>
       )

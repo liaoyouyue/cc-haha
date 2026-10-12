@@ -6,6 +6,7 @@ import { BrandSeal } from '@/components/composite/BrandSeal'
 import { NewSessionStarter } from '@/components/layout/NewSessionStarter'
 import { projectTitle } from '@/components/layout/sidebarTaskGroups'
 import { resolveProjectDisplayName } from '../stores/projectDisplayNameStore'
+import { StartupHealthCard } from '@/components/startup/StartupHealthCard'
 import { Button } from '@/components/ui/Button'
 import { ApiError } from '../api/client'
 import { agentsApi } from '../api/agents'
@@ -846,6 +847,7 @@ export function EmptySession({ initialWorkDir = '' }: EmptySessionProps = {}) {
             {t('empty.heroSubtitle')}
           </p>
         </div>
+        <StartupHealthCard />
       </div>
 
       <div

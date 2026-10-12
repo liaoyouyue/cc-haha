@@ -127,10 +127,9 @@ function formatShortDate(dateKey: string, locale: Locale) {
   })
 }
 
-function formatTokens(tokens: number) {
-  if (tokens >= 1_000_000_000) return `${(tokens / 1_000_000_000).toFixed(tokens >= 10_000_000_000 ? 0 : 1)}B`
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens >= 10_000_000 ? 0 : 1)}M`
-  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K`
+export function formatTokens(tokens: number) {
+  if (tokens >= 1e8) return `${(tokens / 1e8).toFixed(2)}亿`
+  if (tokens >= 1e4) return `${Math.round(tokens / 1e4)}万`
   return `${tokens}`
 }
 

@@ -30,6 +30,7 @@ import { IconButton } from '@/components/ui/IconButton'
 import { Modal } from '@/components/ui/Modal'
 import { useTranslation } from '../../i18n'
 import type { TranslationKey } from '../../i18n'
+import { isMemoryMarkdownPath, memoryFileLabel } from '../../lib/memoryHits'
 import { SETTINGS_TAB_ID, useTabStore } from '../../stores/tabStore'
 import { listPendingPermissions, useChatStore } from '../../stores/chatStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -1004,16 +1005,6 @@ function getToolFilePath(input: unknown): string | null {
   const record = input as Record<string, unknown>
   const filePath = record.file_path ?? record.path
   return typeof filePath === 'string' ? filePath : null
-}
-
-function isMemoryMarkdownPath(path: string): boolean {
-  const normalized = path.replace(/\\/g, '/')
-  return normalized.endsWith('.md') && normalized.includes('/memory/')
-}
-
-function memoryFileLabel(path: string): string {
-  const normalized = path.replace(/\\/g, '/')
-  return normalized.split('/').pop() || normalized
 }
 
 function extractMemoryPreview(content: unknown): { text?: string; lineHint?: string } {
