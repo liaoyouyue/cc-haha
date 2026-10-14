@@ -33,6 +33,14 @@ function statusTone(status: PetSessionStatus, pinned: boolean) {
   return { border: 'border-white/12', badge: 'bg-white/8 text-slate-300', dot: 'bg-slate-500' }
 }
 
+// 房间是静态底图，靠这几条动画给它活气。只动"跟真实状态有关"的东西：
+// 环境光是纯装饰，脉冲/扫光只在会话真的在跑时才出现。
+const KEYFRAMES = `
+@keyframes wf-breathe { 0%,100% { opacity: .10 } 50% { opacity: .26 } }
+@keyframes wf-sheen { 0% { transform: translateX(-130%) } 100% { transform: translateX(240%) } }
+@keyframes wf-scan { 0% { transform: translateY(-120%) } 100% { transform: translateY(1400%) } }
+`
+
 const KIND_CHIP: Record<WorkerKind, { label: string; className: string }> = {
   free: { label: 'workers.free', className: 'text-emerald-300' },
   paid: { label: 'workers.paid', className: 'text-amber-300' },
@@ -85,6 +93,7 @@ export function Workers() {
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[var(--color-bg-primary)]">
+      <style>{KEYFRAMES}</style>
       <header className="flex items-center gap-3 border-b border-[var(--color-border)] px-5 py-2.5">
         <h1 className="text-[15px] font-semibold text-[var(--color-text-primary)]">{t('workers.title')}</h1>
         <p className="min-w-0 flex-1 truncate text-[12px] text-[var(--color-text-tertiary)]">
@@ -223,6 +232,14 @@ function OfficeRoom({ children }: { children?: React.ReactNode }) {
         backgroundColor: '#1a1410',
       }}
     >
+      {/* 窗光呼吸：底图是死的，这层给它一点活气 */}
+      <div
+        className="pointer-events-none absolute inset-0"
+        style={{
+          background: 'radial-gradient(115% 75% at 50% -8%, rgba(255,212,150,.95), transparent 62%)',
+          animation: 'wf-breathe 7s ease-in-out infinite',
+        }}
+      />
       <div className="absolute" style={CARD_SPOT}>
         {children}
       </div>
@@ -267,12 +284,22 @@ function DetailCard({
 
   const sessionSeconds = session?.createdAt ? (now - Date.parse(session.createdAt)) / 1000 : null
   const turnSeconds = turnStart.current ? (now - turnStart.current) / 1000 : null
+  const running = status === 'running' || status === 'waiting'
 
   return (
     <div
       data-testid={`worker-detail-${row.id}`}
-      className="flex h-full w-full flex-col overflow-hidden rounded-[14px] border-2 border-sky-400/70 bg-[#0c1420]/95 p-[3.5%] text-left shadow-[0_0_40px_rgba(56,189,248,.22)] backdrop-blur-[2px]"
+      className="relative flex h-full w-full flex-col overflow-hidden rounded-[14px] border-2 border-sky-400/70 bg-[#0c1420]/95 p-[3.5%] text-left shadow-[0_0_40px_rgba(56,189,248,.22)] backdrop-blur-[2px]"
     >
+      {running && (
+        <span
+          className="pointer-events-none absolute inset-x-0 top-0 h-[16%]"
+          style={{
+            background: 'linear-gradient(180deg, transparent, rgba(125,211,252,.18), transparent)',
+            animation: 'wf-scan 3.4s linear infinite',
+          }}
+        />
+      )}
       <div className="flex items-center gap-2">
         <svg viewBox="0 0 16 16" className="h-[15px] w-[15px] shrink-0 text-sky-300" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
           <path d="M2 4.4A1.4 1.4 0 0 1 3.4 3h2.4l1.4 1.6h5A1.4 1.4 0 0 1 13.6 6v5.6A1.4 1.4 0 0 1 12.2 13H3.4A1.4 1.4 0 0 1 2 11.6V4.4Z" />
@@ -284,7 +311,7 @@ function DetailCard({
           {row.title || t('workers.untitled')}
         </span>
         <span className={`flex shrink-0 items-center gap-1 rounded-full px-2 py-[2px] text-[clamp(8px,.72vw,11px)] ${tone.badge}`}>
-          <span className={`h-[5px] w-[5px] rounded-full ${tone.dot}`} />
+          <span className={`h-[5px] w-[5px] rounded-full ${tone.dot} ${running ? 'animate-pulse' : ''}`} />
           {t(STATUS_LABEL[status] as never)}
         </span>
       </div>
@@ -381,9 +408,18 @@ function SessionStrip({
             onMouseEnter={() => onPin(row.id)}
             onMouseLeave={() => onPin(null)}
             onClick={() => useTabStore.getState().openTab(row.id, row.title || t('workers.untitled'), 'session')}
-            className={`flex min-w-[268px] max-w-[420px] flex-1 shrink-0 items-start gap-3 rounded-2xl border-2 px-3.5 py-3 text-left ${tone.border}`}
+            className={`relative flex min-w-[268px] max-w-[420px] flex-1 shrink-0 items-start gap-3 overflow-hidden rounded-2xl border-2 px-3.5 py-3 text-left ${tone.border}`}
             style={{ backgroundColor: '#111826' }}
           >
+            {(status === 'running' || status === 'waiting') && (
+              <span
+                className="pointer-events-none absolute inset-y-0 w-1/3"
+                style={{
+                  background: 'linear-gradient(90deg, transparent, rgba(255,255,255,.07), transparent)',
+                  animation: 'wf-sheen 3.2s linear infinite',
+                }}
+              />
+            )}
             <span className="grid h-[52px] w-[52px] shrink-0 place-items-center rounded-xl bg-white/[.06]">
               <img src={mascot} alt="" className="h-9 w-9 object-contain" />
             </span>
@@ -394,7 +430,7 @@ function SessionStrip({
                   {row.title || t('workers.untitled')}
                 </span>
                 <span className={`flex shrink-0 items-center gap-1 rounded-full px-2 py-[2px] text-[11px] ${tone.badge}`}>
-                  <span className={`h-[6px] w-[6px] rounded-full ${tone.dot}`} />
+                  <span className={`h-[6px] w-[6px] rounded-full ${tone.dot} ${status === 'running' || status === 'waiting' ? 'animate-pulse' : ''}`} />
                   {t(STATUS_LABEL[status] as never)}
                 </span>
               </span>
