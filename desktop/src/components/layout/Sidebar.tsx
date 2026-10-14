@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef } from 'react'
-import { Bell, CalendarClock, Check, ChevronRight, Clock, Ellipsis, Folder, FolderOpen, FolderPlus, GitBranch, ListChecks, Pin, PinOff, Plus, RefreshCw, RotateCcw, Search, Settings, SquarePen, Store, X } from 'lucide-react'
+import { Bell, CalendarClock, Check, ChevronRight, Clock, Ellipsis, Folder, FolderOpen, FolderPlus, GitBranch, ListChecks, Pin, PinOff, Plus, RefreshCw, RotateCcw, Search, Settings, SquarePen, Store, Users, X } from 'lucide-react'
 import { releaseWorkspaceSession } from '../../lib/workspace/releaseSession'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -27,7 +27,7 @@ import {
 } from './sidebarTaskGroups'
 import { sessionsApi } from '../../api/sessions'
 import type { SessionListItem } from '../../types/session'
-import { useTabStore, SETTINGS_TAB_ID, SCHEDULED_TAB_ID, MARKET_TAB_ID, CONNECTORS_TAB_ID } from '../../stores/tabStore'
+import { useTabStore, SETTINGS_TAB_ID, SCHEDULED_TAB_ID, MARKET_TAB_ID, CONNECTORS_TAB_ID, WORKERS_TAB_ID } from '../../stores/tabStore'
 import { useChatStore } from '../../stores/chatStore'
 import { useShallow } from 'zustand/react/shallow'
 import { useOpenTargetStore } from '../../stores/openTargetStore'
@@ -1067,6 +1067,17 @@ export function Sidebar({
           icon={<CalendarClock size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />}
         >
           {t('sidebar.scheduled')}
+        </NavItem>
+        <NavItem
+          active={activeTabId === WORKERS_TAB_ID}
+          collapsed={!expanded}
+          label={t('sidebar.workers')}
+          onClick={() => {
+            useTabStore.getState().openTab(WORKERS_TAB_ID, t('sidebar.workers'), 'workers')
+          }}
+          icon={<Users size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />}
+        >
+          {t('sidebar.workers')}
         </NavItem>
         <NavItem
           active={activeTabId === MARKET_TAB_ID || activeTabId === CONNECTORS_TAB_ID}

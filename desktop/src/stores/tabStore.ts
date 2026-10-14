@@ -13,14 +13,15 @@ export const SETTINGS_TAB_ID = '__settings__'
 export const SCHEDULED_TAB_ID = '__scheduled__'
 export const CONNECTORS_TAB_ID = '__connectors__'
 export const MARKET_TAB_ID = '__market__'
+export const WORKERS_TAB_ID = '__workers__'
 export const TERMINAL_TAB_PREFIX = '__terminal__'
 export const WORKBENCH_TAB_PREFIX = '__workbench__'
 export const SUBAGENT_TAB_PREFIX = '__subagent__'
 export const TEAM_TAB_PREFIX = '__team__'
 export const TEAM_MEMBER_TAB_PREFIX = 'team-member:'
 
-export type TabType = 'session' | 'settings' | 'scheduled' | 'connectors' | 'market' | 'terminal' | 'workbench' | 'subagent' | 'team' | 'team-member'
-type PersistentSpecialTabType = 'settings' | 'scheduled' | 'connectors' | 'market'
+export type TabType = 'session' | 'settings' | 'scheduled' | 'connectors' | 'market' | 'workers' | 'terminal' | 'workbench' | 'subagent' | 'team' | 'team-member'
+type PersistentSpecialTabType = 'settings' | 'scheduled' | 'connectors' | 'market' | 'workers'
 
 // Retired tab shapes that older builds persisted. `persistenceMigrations`
 // rewrites them at startup; restoreTabs tolerates them as a second guard.
@@ -99,14 +100,16 @@ const PERSISTENT_SPECIAL_TAB_IDS: Record<PersistentSpecialTabType, string> = {
   scheduled: SCHEDULED_TAB_ID,
   market: MARKET_TAB_ID,
   connectors: CONNECTORS_TAB_ID,
+  workers: WORKERS_TAB_ID,
 }
 
 function getPersistentSpecialTabType(tab: { sessionId: string; type?: string }): PersistentSpecialTabType | null {
   if (tab.sessionId === SETTINGS_TAB_ID) return 'settings'
   if (tab.sessionId === SCHEDULED_TAB_ID) return 'scheduled'
+  if (tab.sessionId === WORKERS_TAB_ID) return 'workers'
   if (tab.sessionId === CONNECTORS_TAB_ID) return 'market'
   if (tab.sessionId === MARKET_TAB_ID) return 'market'
-  if (tab.type === 'connectors' || tab.type === 'settings' || tab.type === 'scheduled' || tab.type === 'market') {
+  if (tab.type === 'connectors' || tab.type === 'settings' || tab.type === 'scheduled' || tab.type === 'market' || tab.type === 'workers') {
     return tab.type === 'connectors' ? 'market' : tab.type
   }
   return null
