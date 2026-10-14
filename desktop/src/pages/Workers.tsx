@@ -107,7 +107,7 @@ export function Workers() {
           {t('workers.empty')}
         </div>
       ) : (
-        <div className="min-h-0 flex-1 overflow-auto p-4">
+        <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-black/[.18] p-4">
           <OfficeRoom>
             {detailRow && (
               <DetailCard
@@ -154,8 +154,17 @@ function FreeRouterBadge() {
     }
     setProbe({ state: 'checking' })
     try {
-      const result = await testProvider(freeId)
-      const step = result?.connectivity
+      // testProvider 发的是一次真实补全请求（不是轻量 ping），免费链上的模型可能几十秒才回。
+      // 这里只是给它封个上限，免得灯永远转。
+      const result = await Promise.race([
+        testProvider(freeId),
+        new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 45_000)),
+      ])
+      if (!result) {
+        setProbe({ state: 'down' })
+        return
+      }
+      const step = result.connectivity
       if (!step?.success) {
         setProbe({ state: 'down' })
         return
@@ -170,6 +179,15 @@ function FreeRouterBadge() {
   useEffect(() => {
     void run()
   }, [run])
+
+  // 探活可能要等几十秒，摆个秒表让它看起来是在干活而不是卡死。
+  const [waited, setWaited] = useState(0)
+  useEffect(() => {
+    if (probe.state !== 'checking') return
+    setWaited(0)
+    const id = window.setInterval(() => setWaited((v) => v + 1), 1000)
+    return () => window.clearInterval(id)
+  }, [probe.state])
 
   const tone: Record<Probe['state'], string> = {
     idle: 'border-[var(--color-border)] text-[var(--color-text-tertiary)]',
@@ -206,9 +224,10 @@ function FreeRouterBadge() {
     >
       <span className={`h-2 w-2 rounded-full ${dot[probe.state]}`} />
       <span>{t('workers.router.label')}</span>
-      <span className="font-medium">
+      <span className="font-medium tabular-nums">
         {t(label[probe.state] as never)}
         {probe.state === 'ok' || probe.state === 'slow' ? ` · ${Math.round(probe.ms ?? 0)}ms` : ''}
+        {probe.state === 'checking' && waited > 0 ? ` ${waited}s` : ''}
       </span>
     </button>
   )
