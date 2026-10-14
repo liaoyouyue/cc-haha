@@ -29,6 +29,14 @@ const KIND_BADGE: Record<WorkerKind, string> = {
   unknown: 'bg-slate-500/20 text-slate-300 border-slate-400/40',
 }
 
+/** 桌上小摆件：按会话 id 固定分配，跟吉祥物一样"每个工位有主"。 */
+const DESK_PROPS = ['mug', 'plant', 'cat', 'laptop'] as const
+function deskPropFor(id: string): (typeof DESK_PROPS)[number] {
+  let hash = 0
+  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) >>> 0
+  return DESK_PROPS[hash % DESK_PROPS.length] ?? 'mug'
+}
+
 /** 每秒重绘一次，让运行中的计时器在动。没有运行中的会话就完全不跑。 */
 function useNow(active: boolean): number {
   const [now, setNow] = useState(() => Date.now())
@@ -109,6 +117,95 @@ export function Workers() {
   )
 }
 
+/** 墙上一排挂件：门、衣帽架、挂钟、白板、相框、日历、书架。纯装饰，不接数据。 */
+function WallDecor() {
+  return (
+    <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between px-3">
+      {/* 木门（左端，贴边） */}
+      <div className="relative h-[86px] w-[52px] rounded-t-sm border-2 border-[#4a2f1b] bg-[#7a4a24]">
+        <div className="absolute inset-x-[7px] top-[8px] h-[30px] rounded-sm border border-[#5a3719] bg-[#8b5a2e]" />
+        <div className="absolute inset-x-[7px] bottom-[8px] h-[30px] rounded-sm border border-[#5a3719] bg-[#8b5a2e]" />
+        <div className="absolute right-[5px] top-1/2 h-[5px] w-[5px] -translate-y-1/2 rounded-full bg-[#e8c46a]" />
+      </div>
+
+      {/* 衣帽架 */}
+      <div className="relative h-[78px] w-[26px]">
+        <div className="absolute left-1/2 top-[10px] h-[3px] w-[24px] -translate-x-1/2 bg-[#3f2a18]" />
+        <div className="absolute left-[2px] top-[12px] h-[9px] w-[3px] rotate-[18deg] bg-[#3f2a18]" />
+        <div className="absolute right-[2px] top-[12px] h-[9px] w-[3px] -rotate-[18deg] bg-[#3f2a18]" />
+        <div className="absolute left-1/2 top-[13px] h-[52px] w-[3px] -translate-x-1/2 bg-[#3f2a18]" />
+        <div className="absolute bottom-[8px] left-1/2 h-[3px] w-[20px] -translate-x-1/2 bg-[#3f2a18]" />
+      </div>
+
+      <FramedWindow />
+
+      {/* 挂钟（比别的挂件高一点，跟参考图一样错落） */}
+      <div className="relative mb-[26px] h-[34px] w-[34px] rounded-full border-2 border-[#2f2118] bg-[#3a2a20]">
+        <div className="absolute inset-[4px] rounded-full bg-[#f2ead8]" />
+        <div className="absolute left-1/2 top-1/2 h-[10px] w-[2px] -translate-x-1/2 -translate-y-full bg-[#2f2118]" />
+        <div className="absolute left-1/2 top-1/2 h-[2px] w-[8px] bg-[#2f2118]" />
+      </div>
+
+      {/* 白板 */}
+      <div className="h-[70px] w-[104px] rounded-sm border-2 border-[#b9b2a4] bg-[#f6f3ec]">
+        <div className="mx-2 mt-3 h-[3px] w-14 bg-[#c8c2b4]" />
+        <div className="mx-2 mt-2 h-[3px] w-20 bg-[#d6d0c2]" />
+        <div className="mx-2 mt-2 h-[3px] w-10 bg-[#d6d0c2]" />
+      </div>
+
+      <FramedPicture />
+      <FramedWindow />
+      <CalendarPage />
+      <Bookshelf />
+      <FramedPicture />
+      <FramedWindow />
+    </div>
+  )
+}
+
+function FramedWindow() {
+  return (
+    <div className="h-[54px] w-[68px] rounded-sm border-[3px] border-[#7fa8c9] bg-[#bfe0f2] p-[3px]">
+      <div className="h-full w-full bg-[linear-gradient(180deg,#a9d6ef_0%,#dceef8_55%,#f0d9a8_56%,#e8c998_100%)]">
+        <div className="mt-[8px] ml-[8px] h-[8px] w-[8px] rounded-full bg-[#fdf3c8]" />
+      </div>
+    </div>
+  )
+}
+
+function FramedPicture() {
+  return (
+    <div className="h-[38px] w-[34px] border-2 border-[#4a3524] bg-[#cbe3e8] p-[2px]">
+      <div className="h-full w-full bg-[linear-gradient(160deg,#8fb8c9_0%,#cfe4ea_60%,#e8f0e0_100%)]" />
+    </div>
+  )
+}
+
+function CalendarPage() {
+  return (
+    <div className="h-[52px] w-[46px] rounded-sm border-2 border-[#4a3524] bg-[#fbf8f0]">
+      <div className="flex h-[14px] items-center justify-center bg-[#c94b3a] text-[8px] font-bold text-white">10</div>
+      <div className="flex flex-1 items-center justify-center text-[16px] font-bold leading-none text-[#3a2a20]">14</div>
+    </div>
+  )
+}
+
+function Bookshelf() {
+  // 书脊颜色固定写死，不随机 —— 每次渲染都跳色会晃眼。
+  const shelf = ['#c94b3a', '#3f7fbf', '#e0a83c', '#4f9d5f', '#8a5fb0', '#d97b3a', '#3aa8a0']
+  return (
+    <div className="flex h-[86px] w-[62px] flex-col justify-end gap-[3px] border-2 border-[#4a2f1b] bg-[#6b4322] p-[3px]">
+      {[0, 1, 2].map((shelfIndex) => (
+        <div key={shelfIndex} className="flex h-[22px] items-end gap-[2px] border-b-2 border-[#4a2f1b] px-[2px]">
+          {shelf.slice(shelfIndex, shelfIndex + 6).map((color, i) => (
+            <div key={i} className="w-[5px] rounded-t-[1px]" style={{ height: `${12 + ((i * 3) % 8)}px`, backgroundColor: color }} />
+          ))}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function OfficeRoom({
   rows, chats, statuses, now, pinned, onPin,
 }: {
@@ -121,38 +218,50 @@ function OfficeRoom({
 }) {
   return (
     <div
-      className="relative mx-auto w-full max-w-[1100px] rounded-lg border-2 border-[#7a5a3a] shadow-lg"
-      style={{ imageRendering: 'pixelated' }}
+      className="relative mx-auto w-full max-w-[1100px] rounded-[4px] border-[10px] border-[#a9743f] shadow-xl"
+      style={{ imageRendering: 'pixelated', backgroundColor: '#c08a4c' }}
     >
-      {/* 墙：条纹壁纸 + 踢脚线 */}
+      {/* 墙：米色格纹壁纸 + 挂件 + 绿色墙裙 */}
       <div
-        className="h-20 rounded-t-[6px] border-b-4 border-[#8a6b46]"
+        className="relative h-[124px] border-b-[3px] border-[#5f8f6a]"
         style={{
           backgroundImage:
-            'repeating-linear-gradient(90deg, #e8d5b7 0 10px, #e2cda9 10px 20px), repeating-linear-gradient(0deg, rgba(255,255,255,.35) 0 4px, transparent 4px 18px)',
-        }}
-      />
-      {/* 地板：蓝绿地毯 */}
-      <div
-        className="relative flex flex-wrap items-start justify-center gap-x-10 gap-y-6 rounded-b-[6px] px-8 pb-14 pt-10"
-        style={{
-          backgroundColor: '#5aa9a0',
-          backgroundImage:
-            'radial-gradient(circle at 6px 6px, rgba(255,255,255,.16) 2px, transparent 2px), linear-gradient(180deg, rgba(0,0,0,.06), rgba(0,0,0,.16))',
-          backgroundSize: '12px 12px, 100% 100%',
+            'linear-gradient(#efe0c0 0 0), repeating-linear-gradient(90deg, rgba(0,0,0,.045) 0 1px, transparent 1px 16px), repeating-linear-gradient(0deg, rgba(0,0,0,.045) 0 1px, transparent 1px 16px)',
+          backgroundColor: '#efe0c0',
         }}
       >
-        {rows.map((row) => (
-          <Desk
-            key={row.id}
-            row={row}
-            chat={chats[row.id]}
-            status={statuses[row.id] ?? 'idle'}
-            now={now}
-            pinned={pinned === row.id}
-            onPin={onPin}
-          />
-        ))}
+        <WallDecor />
+      </div>
+
+      {/* 地板：木框 + 蓝地毯（像素点阵） */}
+      <div
+        className="relative flex flex-wrap items-start justify-center gap-x-6 gap-y-8 px-6 pb-10 pt-9"
+        style={{
+          backgroundColor: '#a9743f',
+          backgroundImage: 'linear-gradient(0deg, #a9743f 0 10px, transparent 10px)',
+        }}
+      >
+        <div
+          className="absolute inset-x-[10px] top-[6px] bottom-[10px] rounded-[2px]"
+          style={{
+            backgroundColor: '#5b8fd6',
+            backgroundImage:
+              'repeating-linear-gradient(90deg, rgba(255,255,255,.10) 0 4px, transparent 4px 8px), repeating-linear-gradient(0deg, rgba(0,0,0,.10) 0 4px, transparent 4px 8px)',
+          }}
+        />
+        <div className="relative z-10 flex w-full flex-wrap items-start justify-center gap-x-6 gap-y-8">
+          {rows.map((row) => (
+            <Desk
+              key={row.id}
+              row={row}
+              chat={chats[row.id]}
+              status={statuses[row.id] ?? 'idle'}
+              now={now}
+              pinned={pinned === row.id}
+              onPin={onPin}
+            />
+          ))}
+        </div>
       </div>
     </div>
   )
@@ -171,10 +280,11 @@ function Desk({
   const t = useTranslation()
   const mascot = MASCOT_SRC[mascotFor(row.id)] ?? MASCOT_SRC.code
   const running = status === 'running' || status === 'waiting'
+  const screenTint = status === 'failed' ? '#ff8f8f' : '#7fe0a8'
 
   return (
     <div
-      className="relative flex flex-col items-center"
+      className="relative"
       onMouseEnter={() => onPin(row.id)}
       onMouseLeave={() => onPin(null)}
     >
@@ -182,39 +292,96 @@ function Desk({
         type="button"
         data-testid={`worker-desk-${row.id}`}
         onClick={() => useTabStore.getState().openTab(row.id, row.title || t('workers.untitled'), 'session')}
-        className="group flex flex-col items-center focus:outline-none"
+        className="group relative block h-[172px] w-[156px] focus:outline-none"
         aria-label={row.title || t('workers.untitled')}
       >
         {/* 显示器 */}
-        <div className="relative mb-1 h-[42px] w-[62px] rounded-[3px] border-2 border-[#2b2b2b] bg-[#1d1d1f]">
-          <div className="absolute inset-[5px] overflow-hidden rounded-[1px] bg-[#0d2b1f] px-1 py-[3px] font-mono text-[7px] leading-[8px] text-[#6ee7a8]">
+        <div className="absolute left-[46px] top-0 h-[48px] w-[66px] rounded-[3px] border-2 border-[#242424] bg-[#181a1e]">
+          <div className="absolute inset-[4px] overflow-hidden rounded-[1px] bg-[#0b1f2a] px-1 py-[3px] font-mono text-[6px] leading-[7px]" style={{ color: screenTint }}>
             <div className="truncate">{status === 'running' ? '> working…' : status === 'failed' ? '!! error' : '> idle'}</div>
-            <div className="truncate opacity-70">{status === 'waiting' ? '? input' : ''}</div>
+            <div className="truncate opacity-75">{'>>> >>> >>>'}</div>
+            <div className="truncate opacity-55">{status === 'waiting' ? '? input' : '>>> >>>'}</div>
           </div>
-          <div className="absolute -bottom-[6px] left-1/2 h-[6px] w-[10px] -translate-x-1/2 bg-[#2b2b2b]" />
+        </div>
+        <div className="absolute left-[76px] top-[48px] h-[5px] w-[6px] bg-[#242424]" />
+        <div className="absolute left-[64px] top-[53px] h-[3px] w-[30px] rounded-[1px] bg-[#242424]" />
+
+        {/* 台灯 */}
+        <div className="absolute left-[120px] top-[30px] h-[30px] w-[16px]">
+          <div className="absolute bottom-0 left-1/2 h-[3px] w-[16px] -translate-x-1/2 rounded-full bg-[#9aa0a6]" />
+          <div className="absolute bottom-[3px] left-1/2 h-[22px] w-[3px] -translate-x-1/2 rotate-[14deg] bg-[#b6bcc2]" />
+          <div className="absolute left-[2px] top-0 h-[9px] w-[13px] rounded-t-[6px] bg-[#c9ced4]" />
         </div>
 
-        {/* 小人 */}
+        {/* 桌面 */}
+        <div className="absolute left-[26px] top-[58px] h-[15px] w-[110px] rounded-[2px] border-2 border-[#7a4a24] bg-[#c08a4c]" />
+        <div className="absolute left-[26px] top-[58px] h-[4px] w-[110px] rounded-t-[2px] bg-[#dba869]" />
+        <div className="absolute left-[32px] top-[73px] h-[34px] w-[5px] bg-[#8a5a30]" />
+        <div className="absolute left-[124px] top-[73px] h-[34px] w-[5px] bg-[#8a5a30]" />
+
+        <DeskProp kind={deskPropFor(row.id)} />
+
+        {/* 小人：坐/站在桌子后面，运行中会轻轻上下浮动 */}
         <img
           src={mascot}
           alt=""
-          width={44}
-          height={44}
-          className={`h-11 w-11 object-contain drop-shadow ${running ? 'animate-bounce' : ''}`}
+          className={`absolute left-[54px] top-[22px] z-20 h-[46px] w-[46px] object-contain drop-shadow ${running ? 'animate-bounce' : ''}`}
           style={{ animationDuration: '1.6s' }}
         />
 
-        {/* 桌子 */}
-        <div className="mt-[-6px] h-[14px] w-[86px] rounded-[3px] border-2 border-[#6b4a2a] bg-[#a9743f]" />
-        <div className="h-[10px] w-[76px] rounded-b-[3px] bg-[#8a5c31]" />
+        {/* 转椅 */}
+        <div className="absolute left-[46px] top-[104px] h-[52px] w-[64px]">
+          <div className="absolute left-[4px] top-0 h-[30px] w-[56px] rounded-t-[8px] rounded-b-[3px] border-2 border-[#5c1f22] bg-[#8d3038]" />
+          <div className="absolute left-[2px] top-[30px] h-[10px] w-[60px] rounded-[3px] border-2 border-[#5c1f22] bg-[#a03b43]" />
+          <div className="absolute left-[30px] top-[40px] h-[8px] w-[4px] bg-[#3a3a3a]" />
+          <div className="absolute left-[12px] top-[47px] h-[3px] w-[40px] rounded-full bg-[#3a3a3a]" />
+        </div>
 
-        <div className="mt-1 max-w-[110px] truncate text-[11px] font-medium text-white/95">
+        <div className="absolute inset-x-0 bottom-[-2px] z-30 truncate text-center text-[11px] font-medium text-white drop-shadow-[0_1px_1px_rgba(0,0,0,.7)]">
           {row.title || t('workers.untitled')}
         </div>
       </button>
 
       {/* 悬浮详情 */}
       {pinned && <DetailCard row={row} chat={chat} status={status} now={now} />}
+    </div>
+  )
+}
+
+/** 桌上小摆件。 */
+function DeskProp({ kind }: { kind: (typeof DESK_PROPS)[number] }) {
+  if (kind === 'plant') {
+    return (
+      <div className="absolute left-[34px] top-[34px] z-10 h-[30px] w-[24px]">
+        <div className="absolute bottom-0 left-1/2 h-[12px] w-[16px] -translate-x-1/2 rounded-b-[3px] bg-[#b06a3a]" />
+        <div className="absolute bottom-[10px] left-[3px] h-[12px] w-[8px] -rotate-[20deg] rounded-full bg-[#4f9d5f]" />
+        <div className="absolute bottom-[10px] right-[3px] h-[12px] w-[8px] rotate-[20deg] rounded-full bg-[#3f8a50]" />
+        <div className="absolute bottom-[16px] left-1/2 h-[10px] w-[8px] -translate-x-1/2 rounded-full bg-[#5fae6f]" />
+      </div>
+    )
+  }
+  if (kind === 'cat') {
+    return (
+      <div className="absolute left-[30px] top-[36px] z-10 h-[24px] w-[30px]">
+        <div className="absolute bottom-0 left-0 h-[14px] w-[28px] rounded-[7px] bg-[#f0e6d2]" />
+        <div className="absolute bottom-[12px] left-[2px] h-[10px] w-[12px] rounded-[5px] bg-[#f0e6d2]" />
+        <div className="absolute bottom-[19px] left-[3px] h-[5px] w-[4px] -rotate-[12deg] bg-[#f0e6d2]" />
+        <div className="absolute bottom-[19px] left-[9px] h-[5px] w-[4px] rotate-[12deg] bg-[#f0e6d2]" />
+      </div>
+    )
+  }
+  if (kind === 'laptop') {
+    return (
+      <div className="absolute left-[36px] top-[44px] z-10 h-[16px] w-[26px]">
+        <div className="h-[12px] w-[24px] rounded-[2px] border-2 border-[#3a3a3a] bg-[#202226]" />
+        <div className="h-[3px] w-[26px] rounded-[1px] bg-[#9aa0a6]" />
+      </div>
+    )
+  }
+  return (
+    <div className="absolute left-[36px] top-[44px] z-10 h-[16px] w-[12px]">
+      <div className="h-[13px] w-[12px] rounded-b-[3px] rounded-t-[1px] bg-[#3f7fbf]" />
+      <div className="absolute -right-[3px] top-[4px] h-[7px] w-[4px] rounded-r-[2px] border-2 border-[#3f7fbf]" />
     </div>
   )
 }
@@ -240,7 +407,7 @@ function DetailCard({
   return (
     <div
       data-testid={`worker-detail-${row.id}`}
-      className="absolute bottom-[calc(100%+6px)] left-1/2 z-30 w-[230px] -translate-x-1/2 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-2 text-left text-[11px] shadow-xl"
+      className="absolute bottom-[calc(100%+6px)] left-1/2 z-40 w-[230px] -translate-x-1/2 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-2 text-left text-[11px] shadow-xl"
     >
       <div className="truncate font-medium text-[var(--color-text-primary)]">{row.title || t('workers.untitled')}</div>
       {row.workDir && <div className="truncate font-mono text-[10px] text-[var(--color-text-tertiary)]">{row.workDir}</div>}
@@ -272,6 +439,7 @@ function DetailCard({
   )
 }
 
+/** 底部会话牌：跟参考图一样的木头牌子，一块对应一个工位。 */
 function SessionStrip({
   rows, chats, statuses, pinned, onPin,
 }: {
@@ -283,7 +451,10 @@ function SessionStrip({
 }) {
   const t = useTranslation()
   return (
-    <div className="flex flex-shrink-0 gap-2 overflow-x-auto border-t border-[var(--color-border)] px-4 py-2">
+    <div
+      className="flex flex-shrink-0 gap-3 overflow-x-auto border-t-[3px] border-[#8a5c31] px-4 py-3"
+      style={{ backgroundColor: '#c08a4c' }}
+    >
       {rows.map((row) => {
         const status = statuses[row.id] ?? 'idle'
         const chat = chats[row.id]
@@ -296,10 +467,16 @@ function SessionStrip({
             onMouseEnter={() => onPin(row.id)}
             onMouseLeave={() => onPin(null)}
             onClick={() => useTabStore.getState().openTab(row.id, row.title || t('workers.untitled'), 'session')}
-            className={`flex-shrink-0 rounded border px-2 py-1 text-left text-[11px] ${pinned === row.id ? 'border-[var(--color-accent)]' : 'border-[var(--color-border)]'} bg-[var(--color-bg-secondary)]`}
+            className={`min-w-[132px] flex-1 shrink-0 rounded-[3px] border-2 px-2.5 py-1.5 text-left text-[11px] ${
+              pinned === row.id ? 'border-[var(--color-accent)]' : 'border-[#8a5c31]'
+            }`}
+            style={{
+              backgroundColor: '#e6c48c',
+              boxShadow: 'inset 0 3px 0 rgba(255,255,255,.4), inset 0 -4px 0 rgba(0,0,0,.14)',
+            }}
           >
-            <div className="max-w-[160px] truncate text-[var(--color-text-primary)]">{row.title || t('workers.untitled')}</div>
-            <div className="text-[var(--color-text-tertiary)]">
+            <div className="truncate font-medium text-[#3a2a18]">{row.title || t('workers.untitled')}</div>
+            <div className="truncate text-[#6b4a24]">
               {t(STATUS_LABEL[status] as never)}
               {turns > 0 && ` · ${formatTokenCount(turns)} tck`}
             </div>
