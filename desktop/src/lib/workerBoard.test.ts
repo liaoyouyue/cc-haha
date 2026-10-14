@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { buildWorkerRows, classifyProvider, resolveSessionModel } from './workerBoard'
+import { buildWorkerRows, classifyProvider, resolveSessionModel, mascotFor, formatDuration, totalTokens, MASCOT_IDS } from './workerBoard'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import type { SavedProvider } from '../types/provider'
 import type { SessionListItem } from '../types/session'
 
@@ -58,5 +60,36 @@ describe('buildWorkerRows', () => {
   it('没有 provider 时给出占位而不是崩', () => {
     const rows = buildWorkerRows([session({ id: '1', title: 'x' })], {}, [])
     expect(rows[0]).toMatchObject({ providerName: '—', modelId: '—', kind: 'unknown' })
+  })
+})
+
+describe('mascotFor', () => {
+  it('同一个会话永远同一只，不同会话能分到不同只', () => {
+    expect(mascotFor('session-a')).toBe(mascotFor('session-a'))
+    const ids = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'].map(mascotFor)
+    expect(new Set(ids).size).toBeGreaterThan(1)
+  })
+
+  it('每只吉祥物都有对应图片文件', () => {
+    const dir = join(__dirname, '..', 'assets', 'agent-mascots')
+    for (const id of MASCOT_IDS) {
+      expect(existsSync(join(dir, `agent-mascot-${id}.png`)), `missing asset for ${id}`).toBe(true)
+    }
+  })
+})
+
+describe('formatDuration', () => {
+  it('分:秒，过小时补小时段', () => {
+    expect(formatDuration(0)).toBe('0:00')
+    expect(formatDuration(368)).toBe('6:08')
+    expect(formatDuration(3723)).toBe('1:02:03')
+    expect(formatDuration(-5)).toBe('0:00')
+  })
+})
+
+describe('totalTokens', () => {
+  it('输入+输出，缺失算 0', () => {
+    expect(totalTokens(undefined)).toBe(0)
+    expect(totalTokens({ input_tokens: 69000, output_tokens: 2000 })).toBe(71000)
   })
 })

@@ -1,6 +1,34 @@
 import type { SavedProvider } from '../types/provider'
 import type { SessionListItem } from '../types/session'
 import type { RuntimeSelection } from '../types/runtime'
+import type { TokenUsage } from '../types/chat'
+
+// 必须与 desktop/src/assets/agent-mascots/agent-mascot-*.png 一一对应：
+// mascotFor 只会返回这里的值，多写一个不存在的名字就是在页面上留一个裂图。
+export const MASCOT_IDS = ['code', 'plan', 'fix', 'build', 'search', 'data', 'design', 'docs', 'check', 'shield', 'release', 'terminal']
+const MASCOTS = MASCOT_IDS
+
+/** 给每个会话固定分配一只吉祥物：同一个 id 永远同一只，看着像"工位上的固定员工"。 */
+export function mascotFor(id: string): string {
+  let hash = 0
+  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) >>> 0
+  return MASCOTS[hash % MASCOTS.length] ?? 'code'
+}
+
+/** 秒 → 6:08 / 1:02:03。看板只显示到秒，够用。 */
+export function formatDuration(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds))
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`
+}
+
+export function totalTokens(usage: TokenUsage | undefined): number {
+  if (!usage) return 0
+  return usage.input_tokens + usage.output_tokens
+}
 
 /**
  * 工人看板的数据层：把「会话 + 运行时选择 + 服务商」压成一行行工位。
