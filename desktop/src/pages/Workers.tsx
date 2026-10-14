@@ -94,7 +94,7 @@ export function Workers() {
           {t('workers.empty')}
         </div>
       ) : (
-        <div className="min-h-0 flex-1 overflow-auto p-5">
+        <div className="flex min-h-0 flex-1 flex-col p-5">
           <OfficeRoom
             rows={rows}
             chats={chats}
@@ -218,12 +218,12 @@ function OfficeRoom({
 }) {
   return (
     <div
-      className="relative mx-auto w-full max-w-[1100px] rounded-[4px] border-[10px] border-[#a9743f] shadow-xl"
+      className="relative mx-auto flex h-full w-full max-w-[1180px] flex-col rounded-[4px] border-[10px] border-[#a9743f] shadow-xl"
       style={{ imageRendering: 'pixelated', backgroundColor: '#c08a4c' }}
     >
       {/* 墙：米色格纹壁纸 + 挂件 + 绿色墙裙 */}
       <div
-        className="relative h-[124px] border-b-[3px] border-[#5f8f6a]"
+        className="relative h-[124px] shrink-0 border-b-[3px] border-[#5f8f6a]"
         style={{
           backgroundImage:
             'linear-gradient(#efe0c0 0 0), repeating-linear-gradient(90deg, rgba(0,0,0,.045) 0 1px, transparent 1px 16px), repeating-linear-gradient(0deg, rgba(0,0,0,.045) 0 1px, transparent 1px 16px)',
@@ -233,23 +233,16 @@ function OfficeRoom({
         <WallDecor />
       </div>
 
-      {/* 地板：木框 + 蓝地毯（像素点阵） */}
-      <div
-        className="relative flex flex-wrap items-start justify-center gap-x-6 gap-y-8 px-6 pb-10 pt-9"
-        style={{
-          backgroundColor: '#a9743f',
-          backgroundImage: 'linear-gradient(0deg, #a9743f 0 10px, transparent 10px)',
-        }}
-      >
+      {/* 地板：木框 + 蓝地毯（像素点阵），撑满剩余高度 */}
+      <div className="relative min-h-0 flex-1 overflow-auto bg-[#a9743f] p-[10px]">
         <div
-          className="absolute inset-x-[10px] top-[6px] bottom-[10px] rounded-[2px]"
+          className="flex min-h-full flex-wrap content-center items-center justify-around gap-6 rounded-[2px] p-6"
           style={{
             backgroundColor: '#5b8fd6',
             backgroundImage:
               'repeating-linear-gradient(90deg, rgba(255,255,255,.10) 0 4px, transparent 4px 8px), repeating-linear-gradient(0deg, rgba(0,0,0,.10) 0 4px, transparent 4px 8px)',
           }}
-        />
-        <div className="relative z-10 flex w-full flex-wrap items-start justify-center gap-x-6 gap-y-8">
+        >
           {rows.map((row) => (
             <Desk
               key={row.id}
@@ -467,7 +460,7 @@ function SessionStrip({
             onMouseEnter={() => onPin(row.id)}
             onMouseLeave={() => onPin(null)}
             onClick={() => useTabStore.getState().openTab(row.id, row.title || t('workers.untitled'), 'session')}
-            className={`min-w-[132px] flex-1 shrink-0 rounded-[3px] border-2 px-2.5 py-1.5 text-left text-[11px] ${
+            className={`min-w-[132px] max-w-[260px] flex-1 shrink-0 rounded-[3px] border-2 px-2.5 py-1.5 text-left text-[11px] ${
               pinned === row.id ? 'border-[var(--color-accent)]' : 'border-[#8a5c31]'
             }`}
             style={{
