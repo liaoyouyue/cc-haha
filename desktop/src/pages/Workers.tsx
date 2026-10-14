@@ -8,6 +8,7 @@ import { useTranslation } from '../i18n'
 import { buildWorkerRows, classifyProvider, mascotFor, formatDuration, totalTokens, type WorkerKind, type WorkerRow } from '../lib/workerBoard'
 import { resolvePetSessionStatus, type PetSessionStatus } from '../features/pets/petSessionModel'
 import { formatTokenCount } from '../lib/formatTokenCount'
+import roomArt from '../assets/office-room.png'
 
 // 12 只吉祥物当"员工头像"，按会话 id 固定分配，复用现有素材，不新增图片。
 const mascots = import.meta.glob('../assets/agent-mascots/agent-mascot-*.png', { eager: true, import: 'default' }) as Record<string, string>
@@ -23,18 +24,19 @@ const STATUS_LABEL: Record<PetSessionStatus, string> = {
   idle: 'workers.status.idle',
 }
 
-const KIND_BADGE: Record<WorkerKind, string> = {
-  free: 'bg-emerald-500/20 text-emerald-300 border-emerald-400/40',
-  paid: 'bg-amber-500/20 text-amber-300 border-amber-400/40',
-  unknown: 'bg-slate-500/20 text-slate-300 border-slate-400/40',
+/** 状态 → 卡片描边/徽章配色。运行中绿、等你确认蓝、出错红，其余中性。 */
+function statusTone(status: PetSessionStatus, pinned: boolean) {
+  if (pinned) return { border: 'border-sky-400/80', badge: 'bg-sky-500/20 text-sky-200', dot: 'bg-sky-300' }
+  if (status === 'running' || status === 'waiting') return { border: 'border-emerald-400/70', badge: 'bg-emerald-500/20 text-emerald-200', dot: 'bg-emerald-300' }
+  if (status === 'failed') return { border: 'border-rose-400/70', badge: 'bg-rose-500/20 text-rose-200', dot: 'bg-rose-300' }
+  if (status === 'review') return { border: 'border-sky-400/50', badge: 'bg-sky-500/15 text-sky-200', dot: 'bg-sky-300' }
+  return { border: 'border-white/12', badge: 'bg-white/8 text-slate-300', dot: 'bg-slate-500' }
 }
 
-/** 桌上小摆件：按会话 id 固定分配，跟吉祥物一样"每个工位有主"。 */
-const DESK_PROPS = ['mug', 'plant', 'cat', 'tank'] as const
-function deskPropFor(id: string): (typeof DESK_PROPS)[number] {
-  let hash = 0
-  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) >>> 0
-  return DESK_PROPS[hash % DESK_PROPS.length] ?? 'mug'
+const KIND_CHIP: Record<WorkerKind, { label: string; className: string }> = {
+  free: { label: 'workers.free', className: 'text-emerald-300' },
+  paid: { label: 'workers.paid', className: 'text-amber-300' },
+  unknown: { label: 'workers.unknown', className: 'text-slate-400' },
 }
 
 /** 每秒重绘一次，让运行中的计时器在动。没有运行中的会话就完全不跑。 */
@@ -49,8 +51,7 @@ function useNow(active: boolean): number {
 }
 
 /**
- * 员工动态面板：像素办公室里一个工位一个会话，小人 = 该会话的吉祥物。
- * 数据来自 buildWorkerRows（会话 + 运行时选择 + provider），不引入新的状态源。
+ * 员工动态面板。房间是参考图那张像素画的底图，会话数据全部落在底部卡片和悬浮详情卡上。
  */
 export function Workers() {
   const t = useTranslation()
@@ -76,7 +77,9 @@ export function Workers() {
   const anyRunning = Object.values(statuses).some((s) => s === 'running' || s === 'waiting')
   const now = useNow(anyRunning)
 
+  // 悬浮详情卡默认钉第一条：参考图里那张卡的位置要一直有人盖住。
   const [pinned, setPinned] = useState<string | null>(null)
+  const detailRow = rows.find((row) => row.id === pinned) ?? rows[0]
 
   const freeCount = rows.filter((row) => row.kind === 'free').length
 
@@ -95,15 +98,17 @@ export function Workers() {
           {t('workers.empty')}
         </div>
       ) : (
-        <div className="flex min-h-0 flex-1 flex-col p-5">
-          <OfficeRoom
-            rows={rows}
-            chats={chats}
-            statuses={statuses}
-            now={now}
-            pinned={pinned}
-            onPin={setPinned}
-          />
+        <div className="min-h-0 flex-1 overflow-auto p-4">
+          <OfficeRoom>
+            {detailRow && (
+              <DetailCard
+                row={detailRow}
+                chat={chats[detailRow.id]}
+                status={statuses[detailRow.id] ?? 'idle'}
+                now={now}
+              />
+            )}
+          </OfficeRoom>
         </div>
       )}
 
@@ -113,6 +118,7 @@ export function Workers() {
         statuses={statuses}
         pinned={pinned}
         onPin={setPinned}
+        now={now}
       />
     </div>
   )
@@ -131,14 +137,15 @@ function FreeRouterBadge() {
   const free = providers.find((provider) => classifyProvider(provider) === 'free')
   const [probe, setProbe] = useState<Probe>({ state: 'idle' })
 
+  const freeId = free?.id
   const run = useCallback(async () => {
-    if (!free) {
+    if (!freeId) {
       setProbe({ state: 'none' })
       return
     }
     setProbe({ state: 'checking' })
     try {
-      const result = await testProvider(free.id)
+      const result = await testProvider(freeId)
       const step = result?.connectivity
       if (!step?.success) {
         setProbe({ state: 'down' })
@@ -149,7 +156,7 @@ function FreeRouterBadge() {
     } catch {
       setProbe({ state: 'down' })
     }
-  }, [free?.id, testProvider])
+  }, [freeId, testProvider])
 
   useEffect(() => {
     void run()
@@ -199,332 +206,47 @@ function FreeRouterBadge() {
 }
 
 /**
- * 墙上一排挂件。门/衣帽架/书架落地，其余挂墙（靠 mb 抬到墙裙之上）。
- * 纯装饰，不接数据。
+ * 房间 = 参考图底图。悬浮卡的位置用真卡片盖死，所以底图里那张画出来的卡永远不露。
+ * 位置是按 1536x700 原图量的百分比，换图要重新量。
  */
-function WallDecor() {
-  return (
-    <div className="pointer-events-none absolute inset-x-0 bottom-[4px] flex items-end justify-between px-3">
-      {/* 木门：贴左墙，落地 */}
-      <div className="relative h-[100px] w-[54px] rounded-t-sm border-2 border-[#c9b48c] bg-[#6d4222]">
-        <div className="absolute inset-x-[8px] top-[7px] h-[34px] rounded-[1px] border border-[#4a2b12] bg-[#7d4e29]" />
-        <div className="absolute inset-x-[8px] bottom-[7px] h-[40px] rounded-[1px] border border-[#4a2b12] bg-[#7d4e29]" />
-        <div className="absolute right-[6px] top-[52px] h-[5px] w-[5px] rounded-full bg-[#e8c46a]" />
-      </div>
+const CARD_SPOT = { left: '35.4%', top: '54.5%', width: '27.6%', height: '38.5%' }
 
-      {/* 衣帽架：落地，两根外撇的钩 */}
-      <div className="relative h-[80px] w-[26px]">
-        <div className="absolute left-1/2 top-[8px] h-[3px] w-[26px] -translate-x-1/2 rounded-full bg-[#3f2a18]" />
-        <div className="absolute left-[1px] top-[2px] h-[3px] w-[11px] rotate-[38deg] rounded-full bg-[#3f2a18]" />
-        <div className="absolute right-[1px] top-[2px] h-[3px] w-[11px] -rotate-[38deg] rounded-full bg-[#3f2a18]" />
-        <div className="absolute left-1/2 top-[9px] h-[56px] w-[3px] -translate-x-1/2 bg-[#3f2a18]" />
-        <div className="absolute bottom-[6px] left-1/2 h-[3px] w-[18px] -translate-x-1/2 bg-[#3f2a18]" />
-        <div className="absolute bottom-0 left-1/2 h-[7px] w-[26px] -translate-x-1/2 rounded-t-[3px] bg-[#3f2a18]" />
-      </div>
-
-      <Window />
-      <Clock />
-      <Whiteboard />
-      <SmallArt tone="landscape" />
-      <Window />
-      <CalendarPage />
-      <Bookshelf />
-      <SmallArt tone="portrait" />
-      <Window />
-    </div>
-  )
-}
-
-/** 蓝框日落窗：天蓝到橘的渐变 + 两朵云 + 太阳 + 左上角斜光。 */
-function Window() {
-  return (
-    <div className="relative mb-[26px] h-[56px] w-[72px] rounded-[2px] border-[3px] border-[#9dc0da] bg-[#cfe6f5] p-[3px]">
-      <div className="relative h-full w-full overflow-hidden bg-[linear-gradient(180deg,#8fc4e8_0%,#b9d9ef_42%,#f0cfa0_58%,#e8b47a_100%)]">
-        <div className="absolute left-[6px] top-[7px] h-[3px] w-[14px] rotate-[-30deg] rounded-full bg-white/80" />
-        <div className="absolute bottom-[10px] left-[6px] h-[5px] w-[18px] rounded-full bg-white/85" />
-        <div className="absolute bottom-[13px] left-[16px] h-[5px] w-[14px] rounded-full bg-white/75" />
-        <div className="absolute bottom-[9px] right-[8px] h-[6px] w-[6px] rounded-full bg-[#fdf0b0]" />
-        <div className="absolute bottom-[7px] left-0 right-0 h-[4px] bg-[#d99a63]" />
-      </div>
-    </div>
-  )
-}
-
-/** 圆挂钟：深木外圈 + 刻度点 + 两根指针。 */
-function Clock() {
-  return (
-    <div className="relative mb-[40px] h-[36px] w-[36px] rounded-full border-[3px] border-[#4a3524] bg-[#3a2a20]">
-      <div className="absolute inset-[2px] rounded-full bg-[#f7f1e2]" />
-      <div className="absolute left-1/2 top-1/2 h-[11px] w-[2px] -translate-x-1/2 -translate-y-full bg-[#3a2a20]" />
-      <div className="absolute left-1/2 top-1/2 h-[2px] w-[8px] -translate-y-1/2 bg-[#3a2a20]" />
-      <div className="absolute left-1/2 top-1/2 h-[3px] w-[3px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[#3a2a20]" />
-    </div>
-  )
-}
-
-/** 白板：银灰框 + 底部三颗彩笔点。 */
-function Whiteboard() {
-  return (
-    <div className="relative mb-[26px] h-[64px] w-[112px] rounded-[2px] bg-[#b9b2a4] p-[3px]">
-      <div className="relative h-full w-full rounded-[1px] bg-[#faf7f0]">
-        <div className="absolute left-[8px] top-[10px] h-[3px] w-[46px] rounded-full bg-[#d9d3c6]" />
-        <div className="absolute left-[8px] top-[20px] h-[3px] w-[70px] rounded-full bg-[#e2ddd1]" />
-        <div className="absolute left-[8px] top-[30px] h-[3px] w-[34px] rounded-full bg-[#e2ddd1]" />
-        <div className="absolute bottom-[2px] left-[6px] flex gap-[3px]">
-          <span className="h-[5px] w-[5px] rounded-full bg-[#4f9d5f]" />
-          <span className="h-[5px] w-[5px] rounded-full bg-[#c94b3a]" />
-          <span className="h-[5px] w-[5px] rounded-full bg-[#3f7fbf]" />
-        </div>
-      </div>
-    </div>
-  )
-}
-
-/** 小相框：landscape = 绿粉风景，portrait = 暖色人像。 */
-function SmallArt({ tone }: { tone: 'landscape' | 'portrait' }) {
-  return (
-    <div className="mb-[30px] h-[40px] w-[36px] border-[3px] border-[#4a3524] bg-[#e8e0cc] p-[2px]">
-      {tone === 'landscape' ? (
-        <div className="relative h-full w-full overflow-hidden bg-[linear-gradient(180deg,#8fd0e0_0%,#bfe4ea_45%,#e8c8dc_70%,#c9e0b8_100%)]">
-          <div className="absolute bottom-0 left-0 h-[9px] w-full bg-[#6aa86a]" />
-          <div className="absolute bottom-[7px] left-[8px] h-[8px] w-[5px] bg-[#3f6b3f]" />
-        </div>
-      ) : (
-        <div className="relative h-full w-full overflow-hidden bg-[linear-gradient(180deg,#f0d9a8_0%,#e8c078_60%,#c98f4f_100%)]">
-          <div className="absolute left-1/2 top-[6px] h-[9px] w-[9px] -translate-x-1/2 rounded-full bg-[#f6e3b8]" />
-          <div className="absolute bottom-0 left-1/2 h-[12px] w-[18px] -translate-x-1/2 rounded-t-[8px] bg-[#d99a63]" />
-        </div>
-      )}
-    </div>
-  )
-}
-
-/** 日历：顶部铁环 + 红头 + 日期。 */
-function CalendarPage() {
-  return (
-    <div className="relative mb-[28px] h-[54px] w-[48px] rounded-[2px] border-2 border-[#4a3524] bg-[#fbf8f0]">
-      <div className="absolute -top-[5px] left-[9px] h-[6px] w-[3px] rounded-full bg-[#8a8a8a]" />
-      <div className="absolute -top-[5px] right-[9px] h-[6px] w-[3px] rounded-full bg-[#8a8a8a]" />
-      <div className="pt-[3px] text-center text-[9px] font-bold leading-[13px] text-[#3a2a20]">10</div>
-      <div className="mx-[4px] h-[2px] bg-[#c94b3a]" />
-      <div className="text-center text-[19px] font-bold leading-[24px] text-[#3a2a20]">14</div>
-    </div>
-  )
-}
-
-/** 书架：落地，4 层，每层一列书脊。 */
-function Bookshelf() {
-  // 书脊颜色固定写死，不随机 —— 每次渲染都跳色会晃眼。
-  const shelf = ['#c94b3a', '#3f7fbf', '#e0a83c', '#4f9d5f', '#8a5fb0', '#d97b3a', '#3aa8a0']
-  return (
-    <div className="flex h-[104px] w-[64px] flex-col justify-end gap-[2px] rounded-t-[2px] border-2 border-[#4a2f1b] bg-[#6b4322] p-[3px]">
-      {[0, 1, 2, 3].map((shelfIndex) => (
-        <div key={shelfIndex} className="flex h-[22px] items-end gap-[2px] border-b-2 border-[#4a2f1b] px-[1px]">
-          {shelf.slice(shelfIndex % 3, (shelfIndex % 3) + 6).map((color, i) => (
-            <div key={i} className="w-[5px] rounded-t-[1px]" style={{ height: `${12 + ((i * 3) % 8)}px`, backgroundColor: color }} />
-          ))}
-        </div>
-      ))}
-    </div>
-  )
-}
-
-function OfficeRoom({
-  rows, chats, statuses, now, pinned, onPin,
-}: {
-  rows: WorkerRow[]
-  chats: Record<string, PerSessionState | undefined>
-  statuses: Record<string, PetSessionStatus>
-  now: number
-  pinned: string | null
-  onPin: (id: string | null) => void
-}) {
+function OfficeRoom({ children }: { children?: React.ReactNode }) {
   return (
     <div
-      className="relative mx-auto flex h-full w-full max-w-[1180px] flex-col rounded-[3px] border-[8px] border-[#8a5c31] shadow-xl"
-      style={{ imageRendering: 'pixelated', backgroundColor: '#c08a4c' }}
+      data-testid="workers-room"
+      className="relative mx-auto w-full max-w-[1500px] overflow-hidden rounded-lg shadow-2xl"
+      style={{
+        aspectRatio: '1536 / 700',
+        backgroundImage: `url(${roomArt})`,
+        backgroundSize: '100% 100%',
+        backgroundColor: '#1a1410',
+      }}
     >
-      {/* 墙：米色菱格墙纸 + 挂件 + 绿色竖条墙裙 */}
-      <div
-        className="relative h-[136px] shrink-0"
-        style={{
-          backgroundColor: '#ecd9b0',
-          backgroundImage:
-            'repeating-linear-gradient(45deg, rgba(255,255,255,.5) 0 2px, transparent 2px 8px), repeating-linear-gradient(-45deg, rgba(196,160,104,.35) 0 2px, transparent 2px 8px)',
-        }}
-      >
-        {/* 墙裙 + 压条：先画，好让门/书架落地的挂件盖在上面 */}
-        <div
-          className="absolute inset-x-0 bottom-0 h-[26px]"
-          style={{
-            backgroundColor: '#6f9d84',
-            backgroundImage: 'repeating-linear-gradient(90deg, rgba(0,0,0,.22) 0 2px, transparent 2px 22px)',
-            borderTop: '2px solid #87b39a',
-          }}
-        />
-        <div className="absolute inset-x-0 bottom-[-4px] h-[4px] bg-[#d9b98a]" />
-        <WallDecor />
-      </div>
-
-      {/* 地板：木框 + 蓝地毯（菱形格），撑满剩余高度 */}
-      <div className="relative min-h-0 flex-1 overflow-auto bg-[#b8834a] p-[10px]">
-        <div
-          className="flex min-h-full flex-wrap content-center items-center justify-around gap-6 rounded-[2px] p-6"
-          style={{
-            backgroundColor: '#5b8fd6',
-            backgroundImage:
-              'repeating-linear-gradient(45deg, rgba(255,255,255,.13) 0 2px, transparent 2px 6px), repeating-linear-gradient(-45deg, rgba(0,0,0,.13) 0 2px, transparent 2px 6px)',
-          }}
-        >
-          {rows.map((row) => (
-            <Desk
-              key={row.id}
-              row={row}
-              chat={chats[row.id]}
-              status={statuses[row.id] ?? 'idle'}
-              now={now}
-              pinned={pinned === row.id}
-              onPin={onPin}
-            />
-          ))}
-        </div>
+      <div className="absolute" style={CARD_SPOT}>
+        {children}
       </div>
     </div>
   )
 }
 
-function Desk({
-  row, chat, status, now, pinned, onPin,
-}: {
-  row: WorkerRow
-  chat: PerSessionState | undefined
-  status: PetSessionStatus
-  now: number
-  pinned: boolean
-  onPin: (id: string | null) => void
-}) {
-  const t = useTranslation()
-  const mascot = MASCOT_SRC[mascotFor(row.id)] ?? MASCOT_SRC.code
-  const running = status === 'running' || status === 'waiting'
-  const bars = status === 'failed' ? ['#ffb0a0', '#ff8f8f'] : ['#8fd8ff', '#7fe0a8']
-
+/** 小图标：描边风，跟参考图里的细线图标一个调。 */
+function RowIcon({ path }: { path: string }) {
   return (
-    <div
-      className="relative"
-      onMouseEnter={() => onPin(row.id)}
-      onMouseLeave={() => onPin(null)}
-    >
-      <button
-        type="button"
-        data-testid={`worker-desk-${row.id}`}
-        onClick={() => useTabStore.getState().openTab(row.id, row.title || t('workers.untitled'), 'session')}
-        className="group relative block h-[186px] w-[168px] focus:outline-none"
-        aria-label={row.title || t('workers.untitled')}
-      >
-        {/* 显示器 + 支架 */}
-        <div className="absolute left-[40px] top-0 h-[54px] w-[76px] rounded-[2px] border-2 border-[#2a2a2a] bg-[#1b1d21]">
-          <div className="absolute inset-[4px] overflow-hidden rounded-[1px] bg-[#0b1f2e] p-[4px]">
-            {running ? (
-              <div className="space-y-[4px]">
-                <div className="h-[3px] w-[40px] rounded-full" style={{ backgroundColor: bars[0] }} />
-                <div className="h-[3px] w-[26px] rounded-full" style={{ backgroundColor: bars[1] }} />
-                <div className="h-[3px] w-[34px] rounded-full" style={{ backgroundColor: bars[0] }} />
-                <div className="h-[3px] w-[18px] rounded-full" style={{ backgroundColor: bars[1] }} />
-              </div>
-            ) : (
-              <div className="h-full w-full rounded-[1px] bg-[#0a1a26]">
-                {status === 'failed' && <div className="mt-[8px] text-center font-mono text-[8px] text-[#ff8f8f]">!! error</div>}
-              </div>
-            )}
-          </div>
-        </div>
-        <div className="absolute left-[73px] top-[54px] h-[6px] w-[7px] bg-[#2a2a2a]" />
-        <div className="absolute left-[60px] top-[60px] h-[3px] w-[33px] rounded-[1px] bg-[#2a2a2a]" />
-
-        {/* 台灯 */}
-        <div className="absolute left-[124px] top-[26px] h-[34px] w-[20px]">
-          <div className="absolute left-[3px] top-[3px] h-[9px] w-[15px] rounded-t-[7px] bg-[#c9ced4]" />
-          <div className="absolute bottom-[5px] left-1/2 h-[24px] w-[3px] -translate-x-1/2 rotate-[16deg] rounded-full bg-[#b6bcc2]" />
-          <div className="absolute bottom-0 left-1/2 h-[5px] w-[18px] -translate-x-1/2 rounded-full bg-[#9aa0a6]" />
-        </div>
-
-        {/* 桌面 + 浅色桌腿 */}
-        <div className="absolute left-[22px] top-[64px] h-[16px] w-[124px] rounded-[2px] bg-[#a06a35]" />
-        <div className="absolute left-[22px] top-[64px] h-[5px] w-[124px] rounded-t-[2px] bg-[#d9a86a]" />
-        <div className="absolute left-[28px] top-[80px] h-[38px] w-[6px] rounded-b-[2px] bg-[#d9b98a]" />
-        <div className="absolute right-[28px] top-[80px] h-[38px] w-[6px] rounded-b-[2px] bg-[#d9b98a]" />
-
-        <DeskProp kind={deskPropFor(row.id)} />
-
-        {/* 小人：站在桌子后，运行中轻轻上下浮动 */}
-        <img
-          src={mascot}
-          alt=""
-          className={`absolute left-[58px] top-[26px] z-20 h-[48px] w-[48px] object-contain drop-shadow ${running ? 'animate-bounce' : ''}`}
-          style={{ animationDuration: '1.6s' }}
-        />
-
-        {/* 转椅：靠背 + 坐垫 + 中柱 + 五爪 */}
-        <div className="absolute left-[48px] top-[112px] h-[62px] w-[72px]">
-          <div className="absolute left-[8px] top-0 h-[36px] w-[56px] rounded-t-[10px] rounded-b-[4px] border-2 border-[#5c1f22] bg-[#8d3038]" />
-          <div className="absolute left-[12px] top-[8px] h-[20px] w-[48px] rounded-t-[8px] bg-[#a03b43]" />
-          <div className="absolute left-[4px] top-[36px] h-[11px] w-[64px] rounded-[3px] border-2 border-[#5c1f22] bg-[#9a3740]" />
-          <div className="absolute left-[34px] top-[47px] h-[10px] w-[4px] bg-[#4a4a4a]" />
-          <div className="absolute left-[18px] top-[56px] h-[4px] w-[36px] rounded-full bg-[#4a4a4a]" />
-          <div className="absolute left-[14px] top-[56px] h-[4px] w-[12px] rotate-[24deg] rounded-full bg-[#4a4a4a]" />
-          <div className="absolute right-[14px] top-[56px] h-[4px] w-[12px] -rotate-[24deg] rounded-full bg-[#4a4a4a]" />
-        </div>
-
-        <div className="absolute inset-x-0 bottom-0 z-30 truncate text-center text-[11px] font-medium text-white drop-shadow-[0_1px_1px_rgba(0,0,0,.75)]">
-          {row.title || t('workers.untitled')}
-        </div>
-      </button>
-
-      {/* 悬浮详情 */}
-      {pinned && <DetailCard row={row} chat={chat} status={status} now={now} />}
-    </div>
+    <svg viewBox="0 0 16 16" className="h-[13px] w-[13px] shrink-0" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+      <path d={path} />
+    </svg>
   )
 }
-
-/** 桌上小摆件。 */
-function DeskProp({ kind }: { kind: (typeof DESK_PROPS)[number] }) {
-  if (kind === 'plant') {
-    return (
-      <div className="absolute left-[32px] top-[38px] z-10 h-[30px] w-[26px]">
-        <div className="absolute bottom-0 left-1/2 h-[13px] w-[18px] -translate-x-1/2 rounded-b-[3px] rounded-t-[1px] bg-[#b06a3a]" />
-        <div className="absolute bottom-[11px] left-[2px] h-[14px] w-[9px] -rotate-[22deg] rounded-full bg-[#4f9d5f]" />
-        <div className="absolute bottom-[11px] right-[2px] h-[14px] w-[9px] rotate-[22deg] rounded-full bg-[#3f8a50]" />
-        <div className="absolute bottom-[18px] left-1/2 h-[11px] w-[9px] -translate-x-1/2 rounded-full bg-[#5fae6f]" />
-      </div>
-    )
-  }
-  if (kind === 'cat') {
-    return (
-      <div className="absolute left-[30px] top-[40px] z-10 h-[26px] w-[32px]">
-        <div className="absolute bottom-0 left-0 h-[15px] w-[30px] rounded-[8px] bg-[#f2e8d5]" />
-        <div className="absolute bottom-[13px] left-[2px] h-[11px] w-[13px] rounded-[5px] bg-[#f2e8d5]" />
-        <div className="absolute bottom-[21px] left-[3px] h-[6px] w-[4px] -rotate-[14deg] rounded-sm bg-[#f2e8d5]" />
-        <div className="absolute bottom-[21px] left-[9px] h-[6px] w-[4px] rotate-[14deg] rounded-sm bg-[#f2e8d5]" />
-        <div className="absolute bottom-[6px] right-[4px] h-[4px] w-[4px] rounded-full bg-[#c9b48c]" />
-      </div>
-    )
-  }
-  if (kind === 'tank') {
-    return (
-      <div
-        className="absolute left-[36px] top-[26px] z-10 h-[40px] w-[30px] rounded-[2px] border-2 border-[#3f8f9a] bg-[#8fd8e0]/70"
-        style={{ backgroundImage: 'repeating-linear-gradient(45deg, rgba(255,255,255,.45) 0 2px, transparent 2px 6px)' }}
-      />
-    )
-  }
-  return (
-    <div className="absolute left-[36px] top-[48px] z-10 h-[18px] w-[14px]">
-      <div className="h-[14px] w-[13px] rounded-b-[3px] rounded-t-[1px] bg-[#3f7fbf]" />
-      <div className="absolute right-[-3px] top-[4px] h-[7px] w-[4px] rounded-r-[2px] border-2 border-[#3f7fbf]" />
-    </div>
-  )
+const ICON = {
+  tag: 'M2 7.2V2.6h4.6l7 7-4.6 4.6-7-7Zm2.4-2.6h.01',
+  bolt: 'M8.6 1.6 3.6 9h3.2l-.8 5.4L11.4 7H8.2l.4-5.4Z',
+  clock: 'M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12Zm0-9.2V8l2.2 1.4',
+  swap: 'M2.4 5.2h9.2l-2-2m2 7.6H2.4l2 2',
+  db: 'M8 1.8c2.8 0 5 .9 5 1.9v8.6c0 1-2.2 1.9-5 1.9s-5-.9-5-1.9V3.7c0-1 2.2-1.9 5-1.9Zm5 1.9c0 1-2.2 1.9-5 1.9s-5-.9-5-1.9',
 }
 
+/** 悬浮详情卡：盖住底图里那张画好的卡，显示当前选中会话的真实数据。 */
 function DetailCard({
   row, chat, status, now,
 }: {
@@ -536,6 +258,9 @@ function DetailCard({
   const t = useTranslation()
   const usage = chat?.tokenUsage
   const session = useSessionStore((s) => s.sessions.find((item) => item.id === row.id))
+  const tone = statusTone(status, false)
+
+  // 本轮计时：卡片一挂上就开始数，状态掉出 running 就清空。
   const turnStart = useRef<number | null>(null)
   if (status === 'running' && turnStart.current === null) turnStart.current = now
   if (status !== 'running') turnStart.current = null
@@ -546,58 +271,108 @@ function DetailCard({
   return (
     <div
       data-testid={`worker-detail-${row.id}`}
-      className="absolute bottom-[calc(100%+6px)] left-1/2 z-40 w-[236px] -translate-x-1/2 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-2.5 text-left text-[11px] shadow-xl"
+      className="flex h-full w-full flex-col overflow-hidden rounded-[14px] border-2 border-sky-400/70 bg-[#0c1420]/95 p-[3.5%] text-left shadow-[0_0_40px_rgba(56,189,248,.22)] backdrop-blur-[2px]"
     >
-      <div className="truncate text-[13px] font-semibold text-[var(--color-text-primary)]">{row.title || t('workers.untitled')}</div>
-      {row.workDir && <div className="truncate text-[10px] text-[var(--color-text-tertiary)]">{row.workDir}</div>}
-      <div className="mt-1 text-[var(--color-text-secondary)]">
+      <div className="flex items-center gap-2">
+        <svg viewBox="0 0 16 16" className="h-[15px] w-[15px] shrink-0 text-sky-300" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M2 4.4A1.4 1.4 0 0 1 3.4 3h2.4l1.4 1.6h5A1.4 1.4 0 0 1 13.6 6v5.6A1.4 1.4 0 0 1 12.2 13H3.4A1.4 1.4 0 0 1 2 11.6V4.4Z" />
+        </svg>
+        <span
+          data-testid="worker-detail-title"
+          className="min-w-0 flex-1 truncate text-[clamp(11px,1.15vw,17px)] font-semibold text-white"
+        >
+          {row.title || t('workers.untitled')}
+        </span>
+        <span className={`flex shrink-0 items-center gap-1 rounded-full px-2 py-[2px] text-[clamp(8px,.72vw,11px)] ${tone.badge}`}>
+          <span className={`h-[5px] w-[5px] rounded-full ${tone.dot}`} />
+          {t(STATUS_LABEL[status] as never)}
+        </span>
+      </div>
+
+      <div className="my-[3%] border-t border-dashed border-white/20" />
+
+      <div className="truncate font-mono text-[clamp(8px,.8vw,12px)] text-slate-300">{row.workDir || '—'}</div>
+      <div className="truncate text-[clamp(8px,.78vw,11px)] text-slate-400">
         {t('workers.detail.terminal')} · {row.providerName}
       </div>
-      <div className="truncate text-[11px] text-[var(--color-text-primary)]">{row.modelId}</div>
-      <div className="mt-1 text-[var(--color-text-secondary)]">
-        {t(STATUS_LABEL[status] as never)}
-        {turnSeconds !== null && ` · ${formatDuration(turnSeconds)}`}
+
+      <div className="mt-[3.5%] space-y-[2.4%] text-[clamp(8px,.82vw,12px)] text-slate-300">
+        <DetailRow
+          icon={ICON.bolt}
+          label={t(STATUS_LABEL[status] as never)}
+          value={turnSeconds !== null ? formatDuration(turnSeconds) : '—'}
+        />
+        <DetailRow
+          icon={ICON.clock}
+          label={t('workers.detail.turn')}
+          value={`${turnSeconds !== null ? formatDuration(turnSeconds) : '—'} · ${t('workers.detail.sessionAge', { duration: formatDuration(sessionSeconds ?? 0) })}`}
+        />
+        <DetailRow icon={ICON.tag} label={t('workers.detail.kind')} value={row.modelId} />
+        <DetailRow
+          icon={ICON.swap}
+          label={t('workers.detail.io')}
+          value={`${formatTokenCount(usage?.input_tokens)} · ${formatTokenCount(usage?.output_tokens)}`}
+        />
+        <DetailRow
+          icon={ICON.db}
+          label={t('workers.detail.cache')}
+          value={`${formatTokenCount(usage?.cache_creation_tokens)} · ${t('workers.detail.cacheRead', { value: formatTokenCount(usage?.cache_read_tokens) })}`}
+        />
       </div>
-      {sessionSeconds !== null && (
-        <div className="text-[var(--color-text-tertiary)]">
-          {t('workers.detail.sessionAge', { duration: formatDuration(sessionSeconds) })}
-        </div>
-      )}
-      <div className="mt-1 tabular-nums text-[var(--color-text-secondary)]">
-        {t('workers.detail.tokensIn', { value: formatTokenCount(usage?.input_tokens) })} ·{' '}
-        {t('workers.detail.tokensOut', { value: formatTokenCount(usage?.output_tokens) })}
-      </div>
-      <div className="tabular-nums text-[var(--color-text-tertiary)]">
-        {t('workers.detail.cacheWrite', { value: formatTokenCount(usage?.cache_creation_tokens) })} ·{' '}
-        {t('workers.detail.cacheRead', { value: formatTokenCount(usage?.cache_read_tokens) })}
-      </div>
-      <div className={`mt-2 inline-block rounded border px-1.5 py-px text-[10px] ${KIND_BADGE[row.kind]}`}>
-        {t(row.kind === 'free' ? 'workers.free' : row.kind === 'paid' ? 'workers.paid' : 'workers.unknown')}
+
+      <div className="mt-auto flex items-center gap-2 pt-[3%]">
+        <span className={`rounded border px-1.5 py-px text-[clamp(8px,.78vw,11px)] ${
+          row.kind === 'free' ? 'border-emerald-400/40 bg-emerald-500/15 text-emerald-300'
+            : row.kind === 'paid' ? 'border-amber-400/40 bg-amber-500/15 text-amber-300'
+              : 'border-slate-400/40 bg-slate-500/15 text-slate-300'
+        }`}>
+          {t(row.kind === 'free' ? 'workers.free' : row.kind === 'paid' ? 'workers.paid' : 'workers.unknown')}
+        </span>
+        {totalTokens(usage) > 0 && (
+          <span className="text-[clamp(8px,.78vw,11px)] text-slate-400">{formatTokenCount(totalTokens(usage))} tck</span>
+        )}
       </div>
     </div>
   )
 }
 
-/** 底部会话牌：跟参考图一样的木头牌子，一块对应一个工位。 */
+function DetailRow({ icon, label, value }: { icon: string; label: string; value: string }) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-slate-400">
+        <RowIcon path={icon} />
+      </span>
+      <span className="w-[13%] shrink-0 truncate text-slate-400">{label}</span>
+      <span className="min-w-0 flex-1 truncate font-medium text-slate-100">{value}</span>
+    </div>
+  )
+}
+
+/** 底部会话卡：一块一张，样式照参考图（图标块 + 标题 + 路径 + chip 行 + 状态徽章）。 */
 function SessionStrip({
-  rows, chats, statuses, pinned, onPin,
+  rows, chats, statuses, pinned, onPin, now,
 }: {
   rows: WorkerRow[]
   chats: Record<string, PerSessionState | undefined>
   statuses: Record<string, PetSessionStatus>
   pinned: string | null
   onPin: (id: string | null) => void
+  now: number
 }) {
   const t = useTranslation()
+  const sessions = useSessionStore((s) => s.sessions)
   return (
-    <div
-      className="flex flex-shrink-0 gap-3 overflow-x-auto px-4 py-3"
-      style={{ backgroundColor: '#a9743f', borderTop: '3px solid #8a5c31' }}
-    >
+    <div className="flex flex-shrink-0 gap-3 overflow-x-auto px-4 py-3">
       {rows.map((row) => {
         const status = statuses[row.id] ?? 'idle'
         const chat = chats[row.id]
         const turns = totalTokens(chat?.tokenUsage)
+        const createdAt = sessions.find((item) => item.id === row.id)?.createdAt
+        const sessionSeconds = createdAt ? (now - Date.parse(createdAt)) / 1000 : null
+        const tone = statusTone(status, pinned === row.id)
+        const kind = KIND_CHIP[row.kind]
+        const mascot = MASCOT_SRC[mascotFor(row.id)] ?? MASCOT_SRC.code
+
         return (
           <button
             key={row.id}
@@ -606,22 +381,44 @@ function SessionStrip({
             onMouseEnter={() => onPin(row.id)}
             onMouseLeave={() => onPin(null)}
             onClick={() => useTabStore.getState().openTab(row.id, row.title || t('workers.untitled'), 'session')}
-            className={`min-w-[132px] max-w-[260px] flex-1 shrink-0 rounded-[3px] border-2 px-2.5 py-1.5 text-left text-[11px] ${
-              pinned === row.id ? 'border-[var(--color-accent)]' : 'border-[#8a5c31]'
-            }`}
-            style={{
-              backgroundColor: '#e6c48c',
-              boxShadow: 'inset 0 3px 0 rgba(255,255,255,.45), inset 0 -4px 0 rgba(0,0,0,.16)',
-            }}
+            className={`flex min-w-[268px] max-w-[420px] flex-1 shrink-0 items-start gap-3 rounded-2xl border-2 px-3.5 py-3 text-left ${tone.border}`}
+            style={{ backgroundColor: '#111826' }}
           >
-            <div className="truncate font-semibold text-[#3a2a18]">{row.title || t('workers.untitled')}</div>
-            <div className="truncate text-[#6b4a24]">
-              {t(STATUS_LABEL[status] as never)}
-              {turns > 0 && ` · ${formatTokenCount(turns)} tck`}
-            </div>
+            <span className="grid h-[52px] w-[52px] shrink-0 place-items-center rounded-xl bg-white/[.06]">
+              <img src={mascot} alt="" className="h-9 w-9 object-contain" />
+            </span>
+
+            <span className="min-w-0 flex-1">
+              <span className="flex items-center gap-2">
+                <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-white">
+                  {row.title || t('workers.untitled')}
+                </span>
+                <span className={`flex shrink-0 items-center gap-1 rounded-full px-2 py-[2px] text-[11px] ${tone.badge}`}>
+                  <span className={`h-[6px] w-[6px] rounded-full ${tone.dot}`} />
+                  {t(STATUS_LABEL[status] as never)}
+                </span>
+              </span>
+
+              <span className="mt-[3px] block truncate text-[12px] text-slate-400">{row.workDir || '—'}</span>
+
+              <span className="mt-2.5 flex flex-wrap items-center gap-1.5 text-[11px]">
+                <Chip className={kind.className} icon={ICON.db} text={t(kind.label as never)} />
+                {turns > 0 && <Chip icon={ICON.swap} text={`${formatTokenCount(turns)} tck`} />}
+                {sessionSeconds !== null && <Chip icon={ICON.clock} text={formatDuration(sessionSeconds)} />}
+              </span>
+            </span>
           </button>
         )
       })}
     </div>
+  )
+}
+
+function Chip({ icon, text, className = '' }: { icon: string; text: string; className?: string }) {
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-md bg-white/[.07] px-2 py-1 ${className}`}>
+      <RowIcon path={icon} />
+      <span className="truncate text-slate-200">{text}</span>
+    </span>
   )
 }

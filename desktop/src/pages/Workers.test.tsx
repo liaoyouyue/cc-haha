@@ -58,8 +58,7 @@ describe('Workers office', () => {
 
     render(<Workers />)
 
-    expect(screen.getByTestId('worker-desk-a')).toBeTruthy()
-    expect(screen.getByTestId('worker-desk-b')).toBeTruthy()
+    expect(screen.getByTestId('workers-room')).toBeTruthy()
     expect(screen.getByTestId('worker-chip-a').textContent).toContain('运行中')
     expect(screen.getByTestId('worker-chip-a').textContent).toContain('71k tck')
     expect(screen.getByTestId('worker-chip-b').textContent).toContain('空闲')
