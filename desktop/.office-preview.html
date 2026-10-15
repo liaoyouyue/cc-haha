@@ -1,0 +1,37 @@
+<!doctype html>
+<html><head><meta charset="UTF-8"><title>Office layout check — local fixtures only</title></head>
+<body style="margin:0"><div id="office-preview" style="height:100vh"></div>
+<script type="module">
+import React from 'react'
+import { createRoot } from 'react-dom/client'
+import './src/theme/globals.css'
+import { Workers } from './src/pages/Workers'
+import { teamsApi } from './src/api/teams'
+import { useProviderStore } from './src/stores/providerStore'
+import { useSettingsStore } from './src/stores/settingsStore'
+useSettingsStore.setState({ locale: 'zh' })
+useProviderStore.setState({ providers: [{ id: 'fixture', name: 'Local visual fixture', baseUrl: 'https://example.invalid', models: {} }] })
+const root = createRoot(document.getElementById('office-preview'))
+const nativeInterval = window.setInterval.bind(window)
+window.setInterval = (callback, ms, ...args) => {
+  if (ms === 36000) window.officePreview.tick = callback
+  return nativeInterval(callback, ms, ...args)
+}
+const preview = window.officePreview = {
+  snapshot: null,
+  generation: 0,
+  tick: () => {},
+  show(mode = 'working', count = 7) {
+    this.snapshot = {
+      version: '1', generatedAt: new Date().toISOString(),
+      team: { name: '本地布局验收（模拟数据）', leadAgentId: 'person-0', members: Array.from({ length: count }, (_, i) => ({ agentId: `person-${i}`, name: ['队长', '前端', '后端', '测试', '设计', '数据', '构建'][i], role: 'engineer', status: 'running', activity: mode === 'working' ? 'active' : 'idle', currentTask: `t${i}` })) },
+      tasks: Array.from({ length: count }, (_, i) => ({ id: `t${i}`, owner: `person-${i}`, subject: `独立任务 ${i + 1}`, activeForm: `正在处理任务 ${i + 1}`, description: '仅用于布局与交互验收，不会写入团队状态。', status: mode === 'meeting' ? 'completed' : 'in_progress', blocks: [], blockedBy: [], taskListId: 'fixture' })),
+      messages: [{ id: 'local-1', from: 'person-0', to: 'person-3', recipients: ['person-3'], kind: 'direct', text: '请检查座椅对齐。', timestamp: new Date().toISOString() }],
+    }
+    root.render(React.createElement(Workers, { key: ++this.generation }))
+  },
+}
+teamsApi.list = async () => ({ teams: [{ name: 'fixture', createdAt: '2026-10-15' }] })
+teamsApi.getWorkbench = async () => preview.snapshot
+preview.show()
+</script></body></html>

@@ -1,150 +1,474 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useSessionStore } from '../stores/sessionStore'
-import { useSessionRuntimeStore } from '../stores/sessionRuntimeStore'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useProviderStore } from '../stores/providerStore'
-import { useChatStore, type PerSessionState } from '../stores/chatStore'
-import { useTabStore } from '../stores/tabStore'
 import { useTranslation } from '../i18n'
-import { buildWorkerRows, classifyProvider, mascotFor, formatDuration, totalTokens, type WorkerKind, type WorkerRow } from '../lib/workerBoard'
-import { resolvePetSessionStatus, type PetSessionStatus } from '../features/pets/petSessionModel'
-import { formatTokenCount } from '../lib/formatTokenCount'
+import { classifyProvider } from '../lib/workerBoard'
+import { memberPose, memberTask, officeRoute, taskHeadline, teamProgress, type OfficePoint } from '../lib/teamOffice'
+import { useTeamWorkbench } from '../hooks/useTeamWorkbench'
+import { memberAccentColor } from '../components/agentTeams/agentTeamsAvatars'
+import {
+  getMemberWorkState,
+  getWorkbenchPhase,
+  parseWorkbenchMessageBody,
+  resolveMemberModel,
+  runningTaskForMember,
+} from '../components/agentTeams/agentTeamsModel'
+import type { TeamMember, TeamWorkbenchMessage, TeamWorkbenchSnapshot, TeamWorkbenchTask } from '../types/team'
 import roomArt from '../assets/office-room.png'
 
-// 12 只吉祥物当"员工头像"，按会话 id 固定分配，复用现有素材，不新增图片。
-const mascots = import.meta.glob('../assets/agent-mascots/agent-mascot-*.png', { eager: true, import: 'default' }) as Record<string, string>
-const MASCOT_SRC: Record<string, string> = Object.fromEntries(
-  Object.entries(mascots).map(([path, url]) => [path.replace(/.*agent-mascot-/, '').replace(/\.png$/, ''), url]),
-)
-
-const STATUS_LABEL: Record<PetSessionStatus, string> = {
-  waiting: 'workers.status.waiting',
-  running: 'workers.status.running',
-  review: 'workers.status.review',
-  failed: 'workers.status.failed',
-  idle: 'workers.status.idle',
-}
-
-/** 状态 → 卡片描边/徽章配色。运行中绿、等你确认蓝、出错红，其余中性。 */
-function statusTone(status: PetSessionStatus, pinned: boolean) {
-  if (pinned) return { border: 'border-sky-400/80', badge: 'bg-sky-500/20 text-sky-200', dot: 'bg-sky-300' }
-  if (status === 'running' || status === 'waiting') return { border: 'border-emerald-400/70', badge: 'bg-emerald-500/20 text-emerald-200', dot: 'bg-emerald-300' }
-  if (status === 'failed') return { border: 'border-rose-400/70', badge: 'bg-rose-500/20 text-rose-200', dot: 'bg-rose-300' }
-  if (status === 'review') return { border: 'border-sky-400/50', badge: 'bg-sky-500/15 text-sky-200', dot: 'bg-sky-300' }
-  return { border: 'border-white/12', badge: 'bg-white/8 text-slate-300', dot: 'bg-slate-500' }
-}
-
-// 房间是静态底图，靠这几条动画给它活气。只动"跟真实状态有关"的东西：
-// 环境光是纯装饰，脉冲/扫光只在会话真的在跑时才出现。
 const KEYFRAMES = `
-@keyframes wf-breathe { 0%,100% { opacity: .10 } 50% { opacity: .26 } }
-@keyframes wf-sheen { 0% { transform: translateX(-130%) } 100% { transform: translateX(240%) } }
-@keyframes wf-scan { 0% { transform: translateY(-120%) } 100% { transform: translateY(1400%) } }
+@keyframes office-breathe { 0%,100% { opacity:.04 } 50% { opacity:.16 } }
+@keyframes office-screen { 0%,100% { opacity:.55 } 50% { opacity:1 } }
+@keyframes office-cursor { 0%,45% { opacity:1 } 46%,100% { opacity:0 } }
+@keyframes office-step { 0%,100% { transform:translateY(0) } 50% { transform:translateY(-1px) } }
+@keyframes office-legs { 0%,49% { transform:scaleX(1) } 50%,100% { transform:scaleX(-1) } }
+@keyframes office-type { 0%,100% { transform:rotate(-.6deg) } 50% { transform:rotate(.6deg) } }
+@keyframes office-talk { 0%,70%,100% { transform:rotate(0) } 30% { transform:rotate(1.5deg) } }
+.office-actor[data-pose="walk"] .office-body { animation:office-step .32s linear infinite }
+.office-actor[data-pose="walk"] .office-legs { animation:office-legs .64s steps(1) infinite }
+.office-actor[data-pose="sit"][data-working="true"] .office-body { animation:office-type .45s ease-in-out infinite; transform-origin:50% 75% }
+.office-actor[data-pose="talk"] .office-body { animation:office-talk 2.8s ease-in-out infinite; transform-origin:50% 100% }
+@media (prefers-reduced-motion:reduce) { .office-room *, .office-room { animation:none !important } }
 `
 
-const KIND_CHIP: Record<WorkerKind, { label: string; className: string }> = {
-  free: { label: 'workers.free', className: 'text-emerald-300' },
-  paid: { label: 'workers.paid', className: 'text-amber-300' },
-  unknown: { label: 'workers.unknown', className: 'text-slate-400' },
+const humanSprites = import.meta.glob('../assets/office-people/person-*.png', { eager: true, import: 'default' }) as Record<string, string>
+type OfficePose = 'sit' | 'walk' | 'talk'
+
+function humanSprite(agentId: string, pose: OfficePose): string {
+  let hash = 0
+  for (let index = 0; index < agentId.length; index++) hash = (hash * 31 + agentId.charCodeAt(index)) >>> 0
+  const person = hash % 8 + 1
+  // 坐姿用带椅子的背影图（面朝显示器）；站/走用旧侧面图。
+  const suffix = `/person-${person}-${pose === 'sit' ? 'back' : pose}.png`
+  return Object.entries(humanSprites).find(([path]) => path.endsWith(suffix))?.[1] ?? ''
 }
 
-/** 每秒重绘一次，让运行中的计时器在动。没有运行中的会话就完全不跑。 */
-function useNow(active: boolean): number {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    if (!active) return
-    const id = window.setInterval(() => setNow(Date.now()), 1000)
-    return () => window.clearInterval(id)
-  }, [active])
-  return now
-}
+type Desk = { screen: { x: number; y: number; w: number; h: number }; person: OfficePoint }
 
-/**
- * 员工动态面板。房间是参考图那张像素画的底图，会话数据全部落在底部卡片和悬浮详情卡上。
- */
+// 1672×941 底图；人物坐标锚定脚底，不再按整张图片中心对齐。
+const DESKS: Desk[] = [
+  { screen: { x: 11.6, y: 39.0, w: 9.1, h: 7.1 }, person: { x: 17.2, y: 52.5, scale: .62 } },
+  { screen: { x: 39.1, y: 39.8, w: 8.7, h: 6.4 }, person: { x: 43.2, y: 52.5, scale: .62 } },
+  { screen: { x: 58.3, y: 40.0, w: 8.5, h: 6.3 }, person: { x: 62.8, y: 52.5, scale: .62 } },
+  { screen: { x: 13.8, y: 51.5, w: 9.5, h: 7.0 }, person: { x: 17.6, y: 71.0, scale: .78 } },
+  { screen: { x: 30.7, y: 51.5, w: 9.3, h: 7.0 }, person: { x: 35.0, y: 71.0, scale: .78 } },
+  { screen: { x: 46.5, y: 51.5, w: 9.4, h: 7.0 }, person: { x: 51.7, y: 71.0, scale: .78 } },
+  { screen: { x: 63.3, y: 51.5, w: 9.2, h: 7.0 }, person: { x: 68.2, y: 71.0, scale: .78 } },
+]
+
+const MEETING: OfficePoint[] = [
+  { x: 44.2, y: 35.0, scale: .62 },
+  { x: 48.0, y: 35.5, scale: .64 },
+  { x: 51.8, y: 35.0, scale: .62 },
+  { x: 55.6, y: 35.5, scale: .64 },
+  { x: 59.4, y: 35.0, scale: .62 },
+  { x: 63.2, y: 35.5, scale: .64 },
+]
+
+const SOCIAL: OfficePoint[] = [
+  { x: 20, y: 37, scale: .68 },
+  { x: 24, y: 37, scale: .68 },
+  { x: 32, y: 78, scale: .94 },
+  { x: 37, y: 78, scale: .94 },
+  { x: 49, y: 78, scale: .94 },
+  { x: 54, y: 78, scale: .94 },
+  { x: 28, y: 37, scale: .68 },
+]
+
 export function Workers() {
   const t = useTranslation()
-  const sessions = useSessionStore((s) => s.sessions)
-  const selections = useSessionRuntimeStore((s) => s.selections)
-  const providers = useProviderStore((s) => s.providers)
-  const fetchProviders = useProviderStore((s) => s.fetchProviders)
-  const chats = useChatStore((s) => s.sessions)
+  const { snapshot, loading, error } = useTeamWorkbench()
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [motionTick, setMotionTick] = useState(0)
 
   useEffect(() => {
-    if (providers.length === 0) void fetchProviders()
-  }, [providers.length, fetchProviders])
+    const id = window.setInterval(() => setMotionTick((tick) => tick + 1), 36_000)
+    return () => window.clearInterval(id)
+  }, [])
 
-  const rows = useMemo(
-    () => buildWorkerRows(sessions, selections, providers),
-    [sessions, selections, providers],
-  )
-
-  const statuses = useMemo(
-    () => Object.fromEntries(rows.map((row) => [row.id, resolvePetSessionStatus(chats[row.id])])),
-    [rows, chats],
-  )
-  const anyRunning = Object.values(statuses).some((s) => s === 'running' || s === 'waiting')
-  const now = useNow(anyRunning)
-
-  // 悬浮详情卡默认钉第一条：参考图里那张卡的位置要一直有人盖住。
-  const [pinned, setPinned] = useState<string | null>(null)
-  const detailRow = rows.find((row) => row.id === pinned) ?? rows[0]
-
-  const freeCount = rows.filter((row) => row.kind === 'free').length
+  const members = snapshot?.team.members.filter((member) => memberPose(member) !== 'gone') ?? []
+  const progress = snapshot ? teamProgress(members, snapshot.tasks) : null
+  const selected = members.find((member) => member.agentId === selectedId) ?? null
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[var(--color-bg-primary)]">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[#0d1118]">
       <style>{KEYFRAMES}</style>
-      <header className="flex items-center gap-3 border-b border-[var(--color-border)] px-5 py-2.5">
-        <h1 className="text-[15px] font-semibold text-[var(--color-text-primary)]">{t('workers.title')}</h1>
-        <p className="min-w-0 flex-1 truncate text-[12px] text-[var(--color-text-tertiary)]">
-          {t('workers.subtitle', { total: rows.length, free: freeCount })}
+      <header className="flex h-12 shrink-0 items-center gap-3 border-b border-white/10 bg-[#121823] px-5">
+        <h1 className="text-[15px] font-semibold text-white">{t('workers.title')}</h1>
+        <p className="min-w-0 flex-1 truncate text-[12px] text-slate-400">
+          {snapshot && progress
+            ? t('workers.office.teamSummary', {
+                team: snapshot.team.name,
+                total: progress.total,
+                working: progress.working,
+                done: progress.done,
+                blocked: progress.blocked,
+              })
+            : loading ? t('workers.office.loading') : t('workers.office.noTeam')}
+          {error ? ` · ${error}` : ''}
         </p>
         <FreeRouterBadge />
       </header>
 
-      {rows.length === 0 ? (
-        <div className="flex flex-1 items-center justify-center text-[13px] text-[var(--color-text-tertiary)]">
-          {t('workers.empty')}
-        </div>
-      ) : (
-        <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-black/[.18] p-4">
-          <OfficeRoom>
-            {detailRow && (
-              <DetailCard
-                row={detailRow}
-                chat={chats[detailRow.id]}
-                status={statuses[detailRow.id] ?? 'idle'}
-                now={now}
-              />
-            )}
-          </OfficeRoom>
-        </div>
-      )}
+      <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-black p-3">
+        <OfficeFloor
+          snapshot={snapshot}
+          members={members}
+          selectedId={selectedId}
+          motionTick={motionTick}
+          onSelect={setSelectedId}
+        />
+      </div>
 
-      <SessionStrip
-        rows={rows}
-        chats={chats}
-        statuses={statuses}
-        pinned={pinned}
-        onPin={setPinned}
-        now={now}
-      />
+      {selected && snapshot && (
+        <MemberInspector
+          member={selected}
+          snapshot={snapshot}
+          onClose={() => setSelectedId(null)}
+        />
+      )}
     </div>
   )
 }
 
-type Probe = { state: 'idle' | 'checking' | 'ok' | 'slow' | 'down' | 'none'; ms?: number }
+function OfficeFloor({
+  snapshot,
+  members,
+  selectedId,
+  motionTick,
+  onSelect,
+}: {
+  snapshot: TeamWorkbenchSnapshot | null
+  members: TeamMember[]
+  selectedId: string | null
+  motionTick: number
+  onSelect: (id: string) => void
+}) {
+  const t = useTranslation()
+  const phase = snapshot ? getWorkbenchPhase(snapshot) : 'forming'
+  const meeting = phase === 'forming' || phase === 'finishing'
 
-/**
- * 免费路由健康灯：找到走本地免费网关的那个服务商，打一发真实探活。
- * 只在进页面时探一次，之后手动点刷新 —— 每次探活都是一次真实请求，别轮询。
- */
+  return (
+    <div
+      data-testid="workers-room"
+      className="office-room relative isolate w-full max-w-[1672px] shrink-0 overflow-hidden rounded-lg shadow-2xl"
+      style={{ aspectRatio: '1672 / 941', backgroundImage: `url(${roomArt})`, backgroundSize: '100% 100%' }}
+    >
+      <div
+        className="pointer-events-none absolute inset-0"
+        style={{
+          background: 'radial-gradient(90% 60% at 35% 5%, rgba(255,194,112,.8), transparent 68%)',
+          animation: 'office-breathe 8s ease-in-out infinite',
+        }}
+      />
+
+      {DESKS.map((desk, index) => {
+        const member = members[index]
+        return (
+          <DeskScreen
+            key={index}
+            desk={desk}
+            member={member}
+            snapshot={snapshot}
+            selected={member?.agentId === selectedId}
+            onSelect={onSelect}
+          />
+        )
+      })}
+
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0"
+        style={{
+          zIndex: 60,
+          backgroundImage: `url(${roomArt})`,
+          backgroundSize: '100% 100%',
+          clipPath: 'polygon(13% 50.5%,24% 50.5%,24% 59%,30% 59%,30% 50.5%,41% 50.5%,41% 59%,46% 59%,46% 50.5%,57% 50.5%,57% 59%,63% 59%,63% 50.5%,74% 50.5%,74% 59%,81% 59%,81% 73%,5% 73%,5% 60%,13% 60%)',
+        }}
+      />
+
+      {members.slice(0, DESKS.length).map((member, index) => {
+        const state = memberPose(member)
+        if (state === 'gone' || state === 'away') return null
+        const desk = DESKS[index]!
+        let point = desk.person
+        let officePose: OfficePose = 'sit'
+
+        if (state === 'idle') {
+          if (meeting && index < MEETING.length) {
+            point = MEETING[index]!
+            point = { ...point, x: point.x + (motionTick % 2 ? .8 : 0), y: point.y + (motionTick % 2 ? .5 : 0) }
+            officePose = 'talk'
+          } else if ((motionTick + Math.floor(index / 2)) % 3 === 1) {
+            point = SOCIAL[index]!
+            officePose = 'talk'
+          } else if ((motionTick + Math.floor(index / 2)) % 3 === 2 && index < MEETING.length) {
+            point = MEETING[index]!
+            officePose = 'talk'
+          }
+        }
+
+        const task = snapshot ? runningTaskForMember(snapshot.tasks, member) ?? memberTask(member, snapshot.tasks) : undefined
+
+        return (
+          <OfficePerson
+            key={member.agentId}
+            member={member}
+            point={point}
+            task={task}
+            selected={member.agentId === selectedId}
+            pose={officePose}
+            onClick={() => onSelect(member.agentId)}
+          />
+        )
+      })}
+
+      {!snapshot && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full border border-white/15 bg-black/55 px-4 py-2 text-[12px] text-white/75 backdrop-blur">
+          {t('workers.office.noTeam')}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function DeskScreen({
+  desk,
+  member,
+  snapshot,
+  selected,
+  onSelect,
+}: {
+  desk: Desk
+  member?: TeamMember
+  snapshot: TeamWorkbenchSnapshot | null
+  selected: boolean
+  onSelect: (id: string) => void
+}) {
+  const t = useTranslation()
+  const state = member ? getMemberWorkState(member) : 'exited'
+  const live = state === 'working'
+  const task = member && snapshot ? runningTaskForMember(snapshot.tasks, member) ?? memberTask(member, snapshot.tasks) : undefined
+  const accent = memberAccentColor(member?.color, 0)
+
+  return (
+    <button
+      type="button"
+      disabled={!member}
+      data-testid={member ? `worker-desk-${member.agentId}` : undefined}
+      aria-label={member ? t('workers.office.inspect', { name: member.name || member.role }) : undefined}
+      onClick={() => member && onSelect(member.agentId)}
+      className={`absolute overflow-hidden rounded-[2px] border transition ${selected ? 'border-cyan-300 shadow-[0_0_16px_rgba(103,232,249,.8)]' : 'border-transparent'} ${member ? 'cursor-pointer' : 'cursor-default'}`}
+      style={{ left: `${desk.screen.x}%`, top: `${desk.screen.y}%`, width: `${desk.screen.w}%`, height: `${desk.screen.h}%`, zIndex: desk.person.y >= 65 ? 61 : 40 }}
+    >
+      {member && (
+        <span className={`absolute inset-0 bg-[#061626]/90 p-[8%] text-left ${live ? '' : 'opacity-55'}`}>
+          <span className="mb-[5%] flex items-center gap-[4%]">
+            <span className={`h-[5px] w-[5px] rounded-full ${live ? 'agent-teams-live-dot bg-emerald-300' : state === 'error' || state === 'retrying' ? 'bg-rose-400' : 'bg-slate-500'}`} />
+            <span className="min-w-0 truncate font-mono text-[clamp(4px,.5vw,8px)] text-slate-300">{member.name || member.role}</span>
+          </span>
+          {[72, 48, 84, 61, 36].map((width, index) => (
+            <span
+              key={index}
+              className="mb-[4%] block h-[5%] rounded-full"
+              style={{ width: `${width}%`, backgroundColor: accent, opacity: live ? .85 - index * .1 : .22, animation: live ? `office-screen ${1.5 + index * .25}s ease-in-out infinite` : undefined }}
+            />
+          ))}
+          <span className="absolute bottom-[7%] left-[8%] max-w-[84%] truncate font-mono text-[clamp(4px,.45vw,7px)] text-cyan-200/80">
+            {taskHeadline(task) || t('workers.office.waiting')}<i className="ml-0.5 not-italic" style={{ animation: live ? 'office-cursor 1s steps(1) infinite' : undefined }}>▌</i>
+          </span>
+        </span>
+      )}
+    </button>
+  )
+}
+
+function OfficePerson({
+  member,
+  point,
+  task,
+  selected,
+  pose,
+  onClick,
+}: {
+  member: TeamMember
+  point: OfficePoint
+  task?: TeamWorkbenchTask
+  selected: boolean
+  pose: OfficePose
+  onClick: () => void
+}) {
+  const state = getMemberWorkState(member)
+  const [initial] = useState(point)
+  const [travelling, setTravelling] = useState(false)
+  const nodeRef = useRef<HTMLButtonElement>(null)
+  const position = useRef(point)
+  const { x, y, scale } = point
+
+  useEffect(() => {
+    const node = nodeRef.current!
+    const target = { x, y, scale }
+    const route = officeRoute(position.current, target)
+    let segment = 1
+    let previous = performance.now()
+    let frame: number
+    const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    const draw = (next: OfficePoint) => {
+      position.current = next
+      node.style.left = `${next.x}%`
+      node.style.top = `${next.y}%`
+      node.style.width = `${11.3 * next.scale}%`
+      node.style.zIndex = String(Math.round(next.y))
+    }
+    const step = (now: number) => {
+      const next = route[segment]
+      if (reduced || !next) {
+        draw(target)
+        setTravelling(false)
+        return
+      }
+      setTravelling(true)
+      const current = position.current
+      const dx = next.x - current.x
+      const dy = next.y - current.y
+      const distance = Math.hypot(dx, dy * 941 / 1672)
+      const ratio = distance === 0 ? 1 : Math.min(1, Math.min(now - previous, 64) * .006 / distance)
+      if (Math.abs(dx) > .05) node.style.setProperty('--office-facing', dx < 0 ? '-1' : '1')
+      draw({ x: current.x + dx * ratio, y: current.y + dy * ratio, scale: current.scale + (next.scale - current.scale) * ratio })
+      previous = now
+      if (ratio === 1) segment++
+      frame = requestAnimationFrame(step)
+    }
+    frame = requestAnimationFrame(step)
+    return () => cancelAnimationFrame(frame)
+  }, [x, y, scale])
+
+  const currentPose = travelling ? 'walk' : pose
+  const avatar = humanSprite(member.agentId, currentPose)
+  const label = member.name || member.role || member.agentId
+  const active = state === 'working'
+
+  return (
+    <button
+      ref={nodeRef}
+      type="button"
+      data-testid={`worker-person-${member.agentId}`}
+      data-pose={currentPose}
+      data-working={active}
+      onClick={onClick}
+      className="office-actor absolute -translate-x-1/2 -translate-y-full focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300"
+      style={{ left: `${initial.x}%`, top: `${initial.y}%`, width: `${11.3 * initial.scale}%`, zIndex: Math.round(initial.y) }}
+      aria-label={label}
+    >
+      {active && task && (
+        <span className="pointer-events-none absolute bottom-[94%] left-1/2 max-w-[160px] -translate-x-1/2 truncate whitespace-nowrap rounded-md border border-cyan-300/30 bg-[#08131f]/90 px-2 py-1 text-[clamp(6px,.55vw,9px)] text-cyan-100 shadow-lg">
+          {taskHeadline(task)}
+        </span>
+      )}
+      <span className="relative block w-full" style={{ transform: travelling ? 'scaleX(var(--office-facing, 1))' : undefined }}>
+        <span className="office-body relative block w-full">
+          <img src={avatar} alt="" draggable={false} className="block w-full object-contain drop-shadow-md" style={{ clipPath: travelling ? 'inset(0 0 47% 0)' : undefined }} />
+          {travelling && <img src={avatar} alt="" draggable={false} className="office-legs absolute inset-0 w-full object-contain" style={{ clipPath: 'inset(53% 0 0 0)' }} />}
+        </span>
+        {currentPose === 'talk' && <span aria-hidden="true" className="absolute right-0 top-[12%] rounded-full bg-white/90 px-1.5 text-[10px] tracking-widest text-slate-700">···</span>}
+        {(state === 'error' || state === 'retrying') && <span className="absolute right-1 top-2 h-3 w-3 rounded-full border-2 border-white bg-rose-500" />}
+        {selected && <span className="absolute inset-0 rounded-full border-2 border-cyan-300" />}
+      </span>
+      <span className="pointer-events-none absolute left-1/2 top-full max-w-[120px] -translate-x-1/2 truncate rounded-full border border-white/15 bg-black/70 px-2 py-[2px] text-[clamp(6px,.55vw,9px)] font-medium text-white backdrop-blur">
+        {label}
+      </span>
+    </button>
+  )
+}
+
+function MemberInspector({
+  member,
+  snapshot,
+  onClose,
+}: {
+  member: TeamMember
+  snapshot: TeamWorkbenchSnapshot
+  onClose: () => void
+}) {
+  const t = useTranslation()
+  const isLead = member.agentId === snapshot.team.leadAgentId
+  const state = getMemberWorkState(member)
+  const leadModel = snapshot.team.members.find((item) => item.agentId === snapshot.team.leadAgentId)?.model
+  const model = resolveMemberModel(member, isLead ? undefined : leadModel)
+  const task = runningTaskForMember(snapshot.tasks, member) ?? memberTask(member, snapshot.tasks)
+  const messages = recentMessages(snapshot.messages, member)
+  const avatar = humanSprite(member.agentId, 'talk')
+
+  return (
+    <aside
+      data-testid="worker-inspector"
+      className="absolute bottom-5 right-5 z-50 w-[min(370px,calc(100%-40px))] rounded-2xl border border-cyan-300/35 bg-[#09121f]/95 p-4 text-white shadow-[0_18px_60px_rgba(0,0,0,.55)] backdrop-blur-xl"
+    >
+      <button type="button" onClick={onClose} aria-label={t('workers.office.close')} className="absolute right-3 top-2 text-xl text-slate-400 hover:text-white">×</button>
+      <div className="flex items-center gap-3 pr-5">
+        <img src={avatar} alt="" className="h-14 w-14 shrink-0 object-contain" />
+        <div className="min-w-0">
+          <div className="truncate text-[16px] font-semibold">{member.name || member.role || member.agentId}</div>
+          <div className="truncate text-[12px] text-slate-400">{member.role}{model ? ` · ${model.label}` : ''}</div>
+          <div className="mt-1 inline-flex items-center gap-1 rounded-full bg-white/[.07] px-2 py-0.5 text-[11px] text-slate-300">
+            <span className={`h-1.5 w-1.5 rounded-full ${state === 'working' ? 'agent-teams-live-dot bg-emerald-300' : state === 'error' || state === 'retrying' ? 'bg-rose-400' : 'bg-slate-500'}`} />
+            {t(`agentTeams.member.${state}` as never)}
+          </div>
+        </div>
+      </div>
+
+      <section className="mt-4 rounded-xl border border-white/10 bg-white/[.04] p-3">
+        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">{t('workers.office.currentTask')}</div>
+        <div className="text-[13px] font-medium text-slate-100">{task ? task.subject : t('workers.office.noTask')}</div>
+        {task?.description && <div className="mt-1 line-clamp-3 text-[11px] leading-5 text-slate-400">{task.description}</div>}
+        {task && <div className="mt-2 text-[10px] text-cyan-300">#{task.id} · {t(`agentTeams.task.${task.status === 'in_progress' ? 'running' : task.status === 'pending' ? 'open' : task.status}` as never)}</div>}
+      </section>
+
+      <section className="mt-3">
+        <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">{t('workers.office.recentMessages')}</div>
+        <div className="space-y-1.5">
+          {messages.length === 0 ? (
+            <div className="text-[11px] text-slate-500">—</div>
+          ) : messages.map((message) => (
+            <div key={message.id} className="rounded-lg bg-white/[.04] px-2.5 py-2 text-[11px] text-slate-300">
+              <span className="mr-1.5 font-semibold text-cyan-300">{message.from}</span>
+              <span className="line-clamp-2">{message.summary || readableMessage(message)}</span>
+            </div>
+          ))}
+        </div>
+      </section>
+    </aside>
+  )
+}
+
+function recentMessages(messages: TeamWorkbenchMessage[], member: TeamMember): TeamWorkbenchMessage[] {
+  const ids = [member.agentId, member.name].filter(Boolean).map((value) => value!.toLowerCase())
+  return messages
+    .filter((message) => ids.includes(message.from.toLowerCase()) || message.recipients.some((recipient) => ids.includes(recipient.toLowerCase())))
+    .slice(-3)
+    .reverse()
+}
+
+function readableMessage(message: TeamWorkbenchMessage): string {
+  const body = parseWorkbenchMessageBody(message)
+  if (body.kind === 'text') return body.text
+  if (body.kind === 'assignment') return body.subject || (body.taskId ? `#${body.taskId}` : 'task assignment')
+  return body.detail || body.type.replaceAll('_', ' ')
+}
+
+type Probe = { state: 'checking' | 'ok' | 'slow' | 'down' | 'none'; ms?: number }
+
 function FreeRouterBadge() {
   const t = useTranslation()
   const providers = useProviderStore((s) => s.providers)
+  const fetchProviders = useProviderStore((s) => s.fetchProviders)
   const testProvider = useProviderStore((s) => s.testProvider)
   const free = providers.find((provider) => classifyProvider(provider) === 'free')
-  const [probe, setProbe] = useState<Probe>({ state: 'idle' })
+  const [probe, setProbe] = useState<Probe>({ state: 'checking' })
+  const [waited, setWaited] = useState(0)
+
+  useEffect(() => {
+    if (providers.length === 0) void fetchProviders()
+  }, [providers.length, fetchProviders])
 
   const freeId = free?.id
   const run = useCallback(async () => {
@@ -154,326 +478,45 @@ function FreeRouterBadge() {
     }
     setProbe({ state: 'checking' })
     try {
-      // testProvider 发的是一次真实补全请求（不是轻量 ping），免费链上的模型可能几十秒才回。
-      // 这里只是给它封个上限，免得灯永远转。
       const result = await Promise.race([
         testProvider(freeId),
         new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 45_000)),
       ])
-      if (!result) {
+      if (!result?.connectivity.success) {
         setProbe({ state: 'down' })
         return
       }
-      const step = result.connectivity
-      if (!step?.success) {
-        setProbe({ state: 'down' })
-        return
-      }
-      const ms = step.latencyMs ?? 0
+      const ms = result.connectivity.latencyMs ?? 0
       setProbe({ state: ms > 4000 ? 'slow' : 'ok', ms })
     } catch {
       setProbe({ state: 'down' })
     }
   }, [freeId, testProvider])
 
-  useEffect(() => {
-    void run()
-  }, [run])
-
-  // 探活可能要等几十秒，摆个秒表让它看起来是在干活而不是卡死。
-  const [waited, setWaited] = useState(0)
+  useEffect(() => { void run() }, [run])
   useEffect(() => {
     if (probe.state !== 'checking') return
     setWaited(0)
-    const id = window.setInterval(() => setWaited((v) => v + 1), 1000)
+    const id = window.setInterval(() => setWaited((value) => value + 1), 1000)
     return () => window.clearInterval(id)
   }, [probe.state])
 
-  const tone: Record<Probe['state'], string> = {
-    idle: 'border-[var(--color-border)] text-[var(--color-text-tertiary)]',
-    checking: 'border-[var(--color-border)] text-[var(--color-text-tertiary)]',
-    ok: 'border-emerald-400/50 text-emerald-300',
-    slow: 'border-amber-400/50 text-amber-300',
-    down: 'border-rose-400/50 text-rose-300',
-    none: 'border-[var(--color-border)] text-[var(--color-text-tertiary)]',
-  }
-  const dot: Record<Probe['state'], string> = {
-    idle: 'bg-slate-400',
-    checking: 'bg-slate-400 animate-pulse',
-    ok: 'bg-emerald-400',
-    slow: 'bg-amber-400',
-    down: 'bg-rose-400',
-    none: 'bg-slate-500',
-  }
-  const label: Record<Probe['state'], string> = {
-    idle: 'workers.router.checking',
-    checking: 'workers.router.checking',
-    ok: 'workers.router.ok',
-    slow: 'workers.router.slow',
-    down: 'workers.router.down',
-    none: 'workers.router.none',
-  }
+  const color = probe.state === 'ok' ? 'text-emerald-300 border-emerald-400/40'
+    : probe.state === 'slow' ? 'text-amber-300 border-amber-400/40'
+      : probe.state === 'down' ? 'text-rose-300 border-rose-400/40'
+        : 'text-slate-400 border-white/10'
+  const label = probe.state === 'ok' ? 'workers.router.ok'
+    : probe.state === 'slow' ? 'workers.router.slow'
+      : probe.state === 'down' ? 'workers.router.down'
+        : probe.state === 'none' ? 'workers.router.none'
+          : 'workers.router.checking'
 
   return (
-    <button
-      type="button"
-      data-testid="worker-router-badge"
-      onClick={() => void run()}
-      title={free?.baseUrl ?? ''}
-      className={`flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] ${tone[probe.state]}`}
-    >
-      <span className={`h-2 w-2 rounded-full ${dot[probe.state]}`} />
-      <span>{t('workers.router.label')}</span>
-      <span className="font-medium tabular-nums">
-        {t(label[probe.state] as never)}
-        {probe.state === 'ok' || probe.state === 'slow' ? ` · ${Math.round(probe.ms ?? 0)}ms` : ''}
-        {probe.state === 'checking' && waited > 0 ? ` ${waited}s` : ''}
-      </span>
+    <button type="button" onClick={() => void run()} className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] ${color}`}>
+      <span className={`h-2 w-2 rounded-full ${probe.state === 'checking' ? 'animate-pulse bg-slate-400' : probe.state === 'ok' ? 'bg-emerald-400' : probe.state === 'slow' ? 'bg-amber-400' : probe.state === 'down' ? 'bg-rose-400' : 'bg-slate-500'}`} />
+      {t('workers.router.label')} · {t(label as never)}
+      {probe.state === 'checking' && waited > 0 ? ` ${waited}s` : ''}
+      {(probe.state === 'ok' || probe.state === 'slow') && ` ${Math.round(probe.ms ?? 0)}ms`}
     </button>
-  )
-}
-
-/**
- * 房间 = 参考图底图。悬浮卡的位置用真卡片盖死，所以底图里那张画出来的卡永远不露。
- * 位置是按 1536x700 原图量的百分比，换图要重新量。
- */
-const CARD_SPOT = { left: '35.4%', top: '54.5%', width: '27.6%', height: '38.5%' }
-
-function OfficeRoom({ children }: { children?: React.ReactNode }) {
-  return (
-    <div
-      data-testid="workers-room"
-      className="relative mx-auto w-full max-w-[1500px] overflow-hidden rounded-lg shadow-2xl"
-      style={{
-        aspectRatio: '1536 / 700',
-        backgroundImage: `url(${roomArt})`,
-        backgroundSize: '100% 100%',
-        backgroundColor: '#1a1410',
-      }}
-    >
-      {/* 窗光呼吸：底图是死的，这层给它一点活气 */}
-      <div
-        className="pointer-events-none absolute inset-0"
-        style={{
-          background: 'radial-gradient(115% 75% at 50% -8%, rgba(255,212,150,.95), transparent 62%)',
-          animation: 'wf-breathe 7s ease-in-out infinite',
-        }}
-      />
-      <div className="absolute" style={CARD_SPOT}>
-        {children}
-      </div>
-    </div>
-  )
-}
-
-/** 小图标：描边风，跟参考图里的细线图标一个调。 */
-function RowIcon({ path }: { path: string }) {
-  return (
-    <svg viewBox="0 0 16 16" className="h-[13px] w-[13px] shrink-0" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-      <path d={path} />
-    </svg>
-  )
-}
-const ICON = {
-  tag: 'M2 7.2V2.6h4.6l7 7-4.6 4.6-7-7Zm2.4-2.6h.01',
-  bolt: 'M8.6 1.6 3.6 9h3.2l-.8 5.4L11.4 7H8.2l.4-5.4Z',
-  clock: 'M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12Zm0-9.2V8l2.2 1.4',
-  swap: 'M2.4 5.2h9.2l-2-2m2 7.6H2.4l2 2',
-  db: 'M8 1.8c2.8 0 5 .9 5 1.9v8.6c0 1-2.2 1.9-5 1.9s-5-.9-5-1.9V3.7c0-1 2.2-1.9 5-1.9Zm5 1.9c0 1-2.2 1.9-5 1.9s-5-.9-5-1.9',
-}
-
-/** 悬浮详情卡：盖住底图里那张画好的卡，显示当前选中会话的真实数据。 */
-function DetailCard({
-  row, chat, status, now,
-}: {
-  row: WorkerRow
-  chat: PerSessionState | undefined
-  status: PetSessionStatus
-  now: number
-}) {
-  const t = useTranslation()
-  const usage = chat?.tokenUsage
-  const session = useSessionStore((s) => s.sessions.find((item) => item.id === row.id))
-  const tone = statusTone(status, false)
-
-  // 本轮计时：卡片一挂上就开始数，状态掉出 running 就清空。
-  const turnStart = useRef<number | null>(null)
-  if (status === 'running' && turnStart.current === null) turnStart.current = now
-  if (status !== 'running') turnStart.current = null
-
-  const sessionSeconds = session?.createdAt ? (now - Date.parse(session.createdAt)) / 1000 : null
-  const turnSeconds = turnStart.current ? (now - turnStart.current) / 1000 : null
-  const running = status === 'running' || status === 'waiting'
-
-  return (
-    <div
-      data-testid={`worker-detail-${row.id}`}
-      className="relative flex h-full w-full flex-col overflow-hidden rounded-[14px] border-2 border-sky-400/70 bg-[#0c1420]/95 p-[3.5%] text-left shadow-[0_0_40px_rgba(56,189,248,.22)] backdrop-blur-[2px]"
-    >
-      {running && (
-        <span
-          className="pointer-events-none absolute inset-x-0 top-0 h-[16%]"
-          style={{
-            background: 'linear-gradient(180deg, transparent, rgba(125,211,252,.18), transparent)',
-            animation: 'wf-scan 3.4s linear infinite',
-          }}
-        />
-      )}
-      <div className="flex items-center gap-2">
-        <svg viewBox="0 0 16 16" className="h-[15px] w-[15px] shrink-0 text-sky-300" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M2 4.4A1.4 1.4 0 0 1 3.4 3h2.4l1.4 1.6h5A1.4 1.4 0 0 1 13.6 6v5.6A1.4 1.4 0 0 1 12.2 13H3.4A1.4 1.4 0 0 1 2 11.6V4.4Z" />
-        </svg>
-        <span
-          data-testid="worker-detail-title"
-          className="min-w-0 flex-1 truncate text-[clamp(11px,1.15vw,17px)] font-semibold text-white"
-        >
-          {row.title || t('workers.untitled')}
-        </span>
-        <span className={`flex shrink-0 items-center gap-1 rounded-full px-2 py-[2px] text-[clamp(8px,.72vw,11px)] ${tone.badge}`}>
-          <span className={`h-[5px] w-[5px] rounded-full ${tone.dot} ${running ? 'animate-pulse' : ''}`} />
-          {t(STATUS_LABEL[status] as never)}
-        </span>
-      </div>
-
-      <div className="my-[3%] border-t border-dashed border-white/20" />
-
-      <div className="truncate font-mono text-[clamp(8px,.8vw,12px)] text-slate-300">{row.workDir || '—'}</div>
-      <div className="truncate text-[clamp(8px,.78vw,11px)] text-slate-400">
-        {t('workers.detail.terminal')} · {row.providerName}
-      </div>
-
-      <div className="mt-[3.5%] space-y-[2.4%] text-[clamp(8px,.82vw,12px)] text-slate-300">
-        <DetailRow
-          icon={ICON.bolt}
-          label={t(STATUS_LABEL[status] as never)}
-          value={turnSeconds !== null ? formatDuration(turnSeconds) : '—'}
-        />
-        <DetailRow
-          icon={ICON.clock}
-          label={t('workers.detail.turn')}
-          value={`${turnSeconds !== null ? formatDuration(turnSeconds) : '—'} · ${t('workers.detail.sessionAge', { duration: formatDuration(sessionSeconds ?? 0) })}`}
-        />
-        <DetailRow icon={ICON.tag} label={t('workers.detail.kind')} value={row.modelId} />
-        <DetailRow
-          icon={ICON.swap}
-          label={t('workers.detail.io')}
-          value={`${formatTokenCount(usage?.input_tokens)} · ${formatTokenCount(usage?.output_tokens)}`}
-        />
-        <DetailRow
-          icon={ICON.db}
-          label={t('workers.detail.cache')}
-          value={`${formatTokenCount(usage?.cache_creation_tokens)} · ${t('workers.detail.cacheRead', { value: formatTokenCount(usage?.cache_read_tokens) })}`}
-        />
-      </div>
-
-      <div className="mt-auto flex items-center gap-2 pt-[3%]">
-        <span className={`rounded border px-1.5 py-px text-[clamp(8px,.78vw,11px)] ${
-          row.kind === 'free' ? 'border-emerald-400/40 bg-emerald-500/15 text-emerald-300'
-            : row.kind === 'paid' ? 'border-amber-400/40 bg-amber-500/15 text-amber-300'
-              : 'border-slate-400/40 bg-slate-500/15 text-slate-300'
-        }`}>
-          {t(row.kind === 'free' ? 'workers.free' : row.kind === 'paid' ? 'workers.paid' : 'workers.unknown')}
-        </span>
-        {totalTokens(usage) > 0 && (
-          <span className="text-[clamp(8px,.78vw,11px)] text-slate-400">{formatTokenCount(totalTokens(usage))} tck</span>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function DetailRow({ icon, label, value }: { icon: string; label: string; value: string }) {
-  return (
-    <div className="flex items-center gap-2">
-      <span className="text-slate-400">
-        <RowIcon path={icon} />
-      </span>
-      <span className="w-[13%] shrink-0 truncate text-slate-400">{label}</span>
-      <span className="min-w-0 flex-1 truncate font-medium text-slate-100">{value}</span>
-    </div>
-  )
-}
-
-/** 底部会话卡：一块一张，样式照参考图（图标块 + 标题 + 路径 + chip 行 + 状态徽章）。 */
-function SessionStrip({
-  rows, chats, statuses, pinned, onPin, now,
-}: {
-  rows: WorkerRow[]
-  chats: Record<string, PerSessionState | undefined>
-  statuses: Record<string, PetSessionStatus>
-  pinned: string | null
-  onPin: (id: string | null) => void
-  now: number
-}) {
-  const t = useTranslation()
-  const sessions = useSessionStore((s) => s.sessions)
-  return (
-    <div className="flex flex-shrink-0 gap-3 overflow-x-auto px-4 py-3">
-      {rows.map((row) => {
-        const status = statuses[row.id] ?? 'idle'
-        const chat = chats[row.id]
-        const turns = totalTokens(chat?.tokenUsage)
-        const createdAt = sessions.find((item) => item.id === row.id)?.createdAt
-        const sessionSeconds = createdAt ? (now - Date.parse(createdAt)) / 1000 : null
-        const tone = statusTone(status, pinned === row.id)
-        const kind = KIND_CHIP[row.kind]
-        const mascot = MASCOT_SRC[mascotFor(row.id)] ?? MASCOT_SRC.code
-
-        return (
-          <button
-            key={row.id}
-            type="button"
-            data-testid={`worker-chip-${row.id}`}
-            onMouseEnter={() => onPin(row.id)}
-            onMouseLeave={() => onPin(null)}
-            onClick={() => useTabStore.getState().openTab(row.id, row.title || t('workers.untitled'), 'session')}
-            className={`relative flex min-w-[268px] max-w-[420px] flex-1 shrink-0 items-start gap-3 overflow-hidden rounded-2xl border-2 px-3.5 py-3 text-left ${tone.border}`}
-            style={{ backgroundColor: '#111826' }}
-          >
-            {(status === 'running' || status === 'waiting') && (
-              <span
-                className="pointer-events-none absolute inset-y-0 w-1/3"
-                style={{
-                  background: 'linear-gradient(90deg, transparent, rgba(255,255,255,.07), transparent)',
-                  animation: 'wf-sheen 3.2s linear infinite',
-                }}
-              />
-            )}
-            <span className="grid h-[52px] w-[52px] shrink-0 place-items-center rounded-xl bg-white/[.06]">
-              <img src={mascot} alt="" className="h-9 w-9 object-contain" />
-            </span>
-
-            <span className="min-w-0 flex-1">
-              <span className="flex items-center gap-2">
-                <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-white">
-                  {row.title || t('workers.untitled')}
-                </span>
-                <span className={`flex shrink-0 items-center gap-1 rounded-full px-2 py-[2px] text-[11px] ${tone.badge}`}>
-                  <span className={`h-[6px] w-[6px] rounded-full ${tone.dot} ${status === 'running' || status === 'waiting' ? 'animate-pulse' : ''}`} />
-                  {t(STATUS_LABEL[status] as never)}
-                </span>
-              </span>
-
-              <span className="mt-[3px] block truncate text-[12px] text-slate-400">{row.workDir || '—'}</span>
-
-              <span className="mt-2.5 flex flex-wrap items-center gap-1.5 text-[11px]">
-                <Chip className={kind.className} icon={ICON.db} text={t(kind.label as never)} />
-                {turns > 0 && <Chip icon={ICON.swap} text={`${formatTokenCount(turns)} tck`} />}
-                {sessionSeconds !== null && <Chip icon={ICON.clock} text={formatDuration(sessionSeconds)} />}
-              </span>
-            </span>
-          </button>
-        )
-      })}
-    </div>
-  )
-}
-
-function Chip({ icon, text, className = '' }: { icon: string; text: string; className?: string }) {
-  return (
-    <span className={`inline-flex items-center gap-1 rounded-md bg-white/[.07] px-2 py-1 ${className}`}>
-      <RowIcon path={icon} />
-      <span className="truncate text-slate-200">{text}</span>
-    </span>
   )
 }

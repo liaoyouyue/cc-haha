@@ -1,3 +1,4 @@
+import { getMemberWorkState } from '../components/agentTeams/agentTeamsModel'
 import type { TeamMember, TeamWorkbenchTask } from '../types/team'
 
 /**
@@ -8,12 +9,36 @@ import type { TeamMember, TeamWorkbenchTask } from '../types/team'
  * 队里（发条消息能叫回来），跟真正离队的 `exited` 不是一回事 —— 前者显示成"离席"。
  */
 export type MemberPose = 'working' | 'idle' | 'away' | 'error' | 'gone'
+export type OfficePoint = { x: number; y: number; scale: number }
+
+// ponytail: lanes follow this fixed room artwork; remeasure them if the room changes.
+export function officeRoute(from: OfficePoint, to: OfficePoint): OfficePoint[] {
+  if (from.x === to.x && from.y === to.y) return [to]
+  const lane = (point: OfficePoint) => point.x <= 4 ? point.y : point.y >= 65 ? 78 : point.y >= 40 ? 57 : 37
+  const fromLane = lane(from)
+  const toLane = lane(to)
+  const inMeeting = (point: OfficePoint) => point.x >= 36 && point.y < 37
+  if (inMeeting(from) && inMeeting(to)) return [from, to]
+  const exit = (point: OfficePoint, y: number): OfficePoint[] => inMeeting(point)
+    ? [{ x: 36, y: 35.5, scale: .65 }, { x: 34, y: 37, scale: .68 }]
+    : [{ x: point.x, y, scale: y >= 65 ? .94 : y >= 40 ? .78 : .68 }]
+  const route = [from, ...exit(from, fromLane)]
+  if (fromLane !== toLane) {
+    route.push(
+      { x: 4, y: fromLane, scale: route[route.length - 1]!.scale },
+      { x: 4, y: toLane, scale: toLane >= 65 ? .94 : toLane >= 40 ? .78 : .68 },
+    )
+  }
+  route.push(...exit(to, toLane).reverse(), to)
+  return route.filter((point, index) => index === 0 || point.x !== route[index - 1]!.x || point.y !== route[index - 1]!.y)
+}
 
 export function memberPose(member: TeamMember): MemberPose {
-  if (member.status === 'error' || member.autoRetry) return 'error'
-  if (member.activity === 'exited') return 'gone'
-  if (member.activity === 'stopped') return 'away'
-  if (member.activity === 'active') return 'working'
+  const state = getMemberWorkState(member)
+  if (state === 'working') return 'working'
+  if (state === 'stopped') return 'away'
+  if (state === 'exited') return 'gone'
+  if (state === 'error' || state === 'retrying') return 'error'
   return 'idle'
 }
 

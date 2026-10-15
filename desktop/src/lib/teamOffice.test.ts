@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { assignDesks, memberPose, memberTask, taskHeadline, teamProgress } from './teamOffice'
+import { assignDesks, memberPose, memberTask, officeRoute, taskHeadline, teamProgress } from './teamOffice'
 import type { TeamMember, TeamWorkbenchTask } from '../types/team'
 
 function member(over: Partial<TeamMember>): TeamMember {
@@ -21,8 +21,8 @@ describe('memberPose', () => {
     expect(memberPose(member({ activity: 'exited' }))).toBe('gone')
   })
 
-  it('待重试的算出错，压过 activity', () => {
-    expect(memberPose(member({ status: 'running', activity: 'active', autoRetry: { attempt: 1, max: 3, nextAt: 0 } }))).toBe('error')
+  it('活跃新一轮压过旧重试记录，停下来后才显示出错', () => {
+    expect(memberPose(member({ status: 'running', activity: 'active', autoRetry: { attempt: 1, max: 3, nextAt: 0 } }))).toBe('working')
     expect(memberPose(member({ status: 'error' }))).toBe('error')
   })
 })
@@ -37,6 +37,28 @@ describe('memberTask / taskHeadline', () => {
   it('没有 currentTask 时不该瞎指一个任务', () => {
     expect(memberTask(member({}), [task({})])).toBeUndefined()
     expect(taskHeadline(undefined)).toBe('')
+  })
+})
+
+describe('officeRoute', () => {
+  it('从前排去会议室走左侧过道和门口，不横穿两排桌子', () => {
+    const from = { x: 49, y: 73.5, scale: .9 }
+    const to = { x: 51.8, y: 35, scale: .62 }
+    const route = officeRoute(from, to)
+    expect(route.map(({ x, y }) => [x, y])).toEqual([
+      [49, 73.5], [49, 78], [4, 78], [4, 37], [34, 37], [36, 35.5], [51.8, 35],
+    ])
+    expect(officeRoute(to, from)).toEqual([...route].reverse())
+    expect(officeRoute(to, to)).toEqual([to])
+  })
+
+  it('任务变化时从当前过道位置回工位，不瞬移', () => {
+    const from = { x: 4, y: 63, scale: .8 }
+    const to = { x: 42, y: 56.5, scale: .68 }
+    const route = officeRoute(from, to)
+    expect(route[0]).toEqual(from)
+    expect(route[route.length - 1]).toEqual(to)
+    expect(route.slice(0, -2).every((point) => point.x === 4)).toBe(true)
   })
 })
 
