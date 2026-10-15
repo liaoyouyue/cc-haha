@@ -1,0 +1,7 @@
+# Extra dependencies for the AI 视觉值守 Python fallback only.
+#
+# The shipped worker (src-tauri/binaries/visual-guard-worker) already bundles
+# all of this, so a normal install never reads this file. It exists so the
+# Computer Use venv does not grow by ~240 MB of OCR/ONNX stack for users who
+# never open the visual guard page.
+rapidocr_onnxruntime>=1.4.4,<2

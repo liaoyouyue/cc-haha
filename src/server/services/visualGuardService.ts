@@ -10,6 +10,7 @@ import { getNetworkProxyFetchOptions, loadNetworkSettings } from './networkSetti
 import { getPresetAuthStrategy, getPresetDefaultEnv, providerNeedsProxy, resolveProviderApiFormat, resolveProviderApiKey } from './providerRuntimeEnv.js'
 import { ProviderService } from './providerService.js'
 import WORKER_SOURCE from '../../../runtime/visual_guard_worker.py' with { type: 'text' }
+import VISUAL_GUARD_REQUIREMENTS from '../../../runtime/requirements-visual-guard.txt' with { type: 'text' }
 
 export type VisualGuardConfig = {
   hwnd?: number
@@ -35,6 +36,16 @@ const pythonPath = process.env.CC_HAHA_VISUAL_GUARD_PYTHON || path.join(configRo
 // build re-unpacks to %TEMP% on every start (~10s) and runs as a bootloader
 // parent plus a child, which costs both latency and an extra process.
 const bundledWorkerPath = path.join(path.dirname(process.execPath), 'visual-guard-worker', 'visual-guard-worker.exe')
+
+function runPython(executable: string, args: string[]): Promise<{ code: number; stderr: string }> {
+  return new Promise(resolve => {
+    const child = spawn(executable, args, { windowsHide: true, env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } })
+    let stderr = ''
+    child.stderr?.on('data', chunk => { stderr += String(chunk) })
+    child.once('error', error => resolve({ code: -1, stderr: String(error) }))
+    child.once('exit', code => resolve({ code: code ?? -1, stderr }))
+  })
+}
 
 async function exists(target: string): Promise<boolean> {
   try {
@@ -69,6 +80,7 @@ export class VisualGuardService {
   private config: VisualGuardConfig = { ...defaults }
   private transcript = ''
   private draft = ''
+  private lastBlockedReason = ''
   private logs: string[] = []
   private context: string[] = []
   private generation: Promise<void> | null = null
@@ -206,6 +218,8 @@ export class VisualGuardService {
         throw new Error('视觉值守运行时不可用：缺少 visual-guard-worker.exe，且未安装 Python 运行环境')
       } else if (process.env.CC_HAHA_VISUAL_GUARD_PYTHON) {
         throw new Error('CC_HAHA_VISUAL_GUARD_PYTHON 指向的文件不存在')
+      } else {
+        await this.ensureOcrDependencies()
       }
       const child = spawn(executable, args, {
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -233,6 +247,22 @@ export class VisualGuardService {
     return this.starting
   }
 
+  /**
+   * The Computer Use venv deliberately does not ship the ~240 MB OCR stack, so
+   * the Python fallback installs it once, on the request that actually needs it.
+   */
+  private async ensureOcrDependencies(): Promise<void> {
+    const probe = await runPython(pythonPath, ['-c', 'import rapidocr_onnxruntime'])
+    if (probe.code === 0) return
+    const requirementsPath = path.join(configRoot, 'requirements-visual-guard.txt')
+    await writeFile(requirementsPath, VISUAL_GUARD_REQUIREMENTS, 'utf8')
+    this.log('正在安装视觉值守所需的 OCR 依赖（仅首次，约 240MB）…')
+    const install = await runPython(pythonPath, ['-m', 'pip', 'install', '-r', requirementsPath])
+    if (install.code !== 0) {
+      throw new Error(`OCR 依赖安装失败：${sanitize(install.stderr.slice(-500))}`)
+    }
+  }
+
   private async request(action: string, args: object = {}, timeout = 30_000): Promise<unknown> {
     await this.ensureWorker()
     return this.requestRaw(action, args, timeout)
@@ -258,6 +288,13 @@ export class VisualGuardService {
     if (message.event) {
       if (message.event === 'ocr') void this.acceptOcr(message.payload)
       else if (message.event === 'duplicate') this.log('画面内容重复，已跳过')
+      else if (message.event === 'blocked') {
+        // The worker refused to capture (target not foreground / occluded), so
+        // nothing was read and no model call happened. Stay running.
+        const reason = sanitize((message.payload as { message?: string })?.message ?? '')
+        if (reason !== this.lastBlockedReason) this.log(reason)
+        this.lastBlockedReason = reason
+      }
       else if (message.event === 'error') {
         this.state = 'error'
         this.log(`识别错误：${sanitize((message.payload as { message?: string })?.message)}`)
