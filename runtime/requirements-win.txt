@@ -5,3 +5,4 @@ pywin32>=306
 psutil>=5.9.0
 pyperclip>=1.8.2
 screeninfo>=0.8.1
+rapidocr_onnxruntime>=1.4.4,<2

@@ -4,6 +4,7 @@ import { EmptySession } from '../../pages/EmptySession'
 import { ActiveSession } from '../../pages/ActiveSession'
 import { ScheduledTasks } from '../../pages/ScheduledTasks'
 import { Workers } from '../../pages/Workers'
+import { VisualGuard } from '../../pages/VisualGuard'
 import { ExtensionMarket } from '@/pages/ExtensionMarket'
 import { Settings } from '../../pages/Settings'
 import { TerminalSettings } from '../../pages/TerminalSettings'
@@ -57,6 +58,8 @@ export function ContentRouter({ homePage }: ContentRouterProps = {}) {
     page = <ScheduledTasks />
   } else if (activeTabType === 'workers') {
     page = <Workers />
+  } else if (activeTabType === 'visual-guard') {
+    page = <VisualGuard />
   } else if (activeTabType === 'connectors' || activeTabType === 'market') {
     page = <ExtensionMarket />
   } else if (activeTabType === 'subagent') {
