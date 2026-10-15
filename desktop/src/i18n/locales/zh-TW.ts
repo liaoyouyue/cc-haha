@@ -1190,6 +1190,7 @@ export const zh: Record<TranslationKey, string> = {
   'settings.activity.cacheHitRateDetail': '快取讀取 /（輸入 + 快取讀取 + 快取寫入）',
   'settings.activity.activeRateDetail': '{total} 天中活躍 {active} 天',
   'settings.activity.costComplete': '所有模型皆有公開費率',
+  'settings.activity.costBreakdown': '已計價 {priced} · 不含 {count} 個未定價模型',
   'settings.activity.dims.input': '輸入',
   'settings.activity.dims.output': '輸出',
   'settings.activity.dims.cacheRead': '快取讀取',

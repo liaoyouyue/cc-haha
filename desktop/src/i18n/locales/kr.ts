@@ -1193,6 +1193,7 @@ export const kr: Record<TranslationKey, string> = {
   'settings.activity.cacheHitRateDetail': '캐시 읽기 / (입력 + 캐시 읽기 + 캐시 쓰기)',
   'settings.activity.activeRateDetail': '{total}일 중 {active}일',
   'settings.activity.costComplete': '모든 모델에 공개 요금 있음',
+  'settings.activity.costBreakdown': '유료 {priced} · 요금 미설정 {count}개 제외',
   'settings.activity.dims.input': '입력',
   'settings.activity.dims.output': '출력',
   'settings.activity.dims.cacheRead': '캐시 읽기',

@@ -1189,6 +1189,7 @@ export const zh: Record<TranslationKey, string> = {
   'settings.activity.cacheHitRateDetail': '缓存读取 /（输入 + 缓存读取 + 缓存写入）',
   'settings.activity.activeRateDetail': '{total} 天中活跃 {active} 天',
   'settings.activity.costComplete': '所有模型均有公开费率',
+  'settings.activity.costBreakdown': '已计价 {priced} · 不含 {count} 个未定价模型',
   'settings.activity.dims.input': '输入',
   'settings.activity.dims.output': '输出',
   'settings.activity.dims.cacheRead': '缓存读取',

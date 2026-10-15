@@ -1090,11 +1090,17 @@ export function ActivitySettings() {
   ]
   const costCard = {
     label: t('settings.activity.estimatedCost'),
-    value: formatCostUSD(windowTotals.costUSD, locale),
-    // A partial total presented as a complete one would understate spend for anyone running
-    // third-party models, so say what it leaves out.
+    // A `$0.00` headline reads as "the whole bill is free", which is exactly
+    // wrong when the zero comes from unpriced models. Show a dash there and
+    // move the priced figure into the detail, where it cannot be misread.
+    value: unpricedInWindow > 0 && windowTotals.costUSD === 0
+      ? '—'
+      : formatCostUSD(windowTotals.costUSD, locale),
     detail: unpricedInWindow > 0
-      ? t('settings.activity.costExcludesModels', { count: unpricedInWindow })
+      ? t('settings.activity.costBreakdown', {
+          priced: formatCostUSD(windowTotals.costUSD, locale),
+          count: unpricedInWindow,
+        })
       : t('settings.activity.costComplete'),
   }
   const toolSummary = {

@@ -1191,6 +1191,7 @@ export const jp: Record<TranslationKey, string> = {
   'settings.activity.cacheHitRateDetail': 'キャッシュ読み取り /（入力 + キャッシュ読み取り + キャッシュ書き込み）',
   'settings.activity.activeRateDetail': '{total} 日中 {active} 日',
   'settings.activity.costComplete': 'すべてのモデルに公開料金あり',
+  'settings.activity.costBreakdown': '有料 {priced} · 料金未設定 {count} 件を除外',
   'settings.activity.dims.input': '入力',
   'settings.activity.dims.output': '出力',
   'settings.activity.dims.cacheRead': 'キャッシュ読取',

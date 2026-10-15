@@ -461,6 +461,32 @@ describe('ActivitySettings', () => {
     expect(within(unpriced).getByText('no published rate')).toBeInTheDocument()
   })
 
+  it('separates priced cost from unpriced models instead of reading $0 as the whole bill', async () => {
+    getStatsMock.mockResolvedValueOnce({
+      ...activityResponse,
+      modelUsage: {
+        'glm-4.6': { inputTokens: 40_000, outputTokens: 2_000, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0 },
+        'deepseek-flash': { inputTokens: 5_000, outputTokens: 500, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0 },
+      },
+      unpricedModels: ['glm-4.6', 'deepseek-flash'],
+      dailyModelUsage: [
+        { date: '2026-05-09', model: 'glm-4.6', inputTokens: 40_000, outputTokens: 2_000, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0 },
+        { date: '2026-05-09', model: 'deepseek-flash', inputTokens: 5_000, outputTokens: 500, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0 },
+      ],
+    })
+    render(<ActivitySettings />)
+
+    await flushActivityLoad()
+    openView('Model cost')
+
+    // The headline must NOT be a bare "$0.00", which would read as "free".
+    expect(screen.queryByText('$0.00')).not.toBeInTheDocument()
+    // The headline dash and the per-row dashes for unpriced models both render.
+    expect(screen.getAllByText('—').length).toBeGreaterThan(0)
+    // The detail names both halves: what is priced, and what is excluded.
+    expect(screen.getByText('Priced $0.00 · 2 unpriced models excluded')).toBeInTheDocument()
+  })
+
   it('narrows the model sheet in place, without refetching on every range change', async () => {
     render(<ActivitySettings />)
 

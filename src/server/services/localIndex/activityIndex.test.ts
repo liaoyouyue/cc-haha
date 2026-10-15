@@ -269,11 +269,26 @@ describe('activity index Token Intelligence reads', () => {
     const at = (rows: Array<ReturnType<typeof firstOf>>) =>
       rows.reduce((sum, row) => sum + totalOf(row), 0)
 
-    // The 04-20 row falls outside the window and must leave every grain, not
-    // just the one the chart happens to read.
+    // The 04-20 row falls outside the 7-day window and must leave every grain,
+    // not just the one the chart happens to read. A 30-day window still holds
+    // it, so all three grains keep the full total there.
     expect(at(index.aggregateDailyModelUsage('7d', NOW))).toBe(TOTAL_TOKENS - OLD_TOKENS)
     expect(at(index.aggregateProjectUsage('7d', NOW))).toBe(TOTAL_TOKENS - OLD_TOKENS)
     expect(at(index.aggregateSessionUsage('7d', NOW))).toBe(TOTAL_TOKENS - OLD_TOKENS)
+    expect(at(index.aggregateDailyModelUsage('30d', NOW))).toBe(TOTAL_TOKENS)
+    expect(at(index.aggregateProjectUsage('30d', NOW))).toBe(TOTAL_TOKENS)
+    expect(at(index.aggregateSessionUsage('30d', NOW))).toBe(TOTAL_TOKENS)
+  })
+
+  it('derives totalDays from the daily-activity span, not session timestamps', async () => {
+    const index = await seedIndex()
+    const stats = index.aggregateActivity('all', NOW)
+
+    // Session timestamps span 05-08..05-09 (2 days); the daily-activity table
+    // spans 04-20..05-09 (20 days). The rate denominator must be the latter —
+    // archived main transcripts would otherwise collapse it to "today".
+    expect(stats.totalDays).toBe(20)
+    expect(stats.activeDays).toBe(3)
   })
 
   it('honours the session limit and keeps the largest sessions', async () => {

@@ -1190,6 +1190,7 @@ Row 9, all 8 cells: continuing from straight down, turning left through lower-le
   'settings.activity.cacheHitRateDetail': 'Cache reads / (input + cache reads + cache writes)',
   'settings.activity.activeRateDetail': '{active} of {total} days',
   'settings.activity.costComplete': 'Every model has a published rate',
+  'settings.activity.costBreakdown': 'Priced {priced} · {count} unpriced models excluded',
   'settings.activity.dims.input': 'Input',
   'settings.activity.dims.output': 'Output',
   'settings.activity.dims.cacheRead': 'Cache read',

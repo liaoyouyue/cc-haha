@@ -1,7 +1,6 @@
 import { feature } from 'bun:bundle'
 import type { ModelUsage } from '../../../entrypoints/agentSdkTypes.js'
 import {
-  countUtcCalendarDaysInclusive,
   processedStatsToClaudeCodeStats,
   resolveStatsDateRange,
   type ClaudeCodeStats,
@@ -738,10 +737,10 @@ export function createActivityIndex(
               : latest,
             null,
           ) ?? dailyActivity.at(-1)?.date ?? null
-          result.totalDays = countUtcCalendarDaysInclusive(
-            result.firstSessionDate,
-            result.lastSessionDate,
-          )
+          // totalDays is left as `processedStatsToClaudeCodeStats` derived it
+          // from the daily-activity span; recomputing it here from session
+          // timestamps collapsed it to 1 on machines whose main transcripts
+          // are archived and only subagents remain.
         }
         if (
           shotStatsEnabled &&
