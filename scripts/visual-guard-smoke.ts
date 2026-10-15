@@ -6,41 +6,22 @@ import { spawn } from 'node:child_process'
 const worker = process.env.CC_HAHA_VISUAL_GUARD_WORKER
 if (!worker) throw new Error('CC_HAHA_VISUAL_GUARD_WORKER is required')
 const python = process.env.CC_HAHA_VISUAL_GUARD_PYTHON
-if (!python) throw new Error('CC_HAHA_VISUAL_GUARD_PYTHON is required for the mock chat window')
+if (!python) throw new Error('CC_HAHA_VISUAL_GUARD_PYTHON is required for the mock window')
 const root = await mkdtemp(path.join(tmpdir(), 'visual-guard-smoke-'))
 process.env.CLAUDE_CONFIG_DIR = root
 process.env.CC_HAHA_TRACE_API_CALLS = '0'
 
-const mock = Bun.serve({
-  port: 0,
-  fetch: async request => {
-    if (!request.url.endsWith('/chat/completions')) return new Response('not found', { status: 404 })
-    return Response.json({
-      id: 'smoke', object: 'chat.completion', created: 0, model: 'smoke-model',
-      choices: [{ index: 0, message: { role: 'assistant', content: '这是待人工审核的测试草稿。' }, finish_reason: 'stop' }],
-      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-    })
-  },
-})
-
 const chatCode = `
 import tkinter as tk
-root=tk.Tk(); root.title('AI视觉值守-集成测试聊天'); root.geometry('720x420+80+80')
-tk.Label(root,text='模拟客户会话（仅本地测试）',font=('Microsoft YaHei UI',16)).pack(pady=16)
-tk.Label(root,text='客户：你好，请问基础服务怎么报价？',font=('Microsoft YaHei UI',14),bg='white').pack(anchor='w',padx=30,pady=20)
-tk.Label(root,text='我：您好，我先了解一下您的具体需求。',font=('Microsoft YaHei UI',14),bg='#d1fae5').pack(anchor='e',padx=30,pady=20)
+root=tk.Tk(); root.title('AI视觉值守-集成测试面版'); root.geometry('760x420+80+80')
+tk.Label(root,text='客户：你好，请问基础服务怎么报价？',font=('Microsoft YaHei UI',14)).pack(pady=24)
+tk.Label(root,text='我：您好，我先了解一下您的具体需求。',font=('Microsoft YaHei UI',14)).pack(pady=24)
 root.mainloop()
 `
 const chat = spawn(python, ['-c', chatCode], { windowsHide: true })
 
-const { ProviderService } = await import('../src/server/services/providerService.ts')
 const { VisualGuardService } = await import('../src/server/services/visualGuardService.ts')
 const { drainTraceCaptureForTests, clearTraceCaptureStateForTests } = await import('../src/services/api/traceCapture.ts')
-const provider = await new ProviderService().addProvider({
-  presetId: 'custom', name: 'Smoke Provider', apiKey: 'dummy',
-  baseUrl: `http://127.0.0.1:${mock.port}/v1`, apiFormat: 'openai_chat',
-  models: { main: 'smoke-model', haiku: 'smoke-model', sonnet: 'smoke-model', opus: 'smoke-model' },
-})
 const service = new VisualGuardService()
 await service.init()
 
@@ -54,41 +35,41 @@ async function waitFor<T>(read: () => Promise<T | undefined>, label: string): Pr
   throw new Error(`timeout waiting for ${label}`)
 }
 
+const fail = (message: string): never => { throw new Error(message) }
+
 try {
   const target = await waitFor(async () => {
     const windows = await service.windows() as Array<{ hwnd: number; title: string; rect: [number, number, number, number] }>
-    return windows.find(window => window.title === 'AI视觉值守-集成测试聊天')
+    return windows.find(window => window.title === 'AI视觉值守-集成测试面版')
   }, 'mock window')
-  await service.saveConfig({
-    hwnd: target.hwnd, region: [0, 0, target.rect[2], target.rect[3]], interval: 1,
-    providerId: provider.id, model: 'smoke-model', company: '测试公司，基础服务按需求报价。',
-  })
-  await service.recognize()
-  const recognized = service.status()
-  if (!recognized.transcript.includes('报价')) throw new Error(`OCR failed: ${recognized.transcript}`)
-  if (!recognized.draft.includes('待人工审核')) throw new Error(`draft failed: ${recognized.draft}`)
+  await service.saveConfig({ hwnd: target.hwnd, region: [0, 0, target.rect[2], target.rect[3]] })
 
-  await service.start()
-  let duplicateBlocked = false
-  try { await service.start() } catch { duplicateBlocked = true }
-  if (!duplicateBlocked) throw new Error('duplicate start was not blocked')
-  await service.pause()
-  if (service.status().state !== 'paused') throw new Error('pause failed')
-  await service.resume()
-  await service.stop()
-  if (service.status().workerPid !== null) throw new Error('worker survived stop')
+  const sight = await service.see() as { lines: Array<{ text: string; center: [number, number] }>; text: string }
+  if (!sight.text.includes('报价')) fail(`see() did not read the window: ${sight.text}`)
+  const line = sight.lines.find(item => item.text.includes('报价'))
+  if (!line) fail('see() returned no line with coordinates')
+  const [x, y] = line.center
+  if (x < target.rect[0] || x > target.rect[0] + target.rect[2]) fail(`coordinate ${x} is outside the window`)
+  if (y < target.rect[1] || y > target.rect[1] + target.rect[3]) fail(`coordinate ${y} is outside the window`)
 
-  await service.start()
+  const found = await service.find('报价') as { matches: Array<{ text: string }> }
+  if (!found.matches.length) fail('find() returned no match for text that is on screen')
+  const missing = await service.find('这句话不可能出现在屏幕上') as { matches: Array<unknown> }
+  if (missing.matches.length) fail('find() matched text that is not on screen')
+
+  await service.see()
   const pid = service.status().workerPid
-  if (!pid) throw new Error('worker restart failed')
+  if (!pid) fail('worker did not start')
   process.kill(pid)
-  await waitFor(async () => service.status().state === 'error' ? true : undefined, 'abnormal exit state')
-  if (service.status().workerPid !== null) throw new Error('dead worker remained registered')
-  console.log(JSON.stringify({ ocr: true, draft: true, duplicateStart: true, pauseResume: true, stopCleanup: true, crashRecovery: true }))
+  await waitFor(async () => service.status().workerPid === null ? true : undefined, 'worker crash handling')
+  await service.see()
+
+  await service.dispose()
+  if (service.status().workerPid !== null) fail('worker survived dispose()')
+  console.log(JSON.stringify({ see: true, coordinates: true, find: true, findMiss: true, crashRecovery: true, stopCleanup: true }))
 } finally {
   await service.dispose()
   chat.kill()
-  mock.stop(true)
   await drainTraceCaptureForTests()
   clearTraceCaptureStateForTests()
   for (let attempt = 0; attempt < 10; attempt++) {

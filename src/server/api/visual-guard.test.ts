@@ -16,11 +16,11 @@ test('config accepts bounded desktop settings without secrets', async () => {
   const request = new Request('http://localhost/api/visual-guard/config', {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ hwnd: 123, region: [1, 2, 300, 200], interval: 5, providerId: 'provider', model: 'model' }),
+    body: JSON.stringify({ hwnd: 123, region: [1, 2, 300, 200] }),
   })
   const response = await handleVisualGuardApi(request, ['api', 'visual-guard', 'config'])
   expect(response.status).toBe(200)
-  expect(await response.json()).toMatchObject({ hwnd: 123, region: [1, 2, 300, 200], interval: 5 })
+  expect(await response.json()).toMatchObject({ hwnd: 123, region: [1, 2, 300, 200] })
 })
 
 test('remote browser cannot access desktop visual guard controls', async () => {

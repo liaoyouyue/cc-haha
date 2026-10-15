@@ -1,5 +1,4 @@
 import ctypes
-import hashlib
 import json
 import queue
 import sys
@@ -7,7 +6,6 @@ import threading
 import time
 
 import numpy as np
-import win32api
 import win32con
 import win32gui
 import win32process
@@ -32,10 +30,7 @@ class CaptureBlocked(RuntimeError):
 
 write_lock = threading.Lock()
 watch_stop = threading.Event()
-watch_pause = threading.Event()
-watch_thread = None
 ocr_engine = None
-seen = set()
 
 
 def send(message):
@@ -176,30 +171,58 @@ def capture(hwnd, region=None):
     return image
 
 
-def recognize(hwnd, region=None):
+def see(hwnd, region=None, wait_seconds=0):
+    """Read the window as positioned text.
+
+    Returns every recognized line with its box in *screen* coordinates, so the
+    caller can both read the window and act on what it read without a vision
+    model or a pixel guess.
+    """
     global ocr_engine
     if ocr_engine is None:
         ocr_engine = RapidOCR()
-    image = capture(hwnd, region)
+    origin_left, origin_top, _, _ = capture_rect(hwnd, region)
+    image = capture_when_ready(hwnd, region, wait_seconds)
     result, _ = ocr_engine(np.asarray(image))
-    messages = []
+    lines = []
     for box, text, score in result or []:
         text = text.strip()
         if score < 0.45 or not text:
             continue
-        center_x = sum(point[0] for point in box) / len(box) / image.width
-        messages.append({
-            "role": "self" if center_x > 0.58 else "customer",
+        xs = [point[0] for point in box]
+        ys = [point[1] for point in box]
+        lines.append({
             "text": text,
             "score": round(float(score), 3),
-            "top": min(point[1] for point in box),
+            "box": [
+                int(origin_left + min(xs)), int(origin_top + min(ys)),
+                int(max(xs) - min(xs)), int(max(ys) - min(ys)),
+            ],
+            "center": [int(origin_left + sum(xs) / len(xs)), int(origin_top + sum(ys) / len(ys))],
+            "_top": min(ys),
         })
-    messages.sort(key=lambda item: item.pop("top"))
-    transcript = "\n".join(
-        f"{'我' if item['role'] == 'self' else '客户'}：{item['text']}" for item in messages
-    )
-    digest = hashlib.sha256(" ".join(transcript.split()).lower().encode("utf-8")).hexdigest()
-    return {"messages": messages, "transcript": transcript, "digest": digest}
+    lines.sort(key=lambda item: (item["_top"], item["box"][0]))
+    for item in lines:
+        item.pop("_top")
+    return {
+        "window": window_info(hwnd),
+        "region": region,
+        "width": image.width,
+        "height": image.height,
+        "lines": lines,
+        "text": "\n".join(item["text"] for item in lines),
+    }
+
+
+def find(hwnd, query, region=None, wait_seconds=0):
+    """Locate a substring on screen and return where to act on it."""
+    query = (query or "").strip()
+    if not query:
+        raise RuntimeError("请提供要查找的文字")
+    seen = see(hwnd, region, wait_seconds)
+    needle = query.casefold()
+    matches = [line for line in seen["lines"] if needle in line["text"].casefold()]
+    return {"query": query, "matches": matches, "window": seen["window"]}
 
 
 def select_region(hwnd):
@@ -243,64 +266,35 @@ def select_region(hwnd):
     return selected.get()
 
 
-def watch(hwnd, region, interval):
-    while not watch_stop.wait(0.1):
-        if watch_pause.is_set():
-            continue
+def capture_when_ready(hwnd, region, wait_seconds):
+    """A manual capture is started by a click, and that click necessarily put
+    the app itself in front. Waiting for the target to come back keeps the
+    guard intact instead of weakening it for the interactive case."""
+    deadline = time.monotonic() + max(0.0, float(wait_seconds))
+    while True:
         try:
-            result = recognize(hwnd, region)
-            if result["transcript"] and result["digest"] not in seen:
-                seen.add(result["digest"])
-                send({"event": "ocr", "payload": result})
-            elif result["transcript"]:
-                send({"event": "duplicate", "payload": {"digest": result["digest"]}})
-        except CaptureBlocked as error:
-            # Expected whenever the user works elsewhere: nothing was read and
-            # no model call was made, so keep watching instead of failing.
-            send({"event": "blocked", "payload": {"message": str(error)}})
-        except Exception as error:
-            send({"event": "error", "payload": {"message": str(error)}})
-            return
-        watch_stop.wait(max(1.0, float(interval)))
-    send({"event": "stopped", "payload": {}})
+            return capture(hwnd, region)
+        except CaptureBlocked:
+            if time.monotonic() >= deadline:
+                raise
+            if watch_stop.wait(0.4):
+                raise CaptureBlocked("已取消识别。")
 
 
 def handle(command):
-    global watch_thread
     action = command.get("action")
     args = command.get("args") or {}
+    wait = min(30.0, max(0.0, float(args.get("wait_seconds") or 0)))
     if action == "ping":
         return {"ready": True}
     if action == "windows":
         return list_windows()
-    if action == "recognize":
-        return recognize(int(args["hwnd"]), args.get("region"))
+    if action == "see":
+        return see(int(args["hwnd"]), args.get("region"), wait)
+    if action == "find":
+        return find(int(args["hwnd"]), args.get("query"), args.get("region"), wait)
     if action == "select_region":
         return {"region": select_region(int(args["hwnd"]))}
-    if action == "start":
-        if watch_thread and watch_thread.is_alive():
-            raise RuntimeError("值守任务已在运行")
-        seen.clear()
-        watch_stop.clear()
-        watch_pause.clear()
-        watch_thread = threading.Thread(
-            target=watch,
-            args=(int(args["hwnd"]), args.get("region"), args.get("interval", 3)),
-            daemon=True,
-        )
-        watch_thread.start()
-        return {"state": "running"}
-    if action == "pause":
-        watch_pause.set()
-        return {"state": "paused"}
-    if action == "resume":
-        watch_pause.clear()
-        return {"state": "running"}
-    if action == "stop":
-        watch_stop.set()
-        if watch_thread:
-            watch_thread.join(timeout=3)
-        return {"state": "stopped"}
     if action == "shutdown":
         watch_stop.set()
         return {"state": "shutdown"}
