@@ -5,3 +5,4 @@
 # Computer Use venv does not grow by ~240 MB of OCR/ONNX stack for users who
 # never open the visual guard page.
 rapidocr_onnxruntime>=1.4.4,<2
+uiautomation>=2.0.29,<3

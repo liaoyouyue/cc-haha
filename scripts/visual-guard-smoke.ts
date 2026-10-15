@@ -16,6 +16,7 @@ import tkinter as tk
 root=tk.Tk(); root.title('AI视觉值守-集成测试面版'); root.geometry('760x420+80+80')
 tk.Label(root,text='客户：你好，请问基础服务怎么报价？',font=('Microsoft YaHei UI',14)).pack(pady=24)
 tk.Label(root,text='我：您好，我先了解一下您的具体需求。',font=('Microsoft YaHei UI',14)).pack(pady=24)
+
 root.mainloop()
 `
 // A second window created afterwards sits on top, so the target is not the
@@ -62,10 +63,28 @@ try {
   if (x < target.rect[0] || x > target.rect[0] + target.rect[2]) fail(`coordinate ${x} is outside the window`)
   if (y < target.rect[1] || y > target.rect[1] + target.rect[3]) fail(`coordinate ${y} is outside the window`)
 
-  const found = await service.find('报价') as { matches: Array<{ text: string }> }
-  if (!found.matches.length) fail('find() returned no match for text that is on screen')
-  const missing = await service.find('这句话不可能出现在屏幕上') as { matches: Array<unknown> }
-  if (missing.matches.length) fail('find() matched text that is not on screen')
+  // Tk exposes its window frame to the control tree but not its own widgets,
+  // so the tree is asserted on the frame and OCR is asserted on the content —
+  // which is exactly why both reads ship together.
+  const elements = (sight as { elements?: Array<{ role: string; name: string; clickable: boolean; box: [number, number, number, number] }> }).elements ?? []
+  if (!elements.length) fail('see() returned no controls at all')
+  if (!elements.some(element => element.clickable && element.name)) {
+    fail(`see() reported no named clickable control: ${JSON.stringify(elements.slice(0, 4))}`)
+  }
+  for (const element of elements) {
+    const [left, top, width, height] = element.box
+    if (width <= 0 || height <= 0) fail(`control ${element.name} has an empty box`)
+    if (left < target.rect[0] - 200 || top < target.rect[1] - 200) {
+      fail(`control ${element.name} at ${left},${top} is nowhere near the window`)
+    }
+  }
+
+  const located = await service.find('关闭') as { best: { source: string; clickable?: boolean; center: [number, number] } | null }
+  if (!located.best) fail('find(关闭) resolved nothing')
+  if (located.best.source !== 'uia') fail(`find() preferred ${located.best.source} over the control tree`)
+
+  const missing = await service.find('这句话不可能出现在屏幕上') as { best: unknown }
+  if (missing.best) fail('find() matched text that is not on screen')
 
   cover = spawn(python, ['-c', coverCode], { windowsHide: true })
   await waitFor(async () => {

@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import {
   visualGuardApi,
   type VisualGuardConfig,
+  type VisualGuardElement,
+  type VisualGuardFound,
   type VisualGuardLine,
   type VisualGuardStatus,
   type VisualGuardWindow,
@@ -15,9 +17,10 @@ export function VisualGuard() {
   const [config, setConfig] = useState<VisualGuardConfig | null>(null)
   const [windows, setWindows] = useState<VisualGuardWindow[]>([])
   const [lines, setLines] = useState<VisualGuardLine[]>([])
+  const [elements, setElements] = useState<VisualGuardElement[]>([])
   const [text, setText] = useState('')
   const [query, setQuery] = useState('')
-  const [matches, setMatches] = useState<VisualGuardLine[]>([])
+  const [found, setFound] = useState<VisualGuardFound | null>(null)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
@@ -95,8 +98,9 @@ export function VisualGuard() {
               <button className={button} disabled={!config.hwnd} onClick={() => capture(async () => {
                 const sight = await visualGuardApi.see()
                 setLines(sight.lines)
+                setElements(sight.elements)
                 setText(sight.text)
-                setMatches([])
+                setFound(null)
               })}>看一次</button>
             </div>
           </section>
@@ -106,8 +110,9 @@ export function VisualGuard() {
             <input className={field} value={query} onChange={event => setQuery(event.target.value)} placeholder="例如：发送" />
             <button className={button} disabled={!config.hwnd || !query.trim()} onClick={() => capture(async () => {
               const result = await visualGuardApi.find(query.trim())
-              setLines(result.matches)
-              setMatches(result.matches)
+              setElements(result.elements)
+              setLines(result.lines)
+              setFound(result.best)
             })}>定位</button>
             <p className="text-xs text-muted-foreground">返回匹配文字的屏幕坐标，可直接用于点击。</p>
           </section>
@@ -122,28 +127,39 @@ export function VisualGuard() {
 
         <div className="grid min-h-0 grid-rows-[minmax(200px,1fr)_minmax(180px,1fr)] gap-4">
           <section className="flex min-h-0 flex-col rounded-lg border border-border p-4">
-            <h2 className="mb-2 font-medium">读到的文字{matches.length ? `（匹配 ${matches.length} 处）` : ''}</h2>
+            <h2 className="mb-2 font-medium">读到的内容{found ? `（命中「${found.source === 'uia' ? found.name : found.text}」）` : ''}</h2>
             <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap rounded-md bg-muted p-3 text-sm">{text || '尚未读取'}</pre>
           </section>
 
           <section className="flex min-h-0 flex-col rounded-lg border border-border p-4">
-            <h2 className="mb-2 font-medium">文字与坐标</h2>
+            <h2 className="mb-2 font-medium">控件与文字（含屏幕坐标）</h2>
             <div className="min-h-0 flex-1 overflow-auto">
               <table className="w-full text-left text-xs">
                 <thead className="text-muted-foreground">
-                  <tr><th className="py-1">文字</th><th>屏幕坐标</th><th>置信度</th></tr>
+                  <tr><th className="py-1">来源</th><th>内容</th><th>角色</th><th>坐标</th><th>可点</th></tr>
                 </thead>
                 <tbody>
+                  {elements.map((element, index) => (
+                    <tr key={`uia-${element.role}-${index}`} className="border-t border-border">
+                      <td className="py-1 pr-2">控件</td>
+                      <td className="pr-3">{element.name || '（无名称）'}</td>
+                      <td className="pr-3 text-muted-foreground">{element.role.replace('Control', '')}</td>
+                      <td className="pr-3 font-mono">{element.center[0]}, {element.center[1]}</td>
+                      <td>{element.clickable ? '是' : ''}</td>
+                    </tr>
+                  ))}
                   {lines.map((line, index) => (
-                    <tr key={`${line.text}-${index}`} className="border-t border-border">
-                      <td className="py-1 pr-3">{line.text}</td>
+                    <tr key={`ocr-${index}`} className="border-t border-border">
+                      <td className="py-1 pr-2">文字</td>
+                      <td className="pr-3">{line.text}</td>
+                      <td className="pr-3 text-muted-foreground">OCR</td>
                       <td className="pr-3 font-mono">{line.center[0]}, {line.center[1]}</td>
-                      <td>{line.score}</td>
+                      <td />
                     </tr>
                   ))}
                 </tbody>
               </table>
-              {!lines.length && <p className="text-sm text-muted-foreground">尚无结果</p>}
+              {!elements.length && !lines.length && <p className="text-sm text-muted-foreground">尚无结果</p>}
             </div>
             <details className="mt-2">
               <summary className="cursor-pointer text-xs text-muted-foreground">运行日志</summary>

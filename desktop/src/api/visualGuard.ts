@@ -23,6 +23,18 @@ export type VisualGuardLine = {
   score: number
   box: [number, number, number, number]
   center: [number, number]
+  source: 'ocr'
+}
+
+/** A control from the window's accessibility tree. */
+export type VisualGuardElement = {
+  role: string
+  name: string
+  clickable: boolean
+  box: [number, number, number, number]
+  center: [number, number]
+  source: 'uia'
+  depth: number
 }
 
 export type VisualGuardSight = {
@@ -30,11 +42,12 @@ export type VisualGuardSight = {
   region: VisualGuardConfig['region'] | null
   width: number
   height: number
+  elements: VisualGuardElement[]
   lines: VisualGuardLine[]
   text: string
 }
 
-export type VisualGuardMatch = VisualGuardLine & { query: string }
+export type VisualGuardFound = VisualGuardElement | VisualGuardLine
 
 export const visualGuardApi = {
   status: () => api.get<VisualGuardStatus>('/api/visual-guard/status'),
@@ -43,7 +56,11 @@ export const visualGuardApi = {
   windows: () => api.get<{ windows: VisualGuardWindow[] }>('/api/visual-guard/windows'),
   selectRegion: () => api.post<{ region: VisualGuardConfig['region'] }>('/api/visual-guard/select-region'),
   see: () => api.post<VisualGuardSight>('/api/visual-guard/see'),
-  find: (query: string) => api.post<{ query: string; matches: VisualGuardLine[]; window: VisualGuardWindow }>(
-    '/api/visual-guard/find', { query },
-  ),
+  find: (query: string) => api.post<{
+    query: string
+    elements: VisualGuardElement[]
+    lines: VisualGuardLine[]
+    best: VisualGuardFound | null
+    window: VisualGuardWindow
+  }>('/api/visual-guard/find', { query }),
 }

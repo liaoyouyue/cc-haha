@@ -1,9 +1,11 @@
 import ctypes
 import json
+import os
 import queue
 import sys
 import threading
 import time
+import traceback
 
 import numpy as np
 import win32con
@@ -12,6 +14,11 @@ import win32process
 from mss import mss
 from PIL import Image
 from rapidocr_onnxruntime import RapidOCR
+
+try:
+    import uiautomation
+except Exception:  # the Python fallback may not have it; OCR still works
+    uiautomation = None
 
 # A frozen (PyInstaller) build inherits the OEM code page for stdio even when
 # PYTHONUTF8/PYTHONIOENCODING are set, which mangles Chinese window titles on
@@ -42,6 +49,41 @@ class BITMAPINFOHEADER(ctypes.Structure):
 
 class BITMAPINFO(ctypes.Structure):
     _fields_ = [("bmiHeader", BITMAPINFOHEADER), ("bmiColors", ctypes.c_uint32 * 3)]
+
+
+def declare_win32_types():
+    """ctypes defaults every argument to a 32-bit int and every return to int.
+
+    Window and GDI handles are pointer-sized, so a handle above 2**31 raises
+    "OverflowError: int too long to convert" — which only shows up once a run
+    happens to hand out a large handle. Declaring the types makes the calls
+    correct in every build instead of correct by luck.
+    """
+    from ctypes import wintypes as wt
+    handles = dict(
+        GetTopWindow=(wt.HWND, [wt.HWND]),
+        GetWindow=(wt.HWND, [wt.HWND, wt.UINT]),
+        GetWindowDC=(wt.HDC, [wt.HWND]),
+        ReleaseDC=(ctypes.c_int, [wt.HWND, wt.HDC]),
+        PrintWindow=(wt.BOOL, [wt.HWND, wt.HDC, wt.UINT]),
+        CreateCompatibleDC=(wt.HDC, [wt.HDC]),
+        CreateCompatibleBitmap=(wt.HBITMAP, [wt.HDC, ctypes.c_int, ctypes.c_int]),
+        SelectObject=(wt.HGDIOBJ, [wt.HDC, wt.HGDIOBJ]),
+        DeleteObject=(wt.BOOL, [wt.HGDIOBJ]),
+        DeleteDC=(wt.BOOL, [wt.HDC]),
+        GetDIBits=(ctypes.c_int, [wt.HDC, wt.HBITMAP, wt.UINT, wt.UINT,
+                                 ctypes.c_void_p, ctypes.POINTER(BITMAPINFO), wt.UINT]),
+        DwmGetWindowAttribute=(ctypes.c_long, [wt.HWND, wt.DWORD, ctypes.c_void_p, wt.DWORD]),
+    )
+    for name, (restype, argtypes) in handles.items():
+        for lib in (_user32, _gdi32, _dwmapi):
+            if hasattr(lib, name):
+                function = getattr(lib, name)
+                function.restype = restype
+                function.argtypes = argtypes
+
+
+declare_win32_types()
 
 
 class CaptureBlocked(RuntimeError):
@@ -250,13 +292,64 @@ def capture(hwnd, region=None):
     return image
 
 
-def see(hwnd, region=None, wait_seconds=0):
-    """Read the window as positioned text.
+CLICKABLE_ROLES = {
+    "ButtonControl", "EditControl", "HyperlinkControl", "MenuItemControl",
+    "ListItemControl", "TabItemControl", "CheckBoxControl", "RadioButtonControl",
+    "ComboBoxControl", "SplitButtonControl", "TreeItemControl", "TextControl",
+}
 
-    Returns every recognized line with its box in *screen* coordinates, so the
-    caller can both read the window and act on what it read without a vision
-    model or a pixel guess.
+
+def read_controls(hwnd, budget=400):
+    """The window's control tree: role, accessible name, screen rectangle.
+
+    This is the authoritative read when an app exposes one — it names controls
+    that carry no visible text and says which of them can be acted on. Some
+    apps expose nothing, which is why the OCR pass still runs.
     """
+    if uiautomation is None:
+        return []
+    rows = []
+    seen = set()
+
+    def walk(control, depth):
+        if len(rows) >= budget or depth > 40:
+            return
+        for child in control.GetChildren():
+            if len(rows) >= budget:
+                return
+            try:
+                rect = child.BoundingRectangle
+                role = child.ControlTypeName
+                name = (child.Name or "").strip()
+            except Exception:
+                continue
+            key = (role, name, rect.left, rect.top, rect.right, rect.bottom)
+            if key not in seen:
+                seen.add(key)
+                width, height = rect.right - rect.left, rect.bottom - rect.top
+                if name or role in CLICKABLE_ROLES:
+                    rows.append({
+                        "role": role,
+                        "name": name,
+                        "clickable": role in CLICKABLE_ROLES,
+                        "box": [int(rect.left), int(rect.top), int(width), int(height)],
+                        "center": [int((rect.left + rect.right) / 2), int((rect.top + rect.bottom) / 2)],
+                        "source": "uia",
+                        "depth": depth,
+                    })
+            walk(child, depth + 1)
+
+    try:
+        walk(uiautomation.ControlFromHandle(hwnd), 1)
+    except Exception:
+        return []
+    rows.sort(key=lambda item: (item["box"][1], item["box"][0]))
+    return rows
+
+
+def read_text(hwnd, region, wait_seconds):
+    """OCR pass: positioned text for apps that expose no control tree, and for
+    text drawn inside a single control the tree cannot break apart."""
     global ocr_engine
     if ocr_engine is None:
         ocr_engine = RapidOCR()
@@ -278,30 +371,57 @@ def see(hwnd, region=None, wait_seconds=0):
                 int(max(xs) - min(xs)), int(max(ys) - min(ys)),
             ],
             "center": [int(origin_left + sum(xs) / len(xs)), int(origin_top + sum(ys) / len(ys))],
+            "source": "ocr",
             "_top": min(ys),
         })
     lines.sort(key=lambda item: (item["_top"], item["box"][0]))
     for item in lines:
         item.pop("_top")
+    return image, lines
+
+
+def see(hwnd, region=None, wait_seconds=0):
+    """Read the window as positioned text, in screen coordinates.
+
+    Two independent reads, returned side by side rather than merged: the
+    control tree names things and says what is actionable, OCR catches text
+    the tree cannot expose. Neither is a superset of the other, and a fuzzy
+    merge would only invent disagreements.
+    """
+    elements = read_controls(hwnd)
+    image, lines = read_text(hwnd, region, wait_seconds)
+    readable = [item["name"] for item in elements if item["name"]]
     return {
         "window": window_info(hwnd),
         "region": region,
         "width": image.width,
         "height": image.height,
+        "elements": elements,
         "lines": lines,
-        "text": "\n".join(item["text"] for item in lines),
+        "text": "\n".join(readable + [item["text"] for item in lines]),
     }
 
 
 def find(hwnd, query, region=None, wait_seconds=0):
-    """Locate a substring on screen and return where to act on it."""
+    """Locate something on screen and return where to act on it.
+
+    Control names are searched first: a match there is an actionable element
+    with an exact rectangle, which beats a text box the OCR happened to
+    recognize."""
     query = (query or "").strip()
     if not query:
         raise RuntimeError("请提供要查找的文字")
     seen = see(hwnd, region, wait_seconds)
     needle = query.casefold()
-    matches = [line for line in seen["lines"] if needle in line["text"].casefold()]
-    return {"query": query, "matches": matches, "window": seen["window"]}
+    controls = [item for item in seen["elements"] if needle in item["name"].casefold()]
+    lines = [item for item in seen["lines"] if needle in item["text"].casefold()]
+    return {
+        "query": query,
+        "window": seen["window"],
+        "elements": controls,
+        "lines": lines,
+        "best": controls[0] if controls else (lines[0] if lines else None),
+    }
 
 
 def select_region(hwnd):
@@ -422,4 +542,7 @@ for raw in sys.stdin:
         if request.get("action") == "shutdown":
             break
     except Exception as error:
-        send({"id": request.get("id") if request else None, "ok": False, "error": str(error)})
+        detail = str(error)
+        if os.environ.get("CC_HAHA_VISUAL_GUARD_DEBUG"):
+            detail += "\n" + traceback.format_exc()
+        send({"id": request.get("id") if request else None, "ok": False, "error": detail})
