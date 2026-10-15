@@ -184,3 +184,79 @@ WorkDaddy 是 **AGPL-3.0-or-later**，CCHH 是 **MIT**。AGPL 有传染性，**W
 | —（无对应） | Agent 工具 / 诊断中心 | `toolUsage`、`skillUsage`、交叉校验 |
 
 **视觉**：CCHH 原有暖色系与字体体系保留（`--color-*` 变量、`SettingsSection` / `Card` 组件），只借用 WorkDaddy 的克制感 —— 分段药丸控件、圆角细边卡片、单一强调色、右对齐数值列。
+
+---
+
+# Phase A.1 发布前排障与修正（追加）
+
+提交 `263a2b1a`。三处错误根因 + 修复差异 + 测试结果如下。
+
+## 错误根因与修复
+
+### 1. `This model does not support images`（环境，非项目 bug）
+
+主会话当前路由的模型（免费网关 `auto:freeworker`）没有视觉能力，`Read` PNG 返回 `[Unsupported Image]`。**这不是 CCHH 代码问题，也未改动任何全局模型配置**。验证改用 DOM 文本断言（`evaluate_script` 读 `innerText`），截图文件只作交付物、不再喂给模型。
+
+### 2. Vite 后台启动 exit code 1（重复启动）
+
+完整日志唯一错误：`Error: Port 1420 is already in use`。根因是我此前已有一个 `vite dev` 在跑（工作目录 `cc-haha-ti/desktop`，命令 `bun run dev`，端口 1420），又用后台任务起了第二个，撞端口退出。当前 vite 进程正常存活（pid 21376，监听 `[::1]:1420`），开发预览能力可用。
+
+### 3. activeDays=21 / totalDays=1 → 活跃率 2,100%
+
+**数据来源**：`totalDays` 由 `countUtcCalendarDaysInclusive(firstSessionDate, lastSessionDate)` 计算，`firstSessionDate`/`lastSessionDate` 来自 `activity_sessions` 表里 `is_subagent=0` 的主会话 `first_timestamp`。
+
+**根因**：本机历史主会话 jsonl 已被归档，`activity_sessions` 里主会话时间戳只剩今天（`2026-10-15T00:26` ~ `2026-10-15T17:55`），而 `activity_daily`（按天聚合、含子代理）仍覆盖完整 21 天（`2026-09-25` ~ `2026-10-15`）。`totalDays` 塌缩为 1，`activeDays`（= dailyActivity.length）仍是 21。
+
+**修复（根因，非 clamp）**：`totalDays` 改用 `dailyActivity` 首末日期跨度，三处对齐：
+- `processedStatsToClaudeCodeStats`（索引 + JSONL 回退共用）
+- `cacheToStats`（缓存路径）
+- 删除 `activityIndex` all 分支对 `totalDays` 的重复重算（它会用 session 时间戳把结果改回错值）
+
+**区间时间分母定义**：活跃率 = `activeDays / totalDays`，`totalDays` = 该区间内「有活动的日期」首末跨度。修复后实测：all/30d = `21/21 = 100%`，7d = `7/7 = 100%`。没有做 `min(rate, 100%)` 之类掩盖。
+
+### 4. 成本卡 `US$0.00` 误解（顺手修，同一次排障）
+
+本机 18 个模型全部 `cost_usd=0`（15 个未计价），成本卡标题显示 `US$0.00` 会被误读成"总花费为零"。修复：当存在未计价模型且已计价成本为 0 时，主值显示 `—`，detail 拆成「已计价 US$X · 不含 N 个未定价模型」。`US$0.00` 这个「已计价成本」数字移到 detail，不再当标题误导。
+
+## 测试结果
+
+| 套件 | 结果 |
+|---|---|
+| 桌面（ActivitySettings + i18n + settings + pages） | 12 文件 / **137 通过** |
+| 服务端（activityIndex + coordinator + parity） | **76 通过 / 2 失败**（2 个为基线既有，见下） |
+
+**新增断言**：
+- `totalDays` 来自 daily-activity 跨度（fixture 里 session 时间戳跨 2 天、activity 表跨 20 天，断言 `totalDays=20`）
+- 30d 三口径一致性（`daily = project = session = TOTAL_TOKENS`），补全 7d 已有的同类断言
+- 成本卡「已计价 / 未计价」分离（主值无 `$0.00`，detail 为 `Priced $0.00 · 2 unpriced models excluded`）
+
+**新增失败 vs 基线失败（分列）**：
+- 本次**零新增失败**。
+- 基线既有失败（纯基线 `55ecdc25` 上同样失败，非本次引入）：
+  - `coordinator > converges external append...`
+  - `discoverActivityTranscriptSources > finds workflow agent transcripts...`
+  - 另有 `componentReachability` + `diagnosticsSettings`（Windows 路径分隔符，此前已记录）
+
+**区间切换真实变化**：`narrows the model sheet in place` 测试断言切到「近 7 天」后表格 cells 实际变化（`claude-sonnet | 10万 | 4万 | 3万 | 2万 | $3.00`），不只看请求数为零。浏览器实测：切 5 次区间，服务端请求数不变。
+
+## 五张视图截图
+
+`C:\Users\Administrator\ti-shot\`，五张均非空（>100KB）：
+
+| 文件 | 视图 | 状态 |
+|---|---|---|
+| `view-1-overview.png` | 总览中心 | **更新**（活跃率 100%） |
+| `view-2-models.png` | 模型成本 | **更新**（成本卡 `—`） |
+| `view-3-projects.png` | 项目会话 | 复用（数据未变） |
+| `view-4-tools.png` | Agent 工具 | 复用（数据未变） |
+| `view-5-diagnostics.png` | 诊断中心 | **更新**（「活跃天数>总天数」告警消失） |
+
+## 边界遵守
+
+未碰生产版 v0.7.1、未碰 `D:\cchh-vg-dev`、无 migration / 索引重建、未推 GitHub、未实施 Phase B。缓存 v7 / SQLite schema / JSONL 回退均未改（`totalDays` 是派生字段，缓存里不存；改的是计算，不是格式）。
+
+## Phase B 待办（沿用）
+
+1. 工具调用耗时/失败率 → 需索引新字段 + migration + 重建。
+2. `firstSessionDate` 字段语义（主会话时间戳 vs 活动日期）—— 当前不展示、不参与 totalDays，留待 Phase B 一并定。
+3. 会话跨零点归因、项目未计价占比、增量刷新。
