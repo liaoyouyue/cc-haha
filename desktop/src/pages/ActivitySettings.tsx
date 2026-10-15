@@ -37,12 +37,6 @@ type SummaryMetric = {
   detail?: string
 }
 
-type InsightMetric = {
-  label: string
-  value: string
-  detail?: string
-}
-
 type PluginRankItem = {
   id: string
   label: string
@@ -52,8 +46,89 @@ type PluginRankItem = {
 
 type HeatmapMode = 'daily' | 'weekly' | 'cumulative'
 
+/**
+ * The five Token Intelligence sheets. `overview` is the original page: lifetime
+ * totals plus the heatmap. The other four are the Phase A additions.
+ */
+type ActivityView = 'overview' | 'models' | 'projects' | 'tools' | 'diagnostics'
+
+/**
+ * Only the two sheets whose data carries a date grain can honour a range
+ * filter — model spend from `dailyModelUsage` and project spend from
+ * `projectUsage`. Tools and diagnostics are all-time aggregates, so they get no
+ * control rather than a dead one.
+ */
+type UsageRange = 'all' | '30d' | '7d'
+
+const RANGE_DAY_COUNTS: Record<UsageRange, number | null> = {
+  all: null,
+  '30d': 30,
+  '7d': 7,
+}
+
+/** Sheets whose data carries a date grain, so the range filter actually bites. */
+const RANGE_AWARE_VIEWS: ReadonlySet<ActivityView> = new Set<ActivityView>(['models', 'projects'])
+
+/** Tokens a model processed rather than replayed from cache, plus cost. */
+type ModelUsageRow = {
+  model: string
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  total: number
+  fresh: number
+  costUSD: number
+  unpriced: boolean
+}
+
+type ProjectUsageRow = {
+  projectPath: string
+  projectName: string
+  sessionCount: number
+  messageCount: number
+  toolCallCount: number
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  total: number
+  costUSD: number
+}
+
+type SessionUsageRow = {
+  sessionId: string
+  projectName: string
+  startedAt: string
+  activeDurationMs: number
+  messageCount: number
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  total: number
+  costUSD: number
+}
+
+type ToolRankRow = {
+  name: string
+  count: number
+}
+
+type DiagnosticLevel = 'warn' | 'info'
+
+type DiagnosticItem = {
+  id: string
+  level: DiagnosticLevel
+  title: string
+  detail: string
+}
+
 const WEEK_COUNT = 52
 const CHART_DAY_COUNT = 14
+/** Leaderboards, not exports — the sheets say how many rows they show. */
+const SESSION_ROW_LIMIT = 20
+const TOOL_ROW_LIMIT = 12
 /** Columns a month name needs ("Sep", "10月") before the next label may start. */
 const MONTH_LABEL_MIN_WEEKS = 3
 const WEEKDAY_LABEL_KEYS = [
@@ -325,6 +400,290 @@ function buildModelRows(stats: ActivityStatsResponse | null) {
     .sort((a, b) => b.total - a.total || a.model.localeCompare(b.model))
 }
 
+/**
+ * Inclusive lower bound of a range as a `YYYY-MM-DD` key, or null for "all".
+ * Comparing date keys as strings is safe because they are zero-padded ISO days,
+ * and it keeps every range filter on the same calendar the server aggregates
+ * with instead of introducing a second, local-timezone definition of "day".
+ */
+function getRangeCutoff(range: UsageRange): string | null {
+  const days = RANGE_DAY_COUNTS[range]
+  if (days === null) return null
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  return localDateKey(addDays(today, -(days - 1)))
+}
+
+function isDateInSelectedRange(dateKey: string, cutoff: string | null) {
+  if (cutoff === null) return true
+  return dateKey.slice(0, 10) >= cutoff
+}
+
+/**
+ * Per-model rows for the selected range.
+ *
+ * With the local index available this folds `dailyModelUsage` down to the
+ * window, so changing the range never costs a request. Without it (index
+ * disabled, still building, or the JSONL fallback answered) it falls back to the
+ * all-time `modelUsage` map and reports `rangeApplied: false`, so the sheet can
+ * say the filter did not take effect instead of silently showing wider numbers
+ * than the control claims.
+ */
+function buildModelUsageRows(
+  stats: ActivityStatsResponse | null,
+  cutoff: string | null,
+): { rows: ModelUsageRow[]; rangeApplied: boolean } {
+  const unpriced = new Set(stats?.unpricedModels ?? [])
+  const daily = stats?.dailyModelUsage
+
+  if (!daily) {
+    return {
+      rows: buildModelRows(stats).map((row) => ({
+        model: row.model,
+        input: 0,
+        output: 0,
+        cacheRead: row.cached,
+        cacheWrite: 0,
+        total: row.total,
+        fresh: row.fresh,
+        costUSD: row.costUSD,
+        unpriced: row.unpriced,
+      })),
+      rangeApplied: false,
+    }
+  }
+
+  const byModel = new Map<string, ModelUsageRow>()
+  for (const day of daily) {
+    if (!isDateInSelectedRange(day.date, cutoff)) continue
+    const row = byModel.get(day.model) ?? {
+      model: day.model,
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      total: 0,
+      fresh: 0,
+      costUSD: 0,
+      unpriced: unpriced.has(day.model),
+    }
+    row.input += day.inputTokens
+    row.output += day.outputTokens
+    row.cacheRead += day.cacheReadInputTokens
+    row.cacheWrite += day.cacheCreationInputTokens
+    row.costUSD += day.costUSD
+    row.total += day.inputTokens + day.outputTokens +
+      day.cacheReadInputTokens + day.cacheCreationInputTokens
+    row.fresh += day.inputTokens + day.outputTokens + day.cacheCreationInputTokens
+    byModel.set(day.model, row)
+  }
+
+  return {
+    rows: [...byModel.values()]
+      .filter((row) => row.total > 0)
+      .sort((a, b) => b.total - a.total || a.model.localeCompare(b.model)),
+    rangeApplied: true,
+  }
+}
+
+function buildProjectUsageRows(
+  stats: ActivityStatsResponse | null,
+  cutoff: string | null,
+): ProjectUsageRow[] {
+  const byProject = new Map<string, ProjectUsageRow>()
+  for (const day of stats?.projectUsage ?? []) {
+    if (!isDateInSelectedRange(day.date, cutoff)) continue
+    const row = byProject.get(day.projectPath) ?? {
+      projectPath: day.projectPath,
+      projectName: day.projectName,
+      sessionCount: 0,
+      messageCount: 0,
+      toolCallCount: 0,
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      total: 0,
+      costUSD: 0,
+    }
+    // Counted per day, so a session spanning midnight lands on both days and a
+    // subagent-only project still shows activity. The column is labelled
+    // session-days for that reason; the session leaderboard is where per-session
+    // counts live, and the two numbers are not interchangeable.
+    row.sessionCount += day.sessionCount
+    row.messageCount += day.messageCount
+    row.toolCallCount += day.toolCallCount
+    row.input += day.inputTokens
+    row.output += day.outputTokens
+    row.cacheRead += day.cacheReadInputTokens
+    row.cacheWrite += day.cacheCreationInputTokens
+    row.costUSD += day.costUSD
+    row.total += day.inputTokens + day.outputTokens +
+      day.cacheReadInputTokens + day.cacheCreationInputTokens
+    byProject.set(day.projectPath, row)
+  }
+
+  return [...byProject.values()]
+    .sort((a, b) => b.total - a.total || a.projectName.localeCompare(b.projectName))
+}
+
+function buildSessionUsageRows(
+  stats: ActivityStatsResponse | null,
+  cutoff: string | null,
+  limit: number,
+): SessionUsageRow[] {
+  return (stats?.sessionUsage ?? [])
+    .filter((session) => isDateInSelectedRange(session.startedAt, cutoff))
+    .map<SessionUsageRow>((session) => ({
+      sessionId: session.sessionId,
+      projectName: session.projectName,
+      startedAt: session.startedAt,
+      activeDurationMs: session.activeDurationMs,
+      messageCount: session.messageCount,
+      input: session.inputTokens,
+      output: session.outputTokens,
+      cacheRead: session.cacheReadInputTokens,
+      cacheWrite: session.cacheCreationInputTokens,
+      total: session.inputTokens + session.outputTokens +
+        session.cacheReadInputTokens + session.cacheCreationInputTokens,
+      costUSD: session.costUSD,
+    }))
+    .sort((a, b) => b.total - a.total || a.sessionId.localeCompare(b.sessionId))
+    .slice(0, limit)
+}
+
+/**
+ * Raw tool call counts. `toolUsage` is an all-time aggregate with no date grain
+ * on the wire, so this sheet takes no range control — a filter that did nothing
+ * would be worse than no filter.
+ */
+function buildToolRankRows(stats: ActivityStatsResponse | null, limit: number): ToolRankRow[] {
+  return Object.entries(stats?.toolUsage ?? {})
+    .filter(([, count]) => count > 0)
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+    .slice(0, limit)
+}
+
+/**
+ * Which usage dimensions this build actually collects. Drives the Overview
+ * completeness strip and the Diagnostics sheet, so "we do not measure that"
+ * reads as a stated gap rather than a zero that looks like real data.
+ */
+function buildCoverageItems(stats: ActivityStatsResponse | null) {
+  // Truthiness, not `!== null`: a sidecar old enough to omit the key reports the
+  // same thing as one that could not answer, and neither is a zero.
+  const hasIndexGrain = Boolean(stats?.projectUsage && stats?.sessionUsage)
+  return [
+    { id: 'fourDims', labelKey: 'settings.activity.coverage.fourDims', collected: true },
+    { id: 'cacheSplit', labelKey: 'settings.activity.coverage.cacheSplit', collected: true },
+    { id: 'cost', labelKey: 'settings.activity.coverage.cost', collected: true },
+    { id: 'project', labelKey: 'settings.activity.coverage.project', collected: hasIndexGrain },
+    { id: 'session', labelKey: 'settings.activity.coverage.session', collected: hasIndexGrain },
+    { id: 'toolCount', labelKey: 'settings.activity.coverage.toolCount', collected: true },
+    { id: 'toolDuration', labelKey: 'settings.activity.coverage.toolDuration', collected: false },
+    { id: 'toolFailure', labelKey: 'settings.activity.coverage.toolFailure', collected: false },
+  ] as const
+}
+
+/**
+ * Diagnostics built only from cross-checks the stored data can settle. Every
+ * finding names the numbers behind it; anything that would need per-tool
+ * durations, failure rates or a second source of truth is listed as a known gap
+ * rather than guessed at.
+ */
+function buildDiagnostics(
+  stats: ActivityStatsResponse | null,
+  t: ReturnType<typeof useTranslation>,
+): DiagnosticItem[] {
+  const items: DiagnosticItem[] = []
+  if (!stats) return items
+
+  const unpriced = stats.unpricedModels ?? []
+  if (unpriced.length > 0) {
+    items.push({
+      id: 'unpriced',
+      level: 'warn',
+      title: t('settings.activity.diag.unpricedTitle', { count: unpriced.length }),
+      detail: unpriced.join(', '),
+    })
+  }
+
+  // A model with tokens but no cost that the server did NOT flag as unpriced
+  // means the two sides of the cost pipeline disagree. Worth surfacing: it is
+  // exactly how a silent pricing-table gap would first show up.
+  const unpricedSet = new Set(unpriced)
+  const suspicious = Object.entries(stats.modelUsage ?? {})
+    .filter(([model, usage]) => {
+      const total = getModelTokenTotal(usage)
+      return total > 0 && (usage.costUSD ?? 0) === 0 && !unpricedSet.has(model)
+    })
+    .map(([model]) => model)
+  if (suspicious.length > 0) {
+    items.push({
+      id: 'zeroCost',
+      level: 'warn',
+      title: t('settings.activity.diag.zeroCostTitle', { count: suspicious.length }),
+      detail: suspicious.join(', '),
+    })
+  }
+
+  // Duplicate-accounting check: the per-day series and the per-model totals are
+  // produced by the same rows, so any model whose day sum differs from its
+  // aggregate is being counted twice (or dropped) somewhere in between.
+  const dayTotals = new Map<string, number>()
+  for (const day of stats.dailyModelTokens ?? []) {
+    for (const [model, tokens] of Object.entries(day.tokensByModel)) {
+      dayTotals.set(model, (dayTotals.get(model) ?? 0) + tokens)
+    }
+  }
+  const mismatched = Object.entries(stats.modelUsage ?? {})
+    .filter(([model, usage]) => {
+      const aggregate = getModelTokenTotal(usage)
+      const daily = dayTotals.get(model) ?? 0
+      return Math.abs(aggregate - daily) > 0
+    })
+    .map(([model, usage]) =>
+      `${model}: ${formatTokens(getModelTokenTotal(usage))} vs ${formatTokens(dayTotals.get(model) ?? 0)}`)
+  if (mismatched.length > 0) {
+    items.push({
+      id: 'dupTokens',
+      level: 'warn',
+      title: t('settings.activity.diag.mismatchTitle', { count: mismatched.length }),
+      detail: mismatched.slice(0, 5).join(' · '),
+    })
+  }
+
+  const totalDays = stats.totalDays ?? 0
+  const activeDays = stats.activeDays ?? 0
+  if (totalDays > 0 && activeDays > totalDays) {
+    items.push({
+      id: 'activeRate',
+      level: 'warn',
+      title: t('settings.activity.diag.activeRateTitle'),
+      detail: `${activeDays} / ${totalDays}`,
+    })
+  }
+
+  if (!stats.projectUsage || !stats.sessionUsage) {
+    items.push({
+      id: 'indexGrain',
+      level: 'info',
+      title: t('settings.activity.diag.noIndexTitle'),
+      detail: t('settings.activity.diag.noIndexDetail'),
+    })
+  }
+
+  items.push({
+    id: 'phaseB',
+    level: 'info',
+    title: t('settings.activity.diag.phaseBTitle'),
+    detail: t('settings.activity.diag.phaseBDetail'),
+  })
+
+  return items
+}
+
 function getHeatLevel(day: DailyActivity | undefined, tokens: number, maxScore: number) {
   const sessionCount = day?.sessionCount ?? 0
   if (sessionCount === 0 && tokens === 0) return 0
@@ -528,6 +887,8 @@ export function ActivitySettings() {
   const [hoveredDate, setHoveredDate] = useState<string | null>(null)
   const [focusedDate, setFocusedDate] = useState<string | null>(null)
   const [heatCellSize, setHeatCellSize] = useState(10)
+  const [activeView, setActiveView] = useState<ActivityView>('overview')
+  const [range, setRange] = useState<UsageRange>('all')
 
   useEffect(() => {
     let cancelled = false
@@ -651,21 +1012,41 @@ export function ActivitySettings() {
       return Math.max(peak, dayTotal)
     }, 0)
   }, [stats])
-  const tokenBreakdown = useMemo(() => {
-    let fresh = 0
-    let cached = 0
-    let costUSD = 0
-    for (const usage of Object.values(stats?.modelUsage ?? {})) {
-      fresh += getFreshTokenTotal(usage)
-      cached += usage.cacheReadInputTokens ?? 0
-      costUSD += usage.costUSD ?? 0
-    }
-    return { fresh, cached, costUSD }
-  }, [stats])
-  const unpricedModelCount = stats?.unpricedModels?.length ?? 0
   const topPluginItems = useMemo(() => buildPluginAndSkillRankItems(stats), [stats])
   const recentDays = useMemo(() => buildRecentDailyTokens(stats, CHART_DAY_COUNT), [stats])
-  const modelRows = useMemo(() => buildModelRows(stats), [stats])
+  const rangeCutoff = useMemo(() => getRangeCutoff(range), [range])
+  const modelUsageWindow = useMemo(
+    () => buildModelUsageRows(stats, rangeCutoff),
+    [rangeCutoff, stats],
+  )
+  const projectRows = useMemo(
+    () => buildProjectUsageRows(stats, rangeCutoff),
+    [rangeCutoff, stats],
+  )
+  const sessionRows = useMemo(
+    () => buildSessionUsageRows(stats, rangeCutoff, SESSION_ROW_LIMIT),
+    [rangeCutoff, stats],
+  )
+  const toolRankRows = useMemo(() => buildToolRankRows(stats, TOOL_ROW_LIMIT), [stats])
+  const coverageItems = useMemo(() => buildCoverageItems(stats), [stats])
+  const diagnostics = useMemo(() => buildDiagnostics(stats, t), [stats, t])
+  // Four-dimension totals over the selected window, summed from the same rows
+  // the model sheet shows so the Overview strip and the table can never drift.
+  const windowTotals = useMemo(() => {
+    return modelUsageWindow.rows.reduce(
+      (sum, row) => ({
+        input: sum.input + row.input,
+        output: sum.output + row.output,
+        cacheRead: sum.cacheRead + row.cacheRead,
+        cacheWrite: sum.cacheWrite + row.cacheWrite,
+        total: sum.total + row.total,
+        costUSD: sum.costUSD + row.costUSD,
+      }),
+      { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, costUSD: 0 },
+    )
+  }, [modelUsageWindow])
+  const windowPromptTokens = windowTotals.input + windowTotals.cacheRead + windowTotals.cacheWrite
+  const unpricedInWindow = modelUsageWindow.rows.filter((row) => row.unpriced).length
   const metrics: SummaryMetric[] = [
     {
       label: t('settings.activity.totalTokens'),
@@ -693,56 +1074,20 @@ export function ActivitySettings() {
       detail: formatSessionCount(last30Usage.sessions, t),
     },
   ]
-  const insightMetrics: InsightMetric[] = [
-    {
-      label: t('settings.activity.activeRate'),
-      value: formatPercent(stats?.activeDays ?? 0, stats?.totalDays ?? 0, locale),
-    },
-    {
-      label: t('settings.activity.mostUsedModel'),
-      value: topModel ? formatModelName(topModel.model) : t('settings.activity.none'),
-      detail: topModel ? `${formatTokens(topModel.tokens)} ${t('settings.activity.tokens')}` : undefined,
-    },
-    {
-      label: t('settings.activity.freshTokens'),
-      value: formatTokens(tokenBreakdown.fresh),
-      detail: t('settings.activity.ofTotal', {
-        percent: formatShare(tokenBreakdown.fresh, totalTokens, locale),
-      }),
-    },
-    {
-      label: t('settings.activity.cachedTokens'),
-      value: formatTokens(tokenBreakdown.cached),
-      detail: t('settings.activity.ofTotal', {
-        percent: formatShare(tokenBreakdown.cached, totalTokens, locale),
-      }),
-    },
-    {
-      label: t('settings.activity.estimatedCost'),
-      value: formatCostUSD(tokenBreakdown.costUSD, locale),
-      // A partial total presented as a complete one would understate spend for anyone running
-      // third-party models, so say what it leaves out.
-      detail: unpricedModelCount > 0
-        ? t('settings.activity.costExcludesModels', { count: unpricedModelCount })
-        : undefined,
-    },
-    {
-      label: t('settings.activity.exploredSkills'),
-      value: formatInteger(exploredSkillsCount, locale),
-    },
-    {
-      label: t('settings.activity.totalSkillUses'),
-      value: formatInteger(totalSkillUses, locale),
-    },
-    {
-      label: t('settings.activity.totalToolCalls'),
-      value: formatInteger(totalToolCalls, locale),
-    },
-    {
-      label: t('settings.activity.totalSessions'),
-      value: formatInteger(stats?.totalSessions ?? 0, locale),
-    },
-  ]
+  const costCard = {
+    label: t('settings.activity.estimatedCost'),
+    value: formatCostUSD(windowTotals.costUSD, locale),
+    // A partial total presented as a complete one would understate spend for anyone running
+    // third-party models, so say what it leaves out.
+    detail: unpricedInWindow > 0
+      ? t('settings.activity.costExcludesModels', { count: unpricedInWindow })
+      : t('settings.activity.costComplete'),
+  }
+  const toolSummary = {
+    exploredSkills: formatInteger(exploredSkillsCount, locale),
+    totalSkillUses: formatInteger(totalSkillUses, locale),
+    totalToolCalls: formatInteger(totalToolCalls, locale),
+  }
   const avatarSrc = profile.avatarFile ? getProfileAvatarUrl(profile.avatarUpdatedAt) : DEFAULT_AVATAR_SRC
   const avatarClassName = profile.avatarFile
     ? 'h-full w-full object-cover'
@@ -753,6 +1098,60 @@ export function ActivitySettings() {
     { mode: 'daily', label: t('settings.activity.mode.daily'), help: t('settings.activity.modeHelp.daily') },
     { mode: 'weekly', label: t('settings.activity.mode.weekly'), help: t('settings.activity.modeHelp.weekly') },
     { mode: 'cumulative', label: t('settings.activity.mode.cumulative'), help: t('settings.activity.modeHelp.cumulative') },
+  ]
+  const viewOptions: Array<{ view: ActivityView; label: string }> = [
+    { view: 'overview', label: t('settings.activity.view.overview') },
+    { view: 'models', label: t('settings.activity.view.models') },
+    { view: 'projects', label: t('settings.activity.view.projects') },
+    { view: 'tools', label: t('settings.activity.view.tools') },
+    { view: 'diagnostics', label: t('settings.activity.view.diagnostics') },
+  ]
+  const rangeOptions: Array<{ range: UsageRange; label: string }> = [
+    { range: 'all', label: t('settings.activity.range.all') },
+    { range: '30d', label: t('settings.activity.range.30d') },
+    { range: '7d', label: t('settings.activity.range.7d') },
+  ]
+  const insights: Array<{ label: string; value: string; detail?: string }> = [
+    {
+      label: t('settings.activity.activeRate'),
+      value: formatPercent(stats?.activeDays ?? 0, stats?.totalDays ?? 0, locale),
+      detail: t('settings.activity.activeRateDetail', {
+        active: stats?.activeDays ?? 0,
+        total: stats?.totalDays ?? 0,
+      }),
+    },
+    {
+      label: t('settings.activity.effectiveDuration'),
+      // Summed from the session rows, which is the only place per-session
+      // working time exists. Unavailable on the fallback path, where the
+      // transcript scan keeps no per-session duration.
+      value: stats?.sessionUsage
+        ? formatTaskDuration(
+            stats.sessionUsage.reduce((sum, session) => sum + session.activeDurationMs, 0),
+            locale,
+            t,
+          )
+        : '--',
+      detail: stats?.sessionUsage ? t('settings.activity.effectiveDurationDetail') : t('settings.activity.notCollected'),
+    },
+    {
+      label: t('settings.activity.cacheHitRate'),
+      value: formatShare(windowTotals.cacheRead, windowPromptTokens, locale),
+      detail: t('settings.activity.cacheHitRateDetail'),
+    },
+    {
+      label: t('settings.activity.mostUsedModel'),
+      value: topModel ? formatModelName(topModel.model) : t('settings.activity.none'),
+      detail: topModel ? `${formatTokens(topModel.tokens)} ${t('settings.activity.tokens')}` : undefined,
+    },
+    {
+      label: t('settings.activity.totalSessions'),
+      value: formatInteger(stats?.totalSessions ?? 0, locale),
+    },
+    {
+      label: t('settings.activity.totalToolCalls'),
+      value: formatInteger(totalToolCalls, locale),
+    },
   ]
 
   const cancelProfileEdit = () => {
@@ -880,6 +1279,38 @@ export function ActivitySettings() {
         />
       </div>
 
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+        <SegmentedControl
+          size="sm"
+          appearance="chip"
+          label={t('settings.activity.view.label')}
+          value={activeView}
+          onChange={setActiveView}
+          items={viewOptions.map((option) => ({ value: option.view, label: option.label }))}
+        />
+        {RANGE_AWARE_VIEWS.has(activeView) && (
+          <SegmentedControl
+            size="sm"
+            appearance="chip"
+            label={t('settings.activity.range.label')}
+            value={range}
+            onChange={setRange}
+            items={rangeOptions.map((option) => ({ value: option.range, label: option.label }))}
+          />
+        )}
+      </div>
+
+      {error && (
+        <div
+          role="alert"
+          className="mt-3 flex items-start gap-2 rounded-[var(--radius-md)] bg-[var(--color-error-container)] px-3 py-2 text-xs text-[var(--color-on-error-container)]"
+        >
+          <CircleAlert size={14} strokeWidth={1.75} aria-hidden="true" className="mt-px shrink-0" />
+          <span className="min-w-0 break-words">{error}</span>
+        </div>
+      )}
+
+      {activeView === 'overview' && (
       <section className="activity-summary-panel mt-3 w-full min-w-0">
         <div className="activity-summary-grid grid gap-3">
           {isLoading
@@ -929,8 +1360,9 @@ export function ActivitySettings() {
               ))}
         </div>
       </section>
+      )}
 
-      {!isLoading && !error && hasUsage && recentFirstDay && recentLastDay && (
+      {activeView === 'overview' && !isLoading && !error && hasUsage && recentFirstDay && recentLastDay && (
         <Card surface="lowest" padding="none" className="mt-3 px-4 pb-2.5 pt-4">
           <div className="mb-1 flex items-baseline justify-between gap-3">
             <span className="min-w-0 truncate text-xs text-[var(--color-text-secondary)]">
@@ -1067,6 +1499,7 @@ export function ActivitySettings() {
         )}
       </Modal>
 
+      {activeView === 'overview' && (
       <SettingsSection
         title={t('settings.activity.tokenActivity')}
         action={
@@ -1092,14 +1525,6 @@ export function ActivitySettings() {
               ))}
             </div>
           </Card>
-        ) : error ? (
-          <div
-            role="alert"
-            className="flex items-start gap-2 rounded-[var(--radius-md)] bg-[var(--color-error-container)] px-3 py-2 text-xs text-[var(--color-on-error-container)]"
-          >
-            <CircleAlert size={14} strokeWidth={1.75} aria-hidden="true" className="mt-px shrink-0" />
-            <span className="min-w-0 break-words">{error}</span>
-          </div>
         ) : !hasUsage ? (
           <EmptyState
             size="md"
@@ -1215,13 +1640,38 @@ export function ActivitySettings() {
           </Card>
         )}
       </SettingsSection>
+      )}
 
-      {!isLoading && !error && hasUsage && (
+      {activeView === 'overview' && !isLoading && !error && hasUsage && (
         <>
+          <SettingsSection title={t('settings.activity.coverage.title')}>
+            <Card surface="lowest" padding="none" className="px-4 py-3">
+              <ul className="flex flex-wrap gap-1.5">
+                {coverageItems.map((item) => (
+                  <li
+                    key={item.id}
+                    className={cx(
+                      'rounded-[var(--radius-md)] px-2 py-1 text-[11px]',
+                      item.collected
+                        ? 'bg-[var(--color-surface-container)] text-[var(--color-text-secondary)]'
+                        : 'border border-dashed border-[var(--color-border)] text-[var(--color-text-tertiary)]',
+                    )}
+                  >
+                    {t(item.labelKey)}
+                    {' · '}
+                    {item.collected
+                      ? t('settings.activity.coverage.collected')
+                      : t('settings.activity.coverage.missing')}
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          </SettingsSection>
+
           <SettingsSection title={t('settings.activity.activityInsights')}>
             <Card surface="lowest" padding="none" className="overflow-hidden">
               <dl className="divide-y divide-[var(--color-border)]">
-                {insightMetrics.map((metric) => (
+                {insights.map((metric) => (
                   <div key={metric.label} className="flex min-h-[44px] items-center justify-between gap-6 px-4 py-2.5">
                     <dt className="min-w-0 truncate text-[13px] text-[var(--color-text-secondary)]">{metric.label}</dt>
                     <dd className="flex min-w-0 items-baseline justify-end gap-2 text-right">
@@ -1235,36 +1685,234 @@ export function ActivitySettings() {
               </dl>
             </Card>
           </SettingsSection>
+        </>
+      )}
 
-          {modelRows.length > 0 && (
-            <SettingsSection title={t('settings.activity.modelUsage')}>
-            <Card surface="lowest" padding="none" role="table" className="overflow-hidden">
-              <div
-                role="row"
-                className="grid grid-cols-[minmax(0,1.6fr)_minmax(0,0.8fr)_minmax(0,0.8fr)_minmax(0,0.8fr)] gap-3 bg-[var(--color-surface-container)] px-4 py-2.5 text-xs font-semibold text-[var(--color-text-tertiary)]"
-              >
-                <span role="columnheader" className="min-w-0 truncate">{t('settings.agents.model')}</span>
-                <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.freshTokens')}</span>
-                <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.cachedTokens')}</span>
-                <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.estimatedCost')}</span>
+      {activeView === 'models' && (
+        <>
+          {!isLoading && !modelUsageWindow.rangeApplied && (
+            <div className="mt-4 rounded-[var(--radius-md)] bg-[var(--color-surface-container)] px-3 py-2 text-xs text-[var(--color-text-tertiary)]">
+              {t('settings.activity.models.rangeUnavailable')}
+            </div>
+          )}
+          <SettingsSection title={t('settings.activity.modelUsage')}>
+            <Card surface="lowest" padding="none" className="px-4 py-3.5">
+              <div className="min-w-0 truncate text-xs text-[var(--color-text-tertiary)]">{costCard.label}</div>
+              <div className="mt-1 text-[22px] font-semibold leading-tight tabular-nums text-[var(--color-text-primary)]">
+                {isLoading ? '--' : costCard.value}
               </div>
-              {modelRows.map((row) => (
-                <div
-                  key={row.model}
-                  role="row"
-                  className="grid grid-cols-[minmax(0,1.6fr)_minmax(0,0.8fr)_minmax(0,0.8fr)_minmax(0,0.8fr)] items-center gap-3 border-t border-[var(--color-border)] px-4 py-2.5 text-[13px] tabular-nums text-[var(--color-text-primary)]"
-                >
-                  <span role="cell" className="min-w-0 truncate font-mono text-xs" title={row.model}>{row.model}</span>
-                  <span role="cell" className="min-w-0 truncate text-right">{formatTokens(row.fresh)}</span>
-                  <span role="cell" className="min-w-0 truncate text-right">{formatTokens(row.cached)}</span>
-                  <span role="cell" className="min-w-0 truncate text-right">
-                    {row.unpriced ? <span className="text-[var(--color-text-tertiary)]">—</span> : formatCostUSD(row.costUSD, locale)}
-                  </span>
-                </div>
-              ))}
+              <div className="mt-1 text-xs text-[var(--color-text-tertiary)]">{costCard.detail}</div>
             </Card>
+          </SettingsSection>
+
+          <SettingsSection title={t('settings.activity.models.breakdownTitle')}>
+            {isLoading ? (
+              <Card surface="lowest" padding="none" aria-hidden="true" className="min-h-[120px] px-4 py-4">
+                <div className="h-3 w-1/4 animate-pulse rounded-[var(--radius-xs)] bg-[var(--color-surface-container)]" />
+              </Card>
+            ) : modelUsageWindow.rows.length === 0 ? (
+              <EmptyState
+                size="md"
+                icon={<ChartNoAxesColumn size={18} strokeWidth={1.75} />}
+                title={t('settings.activity.emptyTitle')}
+                description={t('settings.activity.emptyBody')}
+              />
+            ) : (
+              <Card surface="lowest" padding="none" role="table" className="overflow-hidden">
+                <div
+                  role="row"
+                  className="grid grid-cols-[minmax(0,1.5fr)_repeat(4,minmax(0,0.7fr))_minmax(0,0.8fr)] gap-2 bg-[var(--color-surface-container)] px-4 py-2.5 text-xs font-semibold text-[var(--color-text-tertiary)]"
+                >
+                  <span role="columnheader" className="min-w-0 truncate">{t('settings.agents.model')}</span>
+                  <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.dims.input')}</span>
+                  <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.dims.output')}</span>
+                  <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.dims.cacheRead')}</span>
+                  <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.dims.cacheWrite')}</span>
+                  <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.estimatedCost')}</span>
+                </div>
+                {modelUsageWindow.rows.map((row) => (
+                  <div
+                    key={row.model}
+                    role="row"
+                    className="grid grid-cols-[minmax(0,1.5fr)_repeat(4,minmax(0,0.7fr))_minmax(0,0.8fr)] items-center gap-2 border-t border-[var(--color-border)] px-4 py-2.5 text-[13px] tabular-nums text-[var(--color-text-primary)]"
+                  >
+                    <span role="cell" className="min-w-0 truncate font-mono text-xs" title={row.model}>{row.model}</span>
+                    <span role="cell" className="min-w-0 truncate text-right">{formatTokens(row.input)}</span>
+                    <span role="cell" className="min-w-0 truncate text-right">{formatTokens(row.output)}</span>
+                    <span role="cell" className="min-w-0 truncate text-right">{formatTokens(row.cacheRead)}</span>
+                    <span role="cell" className="min-w-0 truncate text-right">{formatTokens(row.cacheWrite)}</span>
+                    <span role="cell" className="min-w-0 truncate text-right">
+                      {row.unpriced ? <span className="text-[var(--color-text-tertiary)]">—</span> : formatCostUSD(row.costUSD, locale)}
+                    </span>
+                  </div>
+                ))}
+              </Card>
+            )}
+          </SettingsSection>
+
+          {!isLoading && modelUsageWindow.rows.some((row) => row.unpriced) && (
+            <SettingsSection title={t('settings.activity.models.unpricedTitle')}>
+              <Card surface="lowest" padding="none" className="overflow-hidden">
+                <ul className="divide-y divide-[var(--color-border)]">
+                  {modelUsageWindow.rows.filter((row) => row.unpriced).map((row) => (
+                    <li key={row.model} className="flex min-h-[44px] items-center gap-3 px-4 py-2">
+                      <span className="min-w-0 flex-1 truncate font-mono text-xs text-[var(--color-text-primary)]">{row.model}</span>
+                      <span className="shrink-0 text-xs tabular-nums text-[var(--color-text-tertiary)]">
+                        {formatTokens(row.total)} {t('settings.activity.tokens')}
+                      </span>
+                      <span className="shrink-0 text-xs text-[var(--color-text-tertiary)]">{t('settings.activity.models.unpricedBadge')}</span>
+                    </li>
+                  ))}
+                </ul>
+              </Card>
             </SettingsSection>
           )}
+        </>
+      )}
+
+      {activeView === 'projects' && (
+        <>
+          {!isLoading && !stats?.projectUsage && (
+            <div className="mt-4 rounded-[var(--radius-md)] bg-[var(--color-surface-container)] px-3 py-2 text-xs text-[var(--color-text-tertiary)]">
+              {t('settings.activity.projects.unavailable')}
+            </div>
+          )}
+
+          <SettingsSection title={t('settings.activity.projects.title')}>
+            {isLoading ? (
+              <Card surface="lowest" padding="none" aria-hidden="true" className="min-h-[120px] px-4 py-4">
+                <div className="h-3 w-1/4 animate-pulse rounded-[var(--radius-xs)] bg-[var(--color-surface-container)]" />
+              </Card>
+            ) : projectRows.length === 0 ? (
+              <EmptyState
+                size="md"
+                icon={<ChartNoAxesColumn size={18} strokeWidth={1.75} />}
+                title={t('settings.activity.emptyTitle')}
+                description={t('settings.activity.emptyBody')}
+              />
+            ) : (
+              <Card surface="lowest" padding="none" role="table" className="overflow-hidden">
+                <div
+                  role="row"
+                  className="grid grid-cols-[minmax(0,1.6fr)_minmax(0,0.6fr)_minmax(0,0.6fr)_minmax(0,0.9fr)_minmax(0,0.8fr)] gap-2 bg-[var(--color-surface-container)] px-4 py-2.5 text-xs font-semibold text-[var(--color-text-tertiary)]"
+                >
+                  <span role="columnheader" className="min-w-0 truncate">{t('settings.activity.projects.project')}</span>
+                  <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.projects.sessions')}</span>
+                  <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.projects.messages')}</span>
+                  <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.totalTokens')}</span>
+                  <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.estimatedCost')}</span>
+                </div>
+                {projectRows.map((row) => (
+                  <div
+                    key={row.projectPath}
+                    role="row"
+                    title={row.projectPath}
+                    className="grid grid-cols-[minmax(0,1.6fr)_minmax(0,0.6fr)_minmax(0,0.6fr)_minmax(0,0.9fr)_minmax(0,0.8fr)] items-center gap-2 border-t border-[var(--color-border)] px-4 py-2.5 text-[13px] tabular-nums text-[var(--color-text-primary)]"
+                  >
+                    <span role="cell" className="min-w-0 truncate font-medium">{row.projectName}</span>
+                    <span role="cell" className="min-w-0 truncate text-right">{formatInteger(row.sessionCount, locale)}</span>
+                    <span role="cell" className="min-w-0 truncate text-right">{formatInteger(row.messageCount, locale)}</span>
+                    <span role="cell" className="min-w-0 truncate text-right">{formatTokens(row.total)}</span>
+                    <span role="cell" className="min-w-0 truncate text-right">
+                      {row.costUSD > 0 ? formatCostUSD(row.costUSD, locale) : <span className="text-[var(--color-text-tertiary)]">—</span>}
+                    </span>
+                  </div>
+                ))}
+              </Card>
+            )}
+          </SettingsSection>
+
+          <SettingsSection
+            title={t('settings.activity.sessions.title')}
+            action={
+              <span className="text-[11px] text-[var(--color-text-tertiary)]">
+                {t('settings.activity.sessions.cap', { count: SESSION_ROW_LIMIT })}
+              </span>
+            }
+          >
+            {isLoading ? (
+              <Card surface="lowest" padding="none" aria-hidden="true" className="min-h-[120px] px-4 py-4">
+                <div className="h-3 w-1/4 animate-pulse rounded-[var(--radius-xs)] bg-[var(--color-surface-container)]" />
+              </Card>
+            ) : sessionRows.length === 0 ? (
+              <EmptyState
+                size="md"
+                icon={<ChartNoAxesColumn size={18} strokeWidth={1.75} />}
+                title={t('settings.activity.emptyTitle')}
+                description={t('settings.activity.emptyBody')}
+              />
+            ) : (
+              <Card surface="lowest" padding="none" role="table" className="overflow-hidden">
+                <div
+                  role="row"
+                  className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,1.1fr)_minmax(0,0.7fr)_minmax(0,0.7fr)_minmax(0,0.9fr)_minmax(0,0.8fr)] gap-2 bg-[var(--color-surface-container)] px-4 py-2.5 text-xs font-semibold text-[var(--color-text-tertiary)]"
+                >
+                  <span role="columnheader" className="min-w-0 truncate">{t('settings.activity.sessions.session')}</span>
+                  <span role="columnheader" className="min-w-0 truncate">{t('settings.activity.projects.project')}</span>
+                  <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.sessions.started')}</span>
+                  <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.sessions.duration')}</span>
+                  <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.totalTokens')}</span>
+                  <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.estimatedCost')}</span>
+                </div>
+                {sessionRows.map((row) => (
+                  <div
+                    key={row.sessionId}
+                    role="row"
+                    title={row.sessionId}
+                    className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,1.1fr)_minmax(0,0.7fr)_minmax(0,0.7fr)_minmax(0,0.9fr)_minmax(0,0.8fr)] items-center gap-2 border-t border-[var(--color-border)] px-4 py-2.5 text-[13px] tabular-nums text-[var(--color-text-primary)]"
+                  >
+                    <span role="cell" className="min-w-0 truncate font-mono text-xs">{row.sessionId.slice(0, 8)}</span>
+                    <span role="cell" className="min-w-0 truncate">{row.projectName}</span>
+                    <span role="cell" className="min-w-0 truncate text-right">{formatShortDate(row.startedAt.slice(0, 10), locale)}</span>
+                    <span role="cell" className="min-w-0 truncate text-right">{formatTaskDuration(row.activeDurationMs, locale, t)}</span>
+                    <span role="cell" className="min-w-0 truncate text-right">{formatTokens(row.total)}</span>
+                    <span role="cell" className="min-w-0 truncate text-right">
+                      {row.costUSD > 0 ? formatCostUSD(row.costUSD, locale) : <span className="text-[var(--color-text-tertiary)]">—</span>}
+                    </span>
+                  </div>
+                ))}
+              </Card>
+            )}
+          </SettingsSection>
+        </>
+      )}
+
+      {activeView === 'tools' && (
+        <>
+          <SettingsSection title={t('settings.activity.tools.title')}>
+            {isLoading ? (
+              <Card surface="lowest" padding="none" aria-hidden="true" className="min-h-[120px] px-4 py-4">
+                <div className="h-3 w-1/4 animate-pulse rounded-[var(--radius-xs)] bg-[var(--color-surface-container)]" />
+              </Card>
+            ) : toolRankRows.length === 0 ? (
+              <EmptyState
+                size="md"
+                icon={<ChartNoAxesColumn size={18} strokeWidth={1.75} />}
+                title={t('settings.activity.emptyTitle')}
+                description={t('settings.activity.emptyBody')}
+              />
+            ) : (
+              <Card surface="lowest" padding="none" role="table" className="overflow-hidden">
+                <div
+                  role="row"
+                  className="grid grid-cols-[minmax(0,1.8fr)_minmax(0,0.7fr)] gap-2 bg-[var(--color-surface-container)] px-4 py-2.5 text-xs font-semibold text-[var(--color-text-tertiary)]"
+                >
+                  <span role="columnheader" className="min-w-0 truncate">{t('settings.activity.tools.tool')}</span>
+                  <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.tools.calls')}</span>
+                </div>
+                {toolRankRows.map((row) => (
+                  <div
+                    key={row.name}
+                    role="row"
+                    className="grid grid-cols-[minmax(0,1.8fr)_minmax(0,0.7fr)] items-center gap-2 border-t border-[var(--color-border)] px-4 py-2.5 text-[13px] text-[var(--color-text-primary)]"
+                  >
+                    <span role="cell" className="min-w-0 truncate font-mono text-xs" title={row.name}>{row.name}</span>
+                    <span role="cell" className="min-w-0 truncate text-right tabular-nums">{formatInteger(row.count, locale)}</span>
+                  </div>
+                ))}
+              </Card>
+            )}
+          </SettingsSection>
 
           {topPluginItems.length > 0 && (
             <SettingsSection title={t('settings.activity.mostUsedPluginsAndSkills')}>
@@ -1288,6 +1936,105 @@ export function ActivitySettings() {
               </Card>
             </SettingsSection>
           )}
+
+          <SettingsSection title={t('settings.activity.tools.summaryTitle')}>
+            <Card surface="lowest" padding="none" className="overflow-hidden">
+              <dl className="divide-y divide-[var(--color-border)]">
+                <div className="flex min-h-[44px] items-center justify-between gap-6 px-4 py-2.5">
+                  <dt className="min-w-0 truncate text-[13px] text-[var(--color-text-secondary)]">{t('settings.activity.exploredSkills')}</dt>
+                  <dd className="shrink-0 text-[13px] font-medium tabular-nums text-[var(--color-text-primary)]">{toolSummary.exploredSkills}</dd>
+                </div>
+                <div className="flex min-h-[44px] items-center justify-between gap-6 px-4 py-2.5">
+                  <dt className="min-w-0 truncate text-[13px] text-[var(--color-text-secondary)]">{t('settings.activity.totalSkillUses')}</dt>
+                  <dd className="shrink-0 text-[13px] font-medium tabular-nums text-[var(--color-text-primary)]">{toolSummary.totalSkillUses}</dd>
+                </div>
+                <div className="flex min-h-[44px] items-center justify-between gap-6 px-4 py-2.5">
+                  <dt className="min-w-0 truncate text-[13px] text-[var(--color-text-secondary)]">{t('settings.activity.totalToolCalls')}</dt>
+                  <dd className="shrink-0 text-[13px] font-medium tabular-nums text-[var(--color-text-primary)]">{toolSummary.totalToolCalls}</dd>
+                </div>
+              </dl>
+            </Card>
+          </SettingsSection>
+
+          <SettingsSection title={t('settings.activity.tools.gapTitle')}>
+            <Card surface="lowest" padding="none" className="overflow-hidden">
+              <ul className="divide-y divide-[var(--color-border)]">
+                <li className="flex min-h-[44px] items-center gap-3 px-4 py-2">
+                  <span className="min-w-0 flex-1 text-[13px] text-[var(--color-text-secondary)]">{t('settings.activity.tools.duration')}</span>
+                  <span className="shrink-0 text-xs text-[var(--color-text-tertiary)]">{t('settings.activity.notCollected')}</span>
+                </li>
+                <li className="flex min-h-[44px] items-center gap-3 px-4 py-2">
+                  <span className="min-w-0 flex-1 text-[13px] text-[var(--color-text-secondary)]">{t('settings.activity.tools.failureRate')}</span>
+                  <span className="shrink-0 text-xs text-[var(--color-text-tertiary)]">{t('settings.activity.notCollected')}</span>
+                </li>
+              </ul>
+            </Card>
+          </SettingsSection>
+        </>
+      )}
+
+      {activeView === 'diagnostics' && (
+        <>
+          <SettingsSection title={t('settings.activity.coverage.title')}>
+            <Card surface="lowest" padding="none" className="overflow-hidden">
+              <ul className="divide-y divide-[var(--color-border)]">
+                {coverageItems.map((item) => (
+                  <li key={item.id} className="flex min-h-[44px] items-center gap-3 px-4 py-2">
+                    <span className="min-w-0 flex-1 text-[13px] text-[var(--color-text-secondary)]">
+                      {t(item.labelKey)}
+                    </span>
+                    <span
+                      className={cx(
+                        'shrink-0 text-xs',
+                        item.collected ? 'text-[var(--color-text-tertiary)]' : 'text-[var(--color-warning,var(--color-text-tertiary))]',
+                      )}
+                    >
+                      {item.collected
+                        ? t('settings.activity.coverage.collected')
+                        : t('settings.activity.coverage.missing')}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          </SettingsSection>
+
+          <SettingsSection title={t('settings.activity.diagnostics.title')}>
+            {isLoading ? (
+              <Card surface="lowest" padding="none" aria-hidden="true" className="min-h-[120px] px-4 py-4">
+                <div className="h-3 w-1/4 animate-pulse rounded-[var(--radius-xs)] bg-[var(--color-surface-container)]" />
+              </Card>
+            ) : diagnostics.length === 0 ? (
+              <Card surface="lowest" padding="none" className="px-4 py-3 text-[13px] text-[var(--color-text-secondary)]">
+                {t('settings.activity.diagnostics.allClear')}
+              </Card>
+            ) : (
+              <Card surface="lowest" padding="none" className="overflow-hidden">
+                <ul className="divide-y divide-[var(--color-border)]">
+                  {diagnostics.map((item) => (
+                    <li key={item.id} className="flex items-start gap-3 px-4 py-3">
+                      <span
+                        aria-hidden="true"
+                        className={cx(
+                          'mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full',
+                          item.level === 'warn' ? 'bg-[var(--color-error)]' : 'bg-[var(--color-outline)]',
+                        )}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-[13px] font-medium text-[var(--color-text-primary)]">{item.title}</span>
+                        <span className="mt-0.5 block break-words font-mono text-[11px] text-[var(--color-text-tertiary)]">{item.detail}</span>
+                      </span>
+                      <span className="shrink-0 text-[11px] text-[var(--color-text-tertiary)]">
+                        {item.level === 'warn'
+                          ? t('settings.activity.diagnostics.levelWarn')
+                          : t('settings.activity.diagnostics.levelInfo')}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </Card>
+            )}
+          </SettingsSection>
         </>
       )}
     </div>

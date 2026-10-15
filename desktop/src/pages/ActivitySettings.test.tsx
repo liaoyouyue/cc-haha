@@ -37,6 +37,11 @@ vi.mock('../api/desktopUiPreferences', () => ({
   getProfileAvatarUrl: () => '/api/desktop-ui/preferences/profile/avatar?mock=1',
 }))
 
+/**
+ * The per-day rows below are the single source of truth for the model sheet, so
+ * they are made to add up to `modelUsage` exactly: a fixture whose grains
+ * disagree would let a double-counting bug pass.
+ */
 const activityResponse = {
   range: 'all',
   generatedAt: '2026-05-09T12:00:00.000Z',
@@ -68,8 +73,25 @@ const activityResponse = {
       outputTokens: 700_000,
       cacheReadInputTokens: 230_000,
       cacheCreationInputTokens: 34_000,
+      costUSD: 12.5,
     },
   },
+  unpricedModels: [],
+  dailyModelUsage: [
+    { date: '2026-04-20', model: 'claude-sonnet', inputTokens: 1_800_000, outputTokens: 660_000, cacheReadInputTokens: 200_000, cacheCreationInputTokens: 12_000, costUSD: 9.5 },
+    { date: '2026-05-07', model: 'claude-sonnet', inputTokens: 40_000, outputTokens: 20_000, cacheReadInputTokens: 4_000, cacheCreationInputTokens: 0, costUSD: 1 },
+    { date: '2026-05-09', model: 'claude-sonnet', inputTokens: 60_000, outputTokens: 20_000, cacheReadInputTokens: 26_000, cacheCreationInputTokens: 22_000, costUSD: 2 },
+  ],
+  projectUsage: [
+    { date: '2026-05-07', projectPath: 'C--proj-alpha', projectName: 'proj-alpha', sessionCount: 1, messageCount: 30, toolCallCount: 12, inputTokens: 40_000, outputTokens: 20_000, cacheReadInputTokens: 4_000, cacheCreationInputTokens: 0, costUSD: 1 },
+    { date: '2026-05-09', projectPath: 'C--proj-alpha', projectName: 'proj-alpha', sessionCount: 2, messageCount: 58, toolCallCount: 21, inputTokens: 60_000, outputTokens: 20_000, cacheReadInputTokens: 26_000, cacheCreationInputTokens: 22_000, costUSD: 2 },
+    { date: '2026-05-09', projectPath: 'C--proj-beta', projectName: 'proj-beta', sessionCount: 2, messageCount: 10, toolCallCount: 3, inputTokens: 5_000, outputTokens: 1_000, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0 },
+  ],
+  sessionUsage: [
+    { sessionId: 'sess-old-1', projectPath: 'C--proj-alpha', projectName: 'proj-alpha', startedAt: '2026-04-20T09:00:00.000Z', activeDurationMs: 600_000, messageCount: 4, inputTokens: 1_000, outputTokens: 100, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0 },
+    { sessionId: 'sess-alpha-1', projectPath: 'C--proj-alpha', projectName: 'proj-alpha', startedAt: '2026-05-07T09:00:00.000Z', activeDurationMs: 5_400_000, messageCount: 30, inputTokens: 40_000, outputTokens: 20_000, cacheReadInputTokens: 4_000, cacheCreationInputTokens: 0, costUSD: 1 },
+    { sessionId: 'sess-beta-1', projectPath: 'C--proj-beta', projectName: 'proj-beta', startedAt: '2026-05-09T09:00:00.000Z', activeDurationMs: 1_800_000, messageCount: 10, inputTokens: 5_000, outputTokens: 1_000, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0 },
+  ],
   toolUsage: {
     Bash: 180,
     Read: 160,
@@ -96,6 +118,14 @@ async function flushActivityLoad() {
     await Promise.resolve()
     await Promise.resolve()
   })
+}
+
+function openView(name: string) {
+  fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Usage views' })).getByRole('radio', { name }))
+}
+
+function selectRange(name: string) {
+  fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Time range' })).getByRole('radio', { name }))
 }
 
 describe('ActivitySettings', () => {
@@ -211,43 +241,36 @@ describe('ActivitySettings', () => {
     expect(screen.getByText('Longest task')).toBeInTheDocument()
     expect(screen.getByText('Current streak')).toBeInTheDocument()
     expect(screen.getByText('Longest streak')).toBeInTheDocument()
-    expect(screen.getByText('2.9M')).toBeInTheDocument()
-    expect(screen.getByText('2.7M')).toBeInTheDocument()
+    // Compact-formatter units, not M/K: the shipped build renders 万/亿.
+    expect(screen.getByText('286万')).toBeInTheDocument()
+    expect(screen.getByText('267万')).toBeInTheDocument()
     expect(screen.getByText('0m')).toBeInTheDocument()
     expect(screen.getByText('9 days')).toBeInTheDocument()
     expect(screen.getByText('18 days')).toBeInTheDocument()
     expect(screen.getByText('Activity insights')).toBeInTheDocument()
     expect(screen.getByText('Active rate')).toBeInTheDocument()
     expect(screen.getByText('Most used model')).toBeInTheDocument()
-    expect(screen.getByText('Skills explored')).toBeInTheDocument()
-    expect(screen.getByText('Skill uses')).toBeInTheDocument()
-    expect(screen.getByText('Tool calls')).toBeInTheDocument()
     expect(screen.getByText('Total sessions')).toBeInTheDocument()
-    expect(screen.getByText('Most used plugins & skills')).toBeInTheDocument()
+    expect(screen.getByText('Tool calls')).toBeInTheDocument()
     expect(screen.getByText('Sonnet')).toBeInTheDocument()
-    expect(screen.getByText('$frontend-design')).toBeInTheDocument()
-    expect(screen.getByText('$git-commit-pr')).toBeInTheDocument()
-    expect(screen.getByText('$code-review')).toBeInTheDocument()
-    expect(screen.getByText('@github')).toBeInTheDocument()
-    expect(screen.getByText('@chrome-devtools')).toBeInTheDocument()
-    expect(screen.getByText('@figma')).toBeInTheDocument()
-    expect(screen.getByText('24 runs')).toBeInTheDocument()
-    expect(screen.getByText('14 runs')).toBeInTheDocument()
-    expect(screen.getByText('7 runs')).toBeInTheDocument()
-    expect(screen.queryByText('@linear')).not.toBeInTheDocument()
-    expect(screen.queryByText('Bash')).not.toBeInTheDocument()
-    expect(screen.queryByText('Read')).not.toBeInTheDocument()
     expect(screen.getAllByText('May').length).toBeGreaterThan(0)
     expect(screen.queryByText('5月')).not.toBeInTheDocument()
     // May 2026 starts in the final column, too late to fit its name.
     expect(screen.getByTestId('activity-month-labels').lastElementChild).toHaveTextContent('Apr')
 
     const todayCell = screen.getByRole('gridcell', {
-      name: /May 9, 2026: 4 sessions · 128K Tokens/i,
+      name: /May 9, 2026: 4 sessions · 13万 Tokens/i,
     })
     expect(todayCell).toBeInTheDocument()
     expect(screen.queryByRole('gridcell', { name: /May 10, 2026/i })).not.toBeInTheDocument()
-  })
+
+    // The other four sheets are one click away, not stacked on this one.
+    expect(screen.queryByRole('heading', { name: 'Usage by model' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Tool call ranking' })).not.toBeInTheDocument()
+    // This one asserts the whole overview in a single pass — the 364-cell grid
+    // plus every summary tile — and needs more than the 5s default on a loaded
+    // machine. Nothing here waits, so the ceiling is headroom, not a crutch.
+  }, 20_000)
 
   it('shows a compact hover preview without a persistent selected-day panel', async () => {
     render(<ActivitySettings />)
@@ -255,13 +278,13 @@ describe('ActivitySettings', () => {
     await flushActivityLoad()
 
     const todayCell = screen.getByRole('gridcell', {
-      name: /May 9, 2026: 4 sessions · 128K Tokens/i,
+      name: /May 9, 2026: 4 sessions · 13万 Tokens/i,
     })
 
     fireEvent.mouseEnter(todayCell)
     const tooltip = screen.getByRole('tooltip')
     expect(tooltip).toHaveTextContent('May 9, 2026')
-    expect(tooltip).toHaveTextContent('4 sessions · 128K Tokens')
+    expect(tooltip).toHaveTextContent('4 sessions · 13万 Tokens')
     expect(tooltip).not.toHaveTextContent(/messages|tools/i)
     expect(tooltip.className).toContain('--color-activity-tooltip-surface')
     expect(tooltip.className).toContain('--color-activity-tooltip-border')
@@ -290,7 +313,7 @@ describe('ActivitySettings', () => {
 
     const summaryPanel = screen.getByText('Total tokens').closest('section')
     expect(summaryPanel).toHaveClass('activity-summary-panel')
-    expect(within(summaryPanel as HTMLElement).getByText('2.9M')).toBeInTheDocument()
+    expect(within(summaryPanel as HTMLElement).getByText('286万')).toBeInTheDocument()
 
     // Breakpoints live in container queries (globals.css), so the settings rail
     // width cannot push the tiles into a cramped row.
@@ -351,8 +374,8 @@ describe('ActivitySettings', () => {
     const bars = within(chart).getAllByRole('listitem')
     expect(bars).toHaveLength(14)
     expect(bars[0]).toHaveTextContent('Apr 26, 2026: 0 Tokens')
-    expect(bars[11]).toHaveTextContent('May 7, 2026: 64K Tokens')
-    expect(bars[13]).toHaveTextContent('May 9, 2026: 128K Tokens')
+    expect(bars[11]).toHaveTextContent('May 7, 2026: 6万 Tokens')
+    expect(bars[13]).toHaveTextContent('May 9, 2026: 13万 Tokens')
     expect(within(chart).queryByText(/May 10, 2026/)).not.toBeInTheDocument()
 
     const barFill = (bar: HTMLElement) => bar.firstElementChild as HTMLElement
@@ -365,67 +388,184 @@ describe('ActivitySettings', () => {
     expect(barFill(bars[11]!).className).not.toContain('--color-brand')
   })
 
-  it('breaks tokens and cost down per model, marking unpriced models instead of showing $0', async () => {
+  it('reports collection coverage on the overview and lists it again in diagnostics', async () => {
+    render(<ActivitySettings />)
+
+    await flushActivityLoad()
+
+    const coverage = screen.getByRole('heading', { name: 'Collection coverage' }).closest('section')!
+    expect(within(coverage).getByText(/Four token dimensions/)).toBeInTheDocument()
+    expect(within(coverage).getByText(/Tool call duration/)).toBeInTheDocument()
+
+    openView('Diagnostics')
+    const rows = screen.getAllByText('Tool call duration')
+    // Stated as a gap, not rendered as a zero that reads like measured data.
+    expect(rows.length).toBeGreaterThan(0)
+    expect(screen.getAllByText('not collected').length).toBeGreaterThan(0)
+    expect(screen.getByText('Per-tool duration and failure rate')).toBeInTheDocument()
+  })
+
+  it('breaks every token dimension down per model and marks unpriced models', async () => {
     getStatsMock.mockResolvedValueOnce({
       ...activityResponse,
       modelUsage: {
-        'claude-sonnet': {
-          inputTokens: 1_900_000,
-          outputTokens: 700_000,
-          cacheReadInputTokens: 230_000,
-          cacheCreationInputTokens: 34_000,
-          costUSD: 12.5,
-        },
-        'glm-4.6': {
-          inputTokens: 40_000,
-          outputTokens: 2_000,
-          costUSD: 0,
-        },
+        'claude-sonnet': { inputTokens: 1_900_000, outputTokens: 700_000, cacheReadInputTokens: 230_000, cacheCreationInputTokens: 34_000, costUSD: 12.5 },
+        'glm-4.6': { inputTokens: 40_000, outputTokens: 2_000, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0 },
       },
       unpricedModels: ['glm-4.6'],
+      dailyModelUsage: [
+        ...activityResponse.dailyModelUsage,
+        { date: '2026-05-09', model: 'glm-4.6', inputTokens: 40_000, outputTokens: 2_000, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0 },
+      ],
     })
     render(<ActivitySettings />)
 
     await flushActivityLoad()
+    openView('Model cost')
 
     const table = screen.getByRole('table')
     const rows = within(table).getAllByRole('row')
     expect(rows).toHaveLength(3)
     expect(within(rows[0]!).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual([
       'Model',
-      'New tokens',
-      'Cache hits',
+      'Input',
+      'Output',
+      'Cache read',
+      'Cache write',
       'Estimated cost',
     ])
-    // Sorted by total tokens, largest first.
+    // Sorted by total tokens, largest first, with the four buckets kept apart.
     expect(within(rows[1]!).getAllByRole('cell').map((cell) => cell.textContent)).toEqual([
       'claude-sonnet',
-      '2.6M',
-      '230K',
+      '190万',
+      '70万',
+      '23万',
+      '3万',
       '$12.50',
     ])
     expect(within(rows[2]!).getAllByRole('cell').map((cell) => cell.textContent)).toEqual([
       'glm-4.6',
-      '42K',
+      '4万',
+      '2000',
+      '0',
       '0',
       '—',
     ])
+
+    // Unpriced models are named rather than folded into the dollar figure.
+    const unpriced = screen.getByRole('heading', { name: 'Unpriced models' }).closest('section')!
+    expect(within(unpriced).getByText('glm-4.6')).toBeInTheDocument()
+    expect(within(unpriced).getByText('no published rate')).toBeInTheDocument()
   })
 
-  it('orders the page usage, then activity, then the per-model breakdown', async () => {
+  it('narrows the model sheet in place, without refetching on every range change', async () => {
     render(<ActivitySettings />)
 
     await flushActivityLoad()
+    openView('Model cost')
 
-    const usage = screen.getByRole('list', { name: 'Token usage by day' })
-    const activity = screen.getByRole('heading', { name: 'Token Activity' })
-    const insights = screen.getByRole('heading', { name: 'Activity insights' })
-    const models = screen.getByRole('heading', { name: 'Usage by model' })
-    const follows = (a: Node, b: Node) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
-    expect(follows(usage, activity)).toBe(true)
-    expect(follows(activity, insights)).toBe(true)
-    expect(follows(insights, models)).toBe(true)
-    expect(follows(models, screen.getByRole('table'))).toBe(true)
+    expect(screen.getAllByText('$12.50').length).toBeGreaterThan(0)
+
+    selectRange('Last 7 days')
+
+    // Cutting 04-20 drops 1.8M input / 660K output but keeps the newer days.
+    const cells = within(screen.getByRole('table')).getAllByRole('cell').map((cell) => cell.textContent)
+    expect(cells).toEqual(['claude-sonnet', '10万', '4万', '3万', '2万', '$3.00'])
+    // One load on mount, none per range switch: the window is narrowed locally.
+    expect(getStatsMock).toHaveBeenCalledTimes(1)
+
+    selectRange('All time')
+    expect(within(screen.getByRole('table')).getAllByRole('cell').map((cell) => cell.textContent))
+      .toEqual(['claude-sonnet', '190万', '70万', '23万', '3万', '$12.50'])
+    expect(getStatsMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('ranks projects and sessions, and drops out-of-window sessions on a narrower range', async () => {
+    render(<ActivitySettings />)
+
+    await flushActivityLoad()
+    openView('Projects')
+
+    const projectTable = screen.getByRole('heading', { name: 'Usage by project' })
+      .closest('section')!.querySelector('[role="table"]') as HTMLElement
+    const projectRows = within(projectTable).getAllByRole('row')
+    expect(within(projectRows[1]!).getAllByRole('cell').map((cell) => cell.textContent)).toEqual([
+      'proj-alpha', '3', '88', '19万', '$3.00',
+    ])
+    // Zero known cost reads as "no rate", not as a free project.
+    expect(within(projectRows[2]!).getAllByRole('cell').map((cell) => cell.textContent)).toEqual([
+      'proj-beta', '2', '10', '6000', '—',
+    ])
+
+    const sessionTable = screen.getByRole('heading', { name: 'Session ranking' })
+      .closest('section')!.querySelector('[role="table"]') as HTMLElement
+    expect(within(sessionTable).getAllByRole('row')).toHaveLength(4)
+    expect(within(sessionTable).getByText('sess-alp')).toBeInTheDocument()
+
+    selectRange('Last 7 days')
+
+    const narrowed = screen.getByRole('heading', { name: 'Session ranking' })
+      .closest('section')!.querySelector('[role="table"]') as HTMLElement
+    // The 04-20 session falls outside the window and must not be counted in it.
+    expect(within(narrowed).getAllByRole('row')).toHaveLength(3)
+    expect(within(narrowed).queryByText('sess-old')).not.toBeInTheDocument()
+  })
+
+  it('says project attribution is unavailable instead of showing an empty leaderboard', async () => {
+    getStatsMock.mockResolvedValueOnce({
+      ...activityResponse,
+      projectUsage: null,
+      sessionUsage: null,
+    })
+    render(<ActivitySettings />)
+
+    await flushActivityLoad()
+    openView('Projects')
+
+    expect(screen.getByText(/Project attribution needs the local index/)).toBeInTheDocument()
+    expect(screen.queryByRole('table')).not.toBeInTheDocument()
+  })
+
+  it('ranks tool calls and refuses to invent durations or failure rates', async () => {
+    render(<ActivitySettings />)
+
+    await flushActivityLoad()
+    openView('Agent tools')
+
+    const table = screen.getByRole('table')
+    const rows = within(table).getAllByRole('row')
+    expect(within(rows[1]!).getAllByRole('cell').map((cell) => cell.textContent)).toEqual(['Bash', '180'])
+    expect(within(rows[2]!).getAllByRole('cell').map((cell) => cell.textContent)).toEqual(['Read', '160'])
+
+    expect(screen.getByText('Average duration per tool')).toBeInTheDocument()
+    expect(screen.getByText('Failure rate per tool')).toBeInTheDocument()
+    // Both are marked uncollected rather than rendered as measured zeroes.
+    expect(screen.getByRole('heading', { name: 'Not collected yet' })).toBeInTheDocument()
+    expect(screen.getAllByText('Not collected')).toHaveLength(2)
+    expect(screen.getByText('$frontend-design')).toBeInTheDocument()
+    expect(screen.getByText('24 runs')).toBeInTheDocument()
+  })
+
+  it('flags unpriced models and grain mismatches as diagnostics, with the numbers behind them', async () => {
+    getStatsMock.mockResolvedValueOnce({
+      ...activityResponse,
+      modelUsage: {
+        'glm-4.6': { inputTokens: 40_000, outputTokens: 2_000, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0 },
+      },
+      unpricedModels: ['glm-4.6'],
+      // The day series is empty while the aggregate is not: exactly the shape a
+      // double-count or a dropped day would produce.
+      dailyModelTokens: [],
+    })
+    render(<ActivitySettings />)
+
+    await flushActivityLoad()
+    openView('Diagnostics')
+
+    expect(screen.getByText('1 models have no published rate')).toBeInTheDocument()
+    expect(screen.getByText('glm-4.6')).toBeInTheDocument()
+    expect(screen.getByText('1 models disagree between the daily series and their total')).toBeInTheDocument()
+    expect(screen.getByText(/glm-4.6: 4万 vs 0/)).toBeInTheDocument()
   })
 
   it('supports localized heatmap mode switches and persisted display name edits', async () => {
@@ -444,6 +584,13 @@ describe('ActivitySettings', () => {
     expect(screen.getAllByRole('gridcell', { name: /^2026年5月3日 - 2026年5月9日:/ }).length).toBeGreaterThan(0)
     fireEvent.click(within(modeGroup).getByRole('radio', { name: '累计' }))
     expect(within(modeGroup).getByRole('radio', { name: '累计' })).toHaveAttribute('aria-checked', 'true')
+
+    // The five sheets and the range control are localized too, not just the heatmap.
+    expect(within(screen.getByRole('radiogroup', { name: '用量视图' })).getByRole('radio', { name: '总览中心' }))
+      .toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(within(screen.getByRole('radiogroup', { name: '用量视图' })).getByRole('radio', { name: '项目会话' }))
+    expect(within(screen.getByRole('radiogroup', { name: '时间区间' })).getByRole('radio', { name: '近 7 天' }))
+      .toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '编辑个人资料' }))
     const input = screen.getByLabelText('显示名称')
@@ -539,6 +686,9 @@ describe('ActivitySettings', () => {
       activeDays: 0,
       dailyActivity: [],
       dailyModelTokens: [],
+      dailyModelUsage: [],
+      projectUsage: [],
+      sessionUsage: [],
       toolUsage: {},
       skillUsage: {},
       longestSession: {

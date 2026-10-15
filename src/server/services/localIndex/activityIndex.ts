@@ -62,6 +62,69 @@ export interface ActivityIndex {
   getActivityBackfillState(scope: string): ActivityBackfillState | null
   aggregateActivity(range: StatsDateRange, now?: Date): ClaudeCodeStats
   explainAggregatePlan(range: StatsDateRange, now?: Date): string[]
+  /**
+   * Token Intelligence (Phase A) read-only extensions. These are deliberately
+   * *not* part of `ClaudeCodeStats`: that shape is shared with the JSONL
+   * fallback and `stats-cache.json` v7, so adding fields to it would change the
+   * cache format and the shadow-mode parity comparison. Everything below reads
+   * the existing tables and adds no schema, no migration and no cache coupling.
+   */
+  aggregateDailyModelUsage(range: StatsDateRange, now?: Date): DailyModelUsage[]
+  aggregateProjectUsage(range: StatsDateRange, now?: Date): ProjectUsage[]
+  aggregateSessionUsage(
+    range: StatsDateRange,
+    now?: Date,
+    limit?: number,
+  ): SessionUsage[]
+}
+
+/** One day of one model's spend — the per-day grain the range filter needs. */
+export type DailyModelUsage = {
+  date: string
+  model: string
+  inputTokens: number
+  outputTokens: number
+  cacheReadInputTokens: number
+  cacheCreationInputTokens: number
+  costUSD: number
+}
+
+/**
+ * One day of one project's activity. `projectPath` is the sanitized transcript
+ * directory name (`C--Users-Administrator`); the caller turns it into a display
+ * name. Session/message/tool counts ride along so the project view needs one
+ * request rather than one per project.
+ */
+export type ProjectUsage = {
+  date: string
+  projectPath: string
+  sessionCount: number
+  messageCount: number
+  toolCallCount: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadInputTokens: number
+  cacheCreationInputTokens: number
+  costUSD: number
+}
+
+/**
+ * One main session (subagent transcripts roll up into their parent). Token
+ * totals include the session's subagents, which is real spend; `messageCount`
+ * and `activeDurationMs` describe the main transcript only, matching how
+ * `aggregateActivity` reports `longestSession`.
+ */
+export type SessionUsage = {
+  sessionId: string
+  projectPath: string
+  startedAt: string
+  activeDurationMs: number
+  messageCount: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadInputTokens: number
+  cacheCreationInputTokens: number
+  costUSD: number
 }
 
 type ActivitySourceRow = {
@@ -683,6 +746,249 @@ export function createActivityIndex(
           delete result.oneShotRate
         }
         return result
+      })
+    },
+
+    aggregateDailyModelUsage(range, now = new Date()): DailyModelUsage[] {
+      const predicate = rangePredicate(
+        range,
+        now,
+        'activity_daily_models.date',
+        'activity_sources.mtime_ms',
+      )
+      return database.read(operation => operation.all<{
+        date: string
+        model: string
+        input_tokens: number
+        output_tokens: number
+        cache_read_input_tokens: number
+        cache_creation_input_tokens: number
+        cost_usd: number
+      }>(`
+        SELECT activity_daily_models.date AS date,
+          activity_daily_models.model AS model,
+          SUM(input_tokens) AS input_tokens,
+          SUM(output_tokens) AS output_tokens,
+          SUM(cache_read_input_tokens) AS cache_read_input_tokens,
+          SUM(cache_creation_input_tokens) AS cache_creation_input_tokens,
+          SUM(cost_usd) AS cost_usd
+        FROM activity_daily_models
+        JOIN activity_sources
+          ON activity_sources.path = activity_daily_models.transcript_path
+        ${predicate.sql}
+        GROUP BY activity_daily_models.date, activity_daily_models.model
+        ORDER BY activity_daily_models.date ASC, activity_daily_models.model ASC
+      `, ...predicate.bindings).map(row => ({
+        date: row.date,
+        model: row.model,
+        inputTokens: row.input_tokens,
+        outputTokens: row.output_tokens,
+        cacheReadInputTokens: row.cache_read_input_tokens,
+        cacheCreationInputTokens: row.cache_creation_input_tokens,
+        costUSD: row.cost_usd,
+      })))
+    },
+
+    aggregateProjectUsage(range, now = new Date()): ProjectUsage[] {
+      const activityRange = rangePredicate(
+        range,
+        now,
+        'activity_daily.date',
+        'activity_sources.mtime_ms',
+      )
+      const modelRange = rangePredicate(
+        range,
+        now,
+        'activity_daily_models.date',
+        'activity_sources.mtime_ms',
+      )
+      // Two grouped reads rather than one joined one: activity_daily and
+      // activity_daily_models both fan out per transcript, so joining them would
+      // multiply message counts by the number of models that transcript used.
+      return database.read(operation => {
+        const merged = new Map<string, ProjectUsage>()
+        const entry = (date: string, projectPath: string): ProjectUsage => {
+          const key = `${date}\u0000${projectPath}`
+          let found = merged.get(key)
+          if (!found) {
+            found = {
+              date,
+              projectPath,
+              sessionCount: 0,
+              messageCount: 0,
+              toolCallCount: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              cacheReadInputTokens: 0,
+              cacheCreationInputTokens: 0,
+              costUSD: 0,
+            }
+            merged.set(key, found)
+          }
+          return found
+        }
+
+        for (const row of operation.all<{
+          date: string
+          project_path: string
+          session_count: number
+          message_count: number
+          tool_call_count: number
+        }>(`
+          SELECT activity_daily.date AS date,
+            activity_sources.project_path AS project_path,
+            COUNT(DISTINCT activity_sources.parent_session_id) AS session_count,
+            SUM(activity_daily.message_count) AS message_count,
+            SUM(activity_daily.tool_call_count) AS tool_call_count
+          FROM activity_daily
+          JOIN activity_sources
+            ON activity_sources.path = activity_daily.transcript_path
+          ${activityRange.sql}
+          GROUP BY activity_daily.date, activity_sources.project_path
+        `, ...activityRange.bindings)) {
+          const target = entry(row.date, row.project_path)
+          target.sessionCount = row.session_count
+          target.messageCount = row.message_count
+          target.toolCallCount = row.tool_call_count
+        }
+
+        for (const row of operation.all<{
+          date: string
+          project_path: string
+          input_tokens: number
+          output_tokens: number
+          cache_read_input_tokens: number
+          cache_creation_input_tokens: number
+          cost_usd: number
+        }>(`
+          SELECT activity_daily_models.date AS date,
+            activity_sources.project_path AS project_path,
+            SUM(input_tokens) AS input_tokens,
+            SUM(output_tokens) AS output_tokens,
+            SUM(cache_read_input_tokens) AS cache_read_input_tokens,
+            SUM(cache_creation_input_tokens) AS cache_creation_input_tokens,
+            SUM(cost_usd) AS cost_usd
+          FROM activity_daily_models
+          JOIN activity_sources
+            ON activity_sources.path = activity_daily_models.transcript_path
+          ${modelRange.sql}
+          GROUP BY activity_daily_models.date, activity_sources.project_path
+        `, ...modelRange.bindings)) {
+          const target = entry(row.date, row.project_path)
+          target.inputTokens = row.input_tokens
+          target.outputTokens = row.output_tokens
+          target.cacheReadInputTokens = row.cache_read_input_tokens
+          target.cacheCreationInputTokens = row.cache_creation_input_tokens
+          target.costUSD = row.cost_usd
+        }
+
+        return [...merged.values()].sort((left, right) =>
+          left.date.localeCompare(right.date) ||
+          left.projectPath.localeCompare(right.projectPath))
+      })
+    },
+
+    aggregateSessionUsage(range, now = new Date(), limit = 500): SessionUsage[] {
+      const sessionRange = rangePredicate(
+        range,
+        now,
+        'date(activity_sessions.first_timestamp)',
+        'activity_sources.mtime_ms',
+      )
+      const modelRange = rangePredicate(
+        range,
+        now,
+        'activity_daily_models.date',
+        'activity_sources.mtime_ms',
+      )
+      return database.read(operation => {
+        const sessions = operation.all<{
+          session_id: string
+          project_path: string
+          started_at: string
+          active_duration_ms: number
+          message_count: number
+        }>(`
+          SELECT activity_sessions.session_id AS session_id,
+            activity_sources.project_path AS project_path,
+            activity_sessions.first_timestamp AS started_at,
+            activity_sessions.active_duration_ms AS active_duration_ms,
+            activity_sessions.message_count AS message_count
+          FROM activity_sessions
+          JOIN activity_sources
+            ON activity_sources.path = activity_sessions.transcript_path
+          ${sessionRange.sql}${sessionRange.sql ? ' AND' : ' WHERE'}
+            activity_sources.is_subagent = 0
+            AND activity_sessions.first_timestamp IS NOT NULL
+          ORDER BY activity_sessions.first_timestamp ASC,
+            activity_sessions.session_id ASC
+        `, ...sessionRange.bindings)
+
+        // Subagent transcripts carry their own rows against the same
+        // parent_session_id, so this rolls a session's whole spend (main +
+        // subagents) into one line. Filtering the range on the token rows here
+        // would split a session across days, so the range filter matches the
+        // session list above instead and the tokens are summed per session.
+        const tokensBySession = new Map<string, {
+          inputTokens: number
+          outputTokens: number
+          cacheReadInputTokens: number
+          cacheCreationInputTokens: number
+          costUSD: number
+        }>()
+        for (const row of operation.all<{
+          session_id: string
+          input_tokens: number
+          output_tokens: number
+          cache_read_input_tokens: number
+          cache_creation_input_tokens: number
+          cost_usd: number
+        }>(`
+          SELECT activity_sources.parent_session_id AS session_id,
+            SUM(input_tokens) AS input_tokens,
+            SUM(output_tokens) AS output_tokens,
+            SUM(cache_read_input_tokens) AS cache_read_input_tokens,
+            SUM(cache_creation_input_tokens) AS cache_creation_input_tokens,
+            SUM(cost_usd) AS cost_usd
+          FROM activity_daily_models
+          JOIN activity_sources
+            ON activity_sources.path = activity_daily_models.transcript_path
+          ${modelRange.sql}
+          GROUP BY activity_sources.parent_session_id
+        `, ...modelRange.bindings)) {
+          tokensBySession.set(row.session_id, {
+            inputTokens: row.input_tokens,
+            outputTokens: row.output_tokens,
+            cacheReadInputTokens: row.cache_read_input_tokens,
+            cacheCreationInputTokens: row.cache_creation_input_tokens,
+            costUSD: row.cost_usd,
+          })
+        }
+
+        return sessions.map<SessionUsage>(row => {
+          const tokens = tokensBySession.get(row.session_id)
+          return {
+            sessionId: row.session_id,
+            projectPath: row.project_path,
+            startedAt: row.started_at,
+            activeDurationMs: row.active_duration_ms,
+            messageCount: row.message_count,
+            inputTokens: tokens?.inputTokens ?? 0,
+            outputTokens: tokens?.outputTokens ?? 0,
+            cacheReadInputTokens: tokens?.cacheReadInputTokens ?? 0,
+            cacheCreationInputTokens: tokens?.cacheCreationInputTokens ?? 0,
+            costUSD: tokens?.costUSD ?? 0,
+          }
+        })
+          .sort((left, right) => {
+            const leftTotal = left.inputTokens + left.outputTokens +
+              left.cacheReadInputTokens + left.cacheCreationInputTokens
+            const rightTotal = right.inputTokens + right.outputTokens +
+              right.cacheReadInputTokens + right.cacheCreationInputTokens
+            return rightTotal - leftTotal ||
+              left.sessionId.localeCompare(right.sessionId)
+          })
+          .slice(0, limit)
       })
     },
 

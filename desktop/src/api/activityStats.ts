@@ -64,16 +64,77 @@ export type ActivityStats = {
   totalSpeculationTimeSavedMs: number
 }
 
+/**
+ * One day of one model's spend. The per-day grain is what lets the model sheet
+ * re-filter a new range without another round trip: the whole window arrives
+ * once and is narrowed in the browser.
+ */
+export type DailyModelUsage = {
+  date: string
+  model: string
+  inputTokens: number
+  outputTokens: number
+  cacheReadInputTokens: number
+  cacheCreationInputTokens: number
+  costUSD: number
+}
+
+/**
+ * One day of one project. `projectPath` is the sanitized transcript directory
+ * name and is the stable key; `projectName` is a display label derived from it
+ * (and therefore approximate — the sanitizer is lossy).
+ */
+export type ProjectUsage = {
+  date: string
+  projectPath: string
+  projectName: string
+  sessionCount: number
+  messageCount: number
+  toolCallCount: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadInputTokens: number
+  cacheCreationInputTokens: number
+  costUSD: number
+}
+
+/** One main session. Token totals include the session's subagents. */
+export type SessionUsage = {
+  sessionId: string
+  projectPath: string
+  projectName: string
+  startedAt: string
+  activeDurationMs: number
+  messageCount: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadInputTokens: number
+  cacheCreationInputTokens: number
+  costUSD: number
+}
+
+/**
+ * `null` means the local index could not answer — it is disabled, still
+ * building, or the read fell back to the JSONL scan, which has no per-project
+ * or per-session token grain. It is never an empty array standing in for
+ * "unknown", so the page can tell the two apart and say so.
+ */
+export type ActivityStatsAddOns = {
+  dailyModelUsage: DailyModelUsage[] | null
+  projectUsage: ProjectUsage[] | null
+  sessionUsage: SessionUsage[] | null
+}
+
 export type ActivityStatsApiResponse = {
   stats: ActivityStats
   range: ActivityStatsRange
   generatedAt: string
-}
+} & Partial<ActivityStatsAddOns>
 
 export type ActivityStatsResponse = ActivityStats & {
   range: ActivityStatsRange
   generatedAt: string
-}
+} & Required<ActivityStatsAddOns>
 
 export const activityStatsApi = {
   async getStats(range: ActivityStatsRange = 'all'): Promise<ActivityStatsResponse> {
@@ -83,6 +144,12 @@ export const activityStatsApi = {
       ...response.stats,
       range: response.range,
       generatedAt: response.generatedAt,
+      // A sidecar that predates these fields omits the keys entirely; collapsing
+      // that into the same null the new sidecar sends keeps one unavailable path
+      // in the page instead of two.
+      dailyModelUsage: response.dailyModelUsage ?? null,
+      projectUsage: response.projectUsage ?? null,
+      sessionUsage: response.sessionUsage ?? null,
     }
   },
 }
