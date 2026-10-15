@@ -99,6 +99,7 @@ type ProjectUsageRow = {
 type SessionUsageRow = {
   sessionId: string
   projectName: string
+  hasMainSession: boolean
   startedAt: string
   activeDurationMs: number
   messageCount: number
@@ -531,12 +532,16 @@ function buildSessionUsageRows(
   stats: ActivityStatsResponse | null,
   cutoff: string | null,
   limit: number,
-): SessionUsageRow[] {
-  return (stats?.sessionUsage ?? [])
-    .filter((session) => isDateInSelectedRange(session.startedAt, cutoff))
+): { rows: SessionUsageRow[]; total: number; subagentOnly: number } {
+  const inWindow = (stats?.sessionUsage ?? [])
+    // A session with no recorded start time is kept rather than filtered out:
+    // its spend is already counted in the totals, and dropping it here would
+    // make the ranking quietly disagree with them.
+    .filter((session) => !session.startedAt || isDateInSelectedRange(session.startedAt, cutoff))
     .map<SessionUsageRow>((session) => ({
       sessionId: session.sessionId,
       projectName: session.projectName,
+      hasMainSession: session.hasMainSession,
       startedAt: session.startedAt,
       activeDurationMs: session.activeDurationMs,
       messageCount: session.messageCount,
@@ -549,7 +554,14 @@ function buildSessionUsageRows(
       costUSD: session.costUSD,
     }))
     .sort((a, b) => b.total - a.total || a.sessionId.localeCompare(b.sessionId))
-    .slice(0, limit)
+
+  return {
+    rows: inWindow.slice(0, limit),
+    // Counted before the cap so the header can state the population the ranking
+    // was taken from, rather than the size of the page it shows.
+    total: inWindow.length,
+    subagentOnly: inWindow.filter((row) => !row.hasMainSession).length,
+  }
 }
 
 /**
@@ -1023,11 +1035,13 @@ export function ActivitySettings() {
     () => buildProjectUsageRows(stats, rangeCutoff),
     [rangeCutoff, stats],
   )
-  const sessionRows = useMemo(
+  const sessionWindow = useMemo(
     () => buildSessionUsageRows(stats, rangeCutoff, SESSION_ROW_LIMIT),
     [rangeCutoff, stats],
   )
+  const sessionRows = sessionWindow.rows
   const toolRankRows = useMemo(() => buildToolRankRows(stats, TOOL_ROW_LIMIT), [stats])
+  const subagentOnlyCount = sessionWindow.subagentOnly
   const coverageItems = useMemo(() => buildCoverageItems(stats), [stats])
   const diagnostics = useMemo(() => buildDiagnostics(stats, t), [stats, t])
   // Four-dimension totals over the selected window, summed from the same rows
@@ -1827,9 +1841,19 @@ export function ActivitySettings() {
             action={
               <span className="text-[11px] text-[var(--color-text-tertiary)]">
                 {t('settings.activity.sessions.cap', { count: SESSION_ROW_LIMIT })}
+                {sessionWindow.total > sessionRows.length &&
+                  ` · ${t('settings.activity.sessions.total', { count: sessionWindow.total })}`}
               </span>
             }
           >
+            {!isLoading && subagentOnlyCount > 0 && (
+              // The two counts on this page are different things: the overview
+              // totals main transcripts, this sheet totals parent sessions. Left
+              // unexplained they read as the page contradicting itself.
+              <div className="mb-2 rounded-[var(--radius-md)] bg-[var(--color-surface-container)] px-3 py-2 text-xs text-[var(--color-text-tertiary)]">
+                {t('settings.activity.sessions.scopeNote', { count: subagentOnlyCount })}
+              </div>
+            )}
             {isLoading ? (
               <Card surface="lowest" padding="none" aria-hidden="true" className="min-h-[120px] px-4 py-4">
                 <div className="h-3 w-1/4 animate-pulse rounded-[var(--radius-xs)] bg-[var(--color-surface-container)]" />
@@ -1863,8 +1887,19 @@ export function ActivitySettings() {
                   >
                     <span role="cell" className="min-w-0 truncate font-mono text-xs">{row.sessionId.slice(0, 8)}</span>
                     <span role="cell" className="min-w-0 truncate">{row.projectName}</span>
-                    <span role="cell" className="min-w-0 truncate text-right">{formatShortDate(row.startedAt.slice(0, 10), locale)}</span>
-                    <span role="cell" className="min-w-0 truncate text-right">{formatTaskDuration(row.activeDurationMs, locale, t)}</span>
+                    <span role="cell" className="min-w-0 truncate text-right">
+                      {row.startedAt ? formatShortDate(row.startedAt.slice(0, 10), locale) : '--'}
+                    </span>
+                    {/* A session whose parent transcript is not in the index has
+                        no recorded duration. Saying so beats a 0m that reads as
+                        "this ran instantly". */}
+                    <span role="cell" className="min-w-0 truncate text-right">
+                      {row.hasMainSession
+                        ? formatTaskDuration(row.activeDurationMs, locale, t)
+                        : <span className="text-[var(--color-text-tertiary)]" title={t('settings.activity.sessions.subagentOnly')}>
+                            {t('settings.activity.notCollected')}
+                          </span>}
+                    </span>
                     <span role="cell" className="min-w-0 truncate text-right">{formatTokens(row.total)}</span>
                     <span role="cell" className="min-w-0 truncate text-right">
                       {row.costUSD > 0 ? formatCostUSD(row.costUSD, locale) : <span className="text-[var(--color-text-tertiary)]">—</span>}

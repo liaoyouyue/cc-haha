@@ -98,11 +98,17 @@ export type ProjectUsage = {
   costUSD: number
 }
 
-/** One main session. Token totals include the session's subagents. */
+/**
+ * One parent session with its subagents rolled in. `hasMainSession` is false for
+ * sessions that exist only as subagent transcripts — their token totals are
+ * real, but duration and message count were never recorded, so they render as
+ * unmeasured rather than zero.
+ */
 export type SessionUsage = {
   sessionId: string
   projectPath: string
   projectName: string
+  hasMainSession: boolean
   startedAt: string
   activeDurationMs: number
   messageCount: number

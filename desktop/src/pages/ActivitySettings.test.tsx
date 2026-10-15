@@ -88,9 +88,12 @@ const activityResponse = {
     { date: '2026-05-09', projectPath: 'C--proj-beta', projectName: 'proj-beta', sessionCount: 2, messageCount: 10, toolCallCount: 3, inputTokens: 5_000, outputTokens: 1_000, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0 },
   ],
   sessionUsage: [
-    { sessionId: 'sess-old-1', projectPath: 'C--proj-alpha', projectName: 'proj-alpha', startedAt: '2026-04-20T09:00:00.000Z', activeDurationMs: 600_000, messageCount: 4, inputTokens: 1_000, outputTokens: 100, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0 },
-    { sessionId: 'sess-alpha-1', projectPath: 'C--proj-alpha', projectName: 'proj-alpha', startedAt: '2026-05-07T09:00:00.000Z', activeDurationMs: 5_400_000, messageCount: 30, inputTokens: 40_000, outputTokens: 20_000, cacheReadInputTokens: 4_000, cacheCreationInputTokens: 0, costUSD: 1 },
-    { sessionId: 'sess-beta-1', projectPath: 'C--proj-beta', projectName: 'proj-beta', startedAt: '2026-05-09T09:00:00.000Z', activeDurationMs: 1_800_000, messageCount: 10, inputTokens: 5_000, outputTokens: 1_000, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0 },
+    // A parent that exists only as subagent transcripts: real spend, but no
+    // recorded duration, so the sheet must label it rather than show 0m.
+    { sessionId: 'sess-agent-only', projectPath: 'C--proj-beta', projectName: 'proj-beta', hasMainSession: false, startedAt: '2026-05-09T11:00:00.000Z', activeDurationMs: 0, messageCount: 0, inputTokens: 2_000, outputTokens: 200, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0 },
+    { sessionId: 'sess-old-1', projectPath: 'C--proj-alpha', projectName: 'proj-alpha', hasMainSession: true, startedAt: '2026-04-20T09:00:00.000Z', activeDurationMs: 600_000, messageCount: 4, inputTokens: 1_000, outputTokens: 100, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0 },
+    { sessionId: 'sess-alpha-1', projectPath: 'C--proj-alpha', projectName: 'proj-alpha', hasMainSession: true, startedAt: '2026-05-07T09:00:00.000Z', activeDurationMs: 5_400_000, messageCount: 30, inputTokens: 40_000, outputTokens: 20_000, cacheReadInputTokens: 4_000, cacheCreationInputTokens: 0, costUSD: 1 },
+    { sessionId: 'sess-beta-1', projectPath: 'C--proj-beta', projectName: 'proj-beta', hasMainSession: true, startedAt: '2026-05-09T09:00:00.000Z', activeDurationMs: 1_800_000, messageCount: 10, inputTokens: 5_000, outputTokens: 1_000, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0 },
   ],
   toolUsage: {
     Bash: 180,
@@ -499,15 +502,19 @@ describe('ActivitySettings', () => {
 
     const sessionTable = screen.getByRole('heading', { name: 'Session ranking' })
       .closest('section')!.querySelector('[role="table"]') as HTMLElement
-    expect(within(sessionTable).getAllByRole('row')).toHaveLength(4)
+    expect(within(sessionTable).getAllByRole('row')).toHaveLength(5)
     expect(within(sessionTable).getByText('sess-alp')).toBeInTheDocument()
+    // Subagent-only parent: counted, but its duration is stated as uncollected
+    // instead of as a 0m that would read like a measured value.
+    const agentOnly = within(sessionTable).getByText('sess-age').closest('[role="row"]') as HTMLElement
+    expect(within(agentOnly).getByText('Not collected')).toBeInTheDocument()
 
     selectRange('Last 7 days')
 
     const narrowed = screen.getByRole('heading', { name: 'Session ranking' })
       .closest('section')!.querySelector('[role="table"]') as HTMLElement
     // The 04-20 session falls outside the window and must not be counted in it.
-    expect(within(narrowed).getAllByRole('row')).toHaveLength(3)
+    expect(within(narrowed).getAllByRole('row')).toHaveLength(4)
     expect(within(narrowed).queryByText('sess-old')).not.toBeInTheDocument()
   })
 

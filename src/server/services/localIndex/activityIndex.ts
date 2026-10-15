@@ -109,14 +109,21 @@ export type ProjectUsage = {
 }
 
 /**
- * One main session (subagent transcripts roll up into their parent). Token
- * totals include the session's subagents, which is real spend; `messageCount`
- * and `activeDurationMs` describe the main transcript only, matching how
- * `aggregateActivity` reports `longestSession`.
+ * One parent session, with its subagent transcripts rolled in. Grouping is by
+ * `parent_session_id` rather than by main transcript so a session that exists
+ * only as subagents still appears — dropping those removed 94% of the spend on
+ * the reference machine.
+ *
+ * Token totals cover every transcript the session owns, which is why the three
+ * grains (model, project, session) sum to the same number. `messageCount` and
+ * `activeDurationMs` come from the main transcript only, matching how
+ * `aggregateActivity` reports `longestSession`; both are 0—not measured—when
+ * `hasMainSession` is false, and the caller must not read that 0 as a duration.
  */
 export type SessionUsage = {
   sessionId: string
   projectPath: string
+  hasMainSession: boolean
   startedAt: string
   activeDurationMs: number
   messageCount: number
@@ -902,33 +909,49 @@ export function createActivityIndex(
         'activity_sources.mtime_ms',
       )
       return database.read(operation => {
+        // One row per parent_session_id, not per main transcript. Grouping by the
+        // main transcript alone dropped every session that exists only as
+        // subagent transcripts — on the reference machine that was 45 parents
+        // holding 94% of all tokens, which made the leaderboard look complete
+        // while omitting almost all of the spend. `has_main_session` marks the
+        // rows that have no main transcript, so the sheet can label them instead
+        // of showing a zero duration as if it were measured.
         const sessions = operation.all<{
           session_id: string
-          project_path: string
-          started_at: string
-          active_duration_ms: number
-          message_count: number
+          main_project_path: string | null
+          any_project_path: string
+          has_main_session: number
+          started_at: string | null
+          active_duration_ms: number | null
+          message_count: number | null
         }>(`
-          SELECT activity_sessions.session_id AS session_id,
-            activity_sources.project_path AS project_path,
-            activity_sessions.first_timestamp AS started_at,
-            activity_sessions.active_duration_ms AS active_duration_ms,
-            activity_sessions.message_count AS message_count
+          SELECT activity_sources.parent_session_id AS session_id,
+            MAX(CASE WHEN activity_sources.is_subagent = 0
+              THEN activity_sources.project_path END) AS main_project_path,
+            MIN(activity_sources.project_path) AS any_project_path,
+            MAX(CASE WHEN activity_sources.is_subagent = 0 THEN 1 ELSE 0 END)
+              AS has_main_session,
+            COALESCE(
+              MAX(CASE WHEN activity_sources.is_subagent = 0
+                THEN activity_sessions.first_timestamp END),
+              MIN(activity_sessions.first_timestamp)
+            ) AS started_at,
+            MAX(CASE WHEN activity_sources.is_subagent = 0
+              THEN activity_sessions.active_duration_ms END) AS active_duration_ms,
+            SUM(CASE WHEN activity_sources.is_subagent = 0
+              THEN activity_sessions.message_count END) AS message_count
           FROM activity_sessions
           JOIN activity_sources
             ON activity_sources.path = activity_sessions.transcript_path
-          ${sessionRange.sql}${sessionRange.sql ? ' AND' : ' WHERE'}
-            activity_sources.is_subagent = 0
-            AND activity_sessions.first_timestamp IS NOT NULL
-          ORDER BY activity_sessions.first_timestamp ASC,
-            activity_sessions.session_id ASC
+          ${sessionRange.sql}
+          GROUP BY activity_sources.parent_session_id
+          ORDER BY started_at ASC, session_id ASC
         `, ...sessionRange.bindings)
 
-        // Subagent transcripts carry their own rows against the same
-        // parent_session_id, so this rolls a session's whole spend (main +
-        // subagents) into one line. Filtering the range on the token rows here
-        // would split a session across days, so the range filter matches the
-        // session list above instead and the tokens are summed per session.
+        // Token rows are summed per parent over every transcript it owns, so the
+        // three grains add up to the same total. Filtering these rows by date
+        // would split one session across days, so the range filter comes from
+        // the session grouping above instead.
         const tokensBySession = new Map<string, {
           inputTokens: number
           outputTokens: number
@@ -969,10 +992,11 @@ export function createActivityIndex(
           const tokens = tokensBySession.get(row.session_id)
           return {
             sessionId: row.session_id,
-            projectPath: row.project_path,
-            startedAt: row.started_at,
-            activeDurationMs: row.active_duration_ms,
-            messageCount: row.message_count,
+            projectPath: row.main_project_path ?? row.any_project_path,
+            hasMainSession: row.has_main_session === 1,
+            startedAt: row.started_at ?? '',
+            activeDurationMs: row.active_duration_ms ?? 0,
+            messageCount: row.message_count ?? 0,
             inputTokens: tokens?.inputTokens ?? 0,
             outputTokens: tokens?.outputTokens ?? 0,
             cacheReadInputTokens: tokens?.cacheReadInputTokens ?? 0,
