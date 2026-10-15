@@ -18,7 +18,17 @@ tk.Label(root,text='客户：你好，请问基础服务怎么报价？',font=('
 tk.Label(root,text='我：您好，我先了解一下您的具体需求。',font=('Microsoft YaHei UI',14)).pack(pady=24)
 root.mainloop()
 `
+// A second window created afterwards sits on top, so the target is not the
+// foreground window and is partly covered — the case that used to read the
+// wrong pixels or refuse outright.
+const coverCode = `
+import tkinter as tk
+root=tk.Tk(); root.title('遮挡测试窗口'); root.geometry('900x520+60+60')
+tk.Label(root,text='覆盖层文字：绝不应该被读到',font=('Microsoft YaHei UI',16),bg='#fde68a').pack(pady=60)
+root.mainloop()
+`
 const chat = spawn(python, ['-c', chatCode], { windowsHide: true })
+let cover: ReturnType<typeof spawn> | undefined
 
 const { VisualGuardService } = await import('../src/server/services/visualGuardService.ts')
 const { drainTraceCaptureForTests, clearTraceCaptureStateForTests } = await import('../src/services/api/traceCapture.ts')
@@ -57,6 +67,21 @@ try {
   const missing = await service.find('这句话不可能出现在屏幕上') as { matches: Array<unknown> }
   if (missing.matches.length) fail('find() matched text that is not on screen')
 
+  cover = spawn(python, ['-c', coverCode], { windowsHide: true })
+  await waitFor(async () => {
+    const windows = await service.windows() as Array<{ title: string }>
+    return windows.some(window => window.title === '遮挡测试窗口') ? true : undefined
+  }, 'cover window')
+  await Bun.sleep(1_500)
+
+  const covered = await service.see() as { text: string }
+  if (covered.text.includes('绝不应该被读到')) {
+    fail('read the covering window instead of the target — capture is not window-scoped')
+  }
+  if (!covered.text.includes('报价')) {
+    fail(`covered window could not be read in the background: ${covered.text || '(empty)'}`)
+  }
+
   await service.see()
   const pid = service.status().workerPid
   if (!pid) fail('worker did not start')
@@ -66,10 +91,14 @@ try {
 
   await service.dispose()
   if (service.status().workerPid !== null) fail('worker survived dispose()')
-  console.log(JSON.stringify({ see: true, coordinates: true, find: true, findMiss: true, crashRecovery: true, stopCleanup: true }))
+  console.log(JSON.stringify({
+    see: true, coordinates: true, find: true, findMiss: true,
+    readsCoveredWindow: true, ignoresCoveringWindow: true, crashRecovery: true, stopCleanup: true,
+  }))
 } finally {
   await service.dispose()
   chat.kill()
+  cover?.kill()
   await drainTraceCaptureForTests()
   clearTraceCaptureStateForTests()
   for (let attempt = 0; attempt < 10; attempt++) {

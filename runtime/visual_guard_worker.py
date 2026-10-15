@@ -20,8 +20,28 @@ sys.stdin.reconfigure(encoding="utf-8", errors="replace")
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 DWMWA_CLOAKED = 14
+# Renders the window's own content into the DC, so it works whether or not the
+# window is in front. Plain PrintWindow (flag 0) comes back all black for
+# modern/DirectComposition windows that this flag handles.
+PW_RENDERFULLCONTENT = 0x00000002
+SRCCOPY = 0x00CC0020
+DIB_RGB_COLORS = 0
 _dwmapi = ctypes.windll.dwmapi
 _user32 = ctypes.windll.user32
+_gdi32 = ctypes.windll.gdi32
+
+
+class BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [
+        ("biSize", ctypes.c_uint32), ("biWidth", ctypes.c_int32), ("biHeight", ctypes.c_int32),
+        ("biPlanes", ctypes.c_uint16), ("biBitCount", ctypes.c_uint16), ("biCompression", ctypes.c_uint32),
+        ("biSizeImage", ctypes.c_uint32), ("biXPelsPerMeter", ctypes.c_int32), ("biYPelsPerMeter", ctypes.c_int32),
+        ("biClrUsed", ctypes.c_uint32), ("biClrImportant", ctypes.c_uint32),
+    ]
+
+
+class BITMAPINFO(ctypes.Structure):
+    _fields_ = [("bmiHeader", BITMAPINFOHEADER), ("bmiColors", ctypes.c_uint32 * 3)]
 
 
 class CaptureBlocked(RuntimeError):
@@ -124,9 +144,12 @@ def gather_capture_state(hwnd, rect):
     return state
 
 
-def evaluate_capture_state(state):
+def evaluate_capture_state(state, require_front=True):
     """Pure decision: returns a Chinese refusal reason, or None when the target
-    is safe to capture. Fails closed on every unknown."""
+    is safe to capture. Fails closed on every unknown.
+
+    require_front is False only for the self-render path, where the window
+    supplies its own pixels and Z-order cannot change what is read."""
     if not state["exists"]:
         return "目标窗口已关闭"
     if state["cloaked"]:
@@ -135,6 +158,8 @@ def evaluate_capture_state(state):
         return "目标窗口已隐藏，已暂停识别。"
     if state["minimized"]:
         return "目标窗口已最小化，已暂停识别。"
+    if not require_front:
+        return None
     if not state["foreground"]:
         return "目标窗口不在前台或存在遮挡，已暂停识别。"
     if state["blockers"]:
@@ -154,16 +179,70 @@ def capture_rect(hwnd, region):
     return [left, top, width, height]
 
 
+def render_window(hwnd):
+    """Ask the window to draw itself into a bitmap. Independent of Z-order, so
+    a covered or background window still yields its own pixels. Returns None
+    when the window refuses to render (some layered/hardware surfaces come back
+    uniformly blank)."""
+    left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+    width, height = right - left, bottom - top
+    if width <= 0 or height <= 0:
+        return None
+    window_dc = _user32.GetWindowDC(hwnd)
+    memory_dc = _gdi32.CreateCompatibleDC(window_dc)
+    bitmap = _gdi32.CreateCompatibleBitmap(window_dc, width, height)
+    try:
+        _gdi32.SelectObject(memory_dc, bitmap)
+        if not _user32.PrintWindow(hwnd, memory_dc, PW_RENDERFULLCONTENT):
+            return None
+        header = BITMAPINFO()
+        header.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+        header.bmiHeader.biWidth = width
+        header.bmiHeader.biHeight = -height
+        header.bmiHeader.biPlanes = 1
+        header.bmiHeader.biBitCount = 32
+        buffer = ctypes.create_string_buffer(width * height * 4)
+        if not _gdi32.GetDIBits(memory_dc, bitmap, 0, height, buffer, ctypes.byref(header), DIB_RGB_COLORS):
+            return None
+    finally:
+        _gdi32.DeleteObject(bitmap)
+        _gdi32.DeleteDC(memory_dc)
+        _user32.ReleaseDC(hwnd, window_dc)
+    array = np.frombuffer(buffer, dtype=np.uint8).reshape(height, width, 4)[:, :, :3]
+    if float(array.std()) < 1.0 and float(array.mean()) < 8:
+        return None  # a uniformly blank render is a refusal, not a picture
+    return Image.fromarray(array[:, :, ::-1])
+
+
+def crop(image, region):
+    if not region:
+        return image
+    x, y, width, height = map(int, region)
+    return image.crop((x, y, x + width, y + height))
+
+
 def capture(hwnd, region=None):
-    rect = capture_rect(hwnd, region)
-    reason = evaluate_capture_state(gather_capture_state(hwnd, rect))
+    """Read the window's own content when it will render itself; otherwise fall
+    back to a screen grab, which is only trustworthy while the window is in
+    front and unobstructed."""
+    state = gather_capture_state(hwnd, capture_rect(hwnd, region))
+    reason = evaluate_capture_state(state, require_front=False)
     if reason:
         raise CaptureBlocked(reason)
+
+    rendered = render_window(hwnd)
+    if rendered is not None:
+        return crop(rendered, region)
+
+    # No self-render: only a foreground, unobstructed screen grab shows this
+    # window's pixels rather than whatever is drawn over it.
+    reason = evaluate_capture_state(state)
+    if reason:
+        raise CaptureBlocked(f"{reason}（该窗口不支持后台读取，需置于前台）")
+    rect = capture_rect(hwnd, region)
     with mss() as grabber:
         shot = grabber.grab({"left": rect[0], "top": rect[1], "width": rect[2], "height": rect[3]})
     image = Image.frombytes("RGB", shot.size, shot.rgb)
-    # The screen can change mid-grab; a capture taken while the target lost the
-    # foreground (or gained an occluder) shows someone else's pixels, so drop it.
     after = gather_capture_state(hwnd, capture_rect(hwnd, region))
     reason = evaluate_capture_state(after)
     if reason or after["rect"] != rect:
@@ -319,8 +398,15 @@ def selftest():
         state = {**ok, **patch}
         reason = evaluate_capture_state(state)
         assert reason and expected in reason, (patch, reason)
+    # Self-render ignores Z-order but still refuses a window that is gone.
+    covered = {**ok, "foreground": False, "blockers": ["微信"]}
+    assert evaluate_capture_state(covered, require_front=False) is None
+    for patch, expected in [({"exists": False}, "已关闭"), ({"minimized": True}, "已最小化")]:
+        reason = evaluate_capture_state({**covered, **patch}, require_front=False)
+        assert reason and expected in reason, (patch, reason)
     print("PASS: foreground window is capturable")
     print("PASS: closed / cloaked / hidden / minimized / background / occluded are all refused")
+    print("PASS: a covered window is still readable when it renders itself")
     return 0
 
 
