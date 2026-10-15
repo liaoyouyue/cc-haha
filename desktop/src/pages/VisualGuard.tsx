@@ -63,7 +63,7 @@ export function VisualGuard() {
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
       <header className="border-b border-border px-6 py-4">
-        <h1 className="text-lg font-semibold">AI 视觉值守</h1>
+        <h1 className="text-lg font-semibold">真实之眼</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           把窗口读成带坐标的文字：没有视觉能力的模型也能"看见"，按文字定位不用猜像素。只读，不会点击、输入或抢焦点。
         </p>

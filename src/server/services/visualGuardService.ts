@@ -123,7 +123,7 @@ export class VisualGuardService {
     if (!child) return
     for (const item of this.pending.values()) {
       clearTimeout(item.timer)
-      item.reject(new Error('视觉值守进程已停止'))
+      item.reject(new Error('真实之眼进程已停止'))
     }
     this.pending.clear()
     child.kill()
@@ -150,7 +150,7 @@ export class VisualGuardService {
         executable = bundledWorkerPath
         args = []
       } else if (!(await exists(pythonPath))) {
-        throw new Error('视觉值守运行时不可用：缺少 visual-guard-worker.exe，且未安装 Python 运行环境')
+        throw new Error('真实之眼运行时不可用：缺少 visual-guard-worker.exe，且未安装 Python 运行环境')
       } else if (process.env.CC_HAHA_VISUAL_GUARD_PYTHON) {
         throw new Error('CC_HAHA_VISUAL_GUARD_PYTHON 指向的文件不存在')
       } else {
@@ -169,7 +169,7 @@ export class VisualGuardService {
         this.log(`worker 退出（${code ?? 'unknown'}）`)
         for (const item of this.pending.values()) {
           clearTimeout(item.timer)
-          item.reject(new Error('视觉值守进程已退出'))
+          item.reject(new Error('真实之眼进程已退出'))
         }
         this.pending.clear()
       })
@@ -188,7 +188,7 @@ export class VisualGuardService {
     if (probe.code === 0) return
     const requirementsPath = path.join(configRoot, 'requirements-visual-guard.txt')
     await writeFile(requirementsPath, VISUAL_GUARD_REQUIREMENTS, 'utf8')
-    this.log('正在安装视觉值守所需的 OCR 依赖（仅首次，约 240MB）…')
+    this.log('正在安装真实之眼所需的 OCR 依赖（仅首次，约 240MB）…')
     const install = await runPython(pythonPath, ['-m', 'pip', 'install', '-r', requirementsPath])
     if (install.code !== 0) {
       throw new Error(`OCR 依赖安装失败：${sanitize(install.stderr.slice(-500))}`)

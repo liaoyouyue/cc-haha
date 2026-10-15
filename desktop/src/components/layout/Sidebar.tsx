@@ -1082,13 +1082,13 @@ export function Sidebar({
         <NavItem
           active={activeTabId === VISUAL_GUARD_TAB_ID}
           collapsed={!expanded}
-          label="AI 视觉值守"
+          label="真实之眼"
           onClick={() => {
-            useTabStore.getState().openTab(VISUAL_GUARD_TAB_ID, 'AI 视觉值守', 'visual-guard')
+            useTabStore.getState().openTab(VISUAL_GUARD_TAB_ID, '真实之眼', 'visual-guard')
           }}
           icon={<Eye size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />}
         >
-          AI 视觉值守
+          真实之眼
         </NavItem>
         <NavItem
           active={activeTabId === MARKET_TAB_ID || activeTabId === CONNECTORS_TAB_ID}

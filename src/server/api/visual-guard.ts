@@ -1,7 +1,7 @@
 import { visualGuardService, type VisualGuardConfig } from '../services/visualGuardService.js'
 
 function errorResponse(error: unknown, status = 400): Response {
-  const message = error instanceof Error ? error.message : '视觉值守请求失败'
+  const message = error instanceof Error ? error.message : '真实之眼请求失败'
   // `message` is what the desktop client surfaces; `error` is kept for the
   // existing shape.
   return Response.json({ error: message, message }, { status })
