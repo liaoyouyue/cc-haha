@@ -446,7 +446,7 @@ describe('ActivitySettings', () => {
       .closest('section')!.querySelector('[role="table"]') as HTMLElement
     const modelCells = within(modelTable).getAllByRole('row').slice(1)
       .map((row) => within(row).getAllByRole('cell').map((cell) => cell.textContent))
-    expect(modelCells).toEqual([['claude-sonnet', '190万', '70万', '23万', '3万', '$12.50', '$12.50']])
+    expect(modelCells).toEqual([['claude-sonnet', '190万', '70万', '23万', '3万', '¥88.75', '¥88.75']])
     expect(within(modelTable).queryByText('236万')).not.toBeInTheDocument()
 
     openView('Projects')
@@ -810,8 +810,8 @@ describe('ActivitySettings', () => {
       '70万',
       '23万',
       '3万',
-      '$12.50',
-      '$12.50',
+      '¥88.75',
+      '¥88.75',
     ])
     expect(within(rows[2]!).getAllByRole('cell').map((cell) => cell.textContent)).toEqual([
       'glm-4.6',
@@ -852,7 +852,7 @@ describe('ActivitySettings', () => {
     openView('Model cost')
 
     const costShare = screen.getByRole('heading', { name: 'Cost share' }).closest('section')!
-    expect(within(costShare).getAllByText('$12.50 · 50%')).toHaveLength(2)
+    expect(within(costShare).getAllByText('¥88.75 · 50%')).toHaveLength(2)
     expect(within(costShare).getByText(/unpriced models are excluded/)).toBeInTheDocument()
   })
 
@@ -875,11 +875,11 @@ describe('ActivitySettings', () => {
     openView('Model cost')
 
     // The headline must NOT be a bare "$0.00", which would read as "free".
-    expect(screen.queryByText('$0.00')).not.toBeInTheDocument()
+    expect(screen.queryByText('¥0.00')).not.toBeInTheDocument()
     // The headline dash and the per-row dashes for unpriced models both render.
     expect(screen.getAllByText('—').length).toBeGreaterThan(0)
     // The detail names both halves: what is priced, and what is excluded.
-    expect(screen.getByText('Priced $0.00 · 2 unpriced models excluded')).toBeInTheDocument()
+    expect(screen.getByText('Priced ¥0.00 · 2 unpriced models excluded')).toBeInTheDocument()
   })
 
   it('prices a model the server could not, and keeps actual spend separate', async () => {
@@ -897,10 +897,10 @@ describe('ActivitySettings', () => {
     await flushActivityLoad()
     openView('Model cost')
 
-    // 1M in at $0.55 + 1M out at $2.19 = $2.74, marked as an estimate.
+    // 1M in at $0.55 + 1M out at $2.19 = $2.74 = ¥19.45, marked as an estimate.
     const row = within(screen.getByRole('table')).getAllByRole('row')[1]!
     expect(within(row).getAllByRole('cell').map((cell) => cell.textContent))
-      .toEqual(['deepseek-v4-pro', '100万', '100万', '0', '0', '~$2.74', '—'])
+      .toEqual(['deepseek-v4-pro', '100万', '100万', '0', '0', '~¥19.45', '—'])
     expect(screen.getByText(/List price, incl\. 1 models estimated/)).toBeInTheDocument()
   })
 
@@ -910,19 +910,19 @@ describe('ActivitySettings', () => {
     await flushActivityLoad()
     openView('Model cost')
 
-    expect(screen.getAllByText('$12.50').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('¥88.75').length).toBeGreaterThan(0)
 
     selectRange('Last 7 days')
 
     // Cutting 04-20 drops 1.8M input / 660K output but keeps the newer days.
     const cells = within(screen.getByRole('table')).getAllByRole('cell').map((cell) => cell.textContent)
-    expect(cells).toEqual(['claude-sonnet', '10万', '4万', '3万', '2万', '$3.00', '$3.00'])
+    expect(cells).toEqual(['claude-sonnet', '10万', '4万', '3万', '2万', '¥21.30', '¥21.30'])
     // One load on mount, none per range switch: the window is narrowed locally.
     expect(getStatsMock).toHaveBeenCalledTimes(1)
 
     selectRange('All time')
     expect(within(screen.getByRole('table')).getAllByRole('cell').map((cell) => cell.textContent))
-      .toEqual(['claude-sonnet', '190万', '70万', '23万', '3万', '$12.50', '$12.50'])
+      .toEqual(['claude-sonnet', '190万', '70万', '23万', '3万', '¥88.75', '¥88.75'])
     expect(getStatsMock).toHaveBeenCalledTimes(1)
   })
 
@@ -944,7 +944,7 @@ describe('ActivitySettings', () => {
     // 04-20 and 05-07 are in; 05-09 sits behind the end bound and must be
     // dropped, which a lower-bound-only filter would have silently counted.
     expect(within(screen.getByRole('table')).getAllByRole('cell').map((cell) => cell.textContent))
-      .toEqual(['claude-sonnet', '184万', '68万', '20万', '1万', '$10.50', '$10.50'])
+      .toEqual(['claude-sonnet', '184万', '68万', '20万', '1万', '¥74.55', '¥74.55'])
     // Narrowed locally, like a preset range: no refetch per bound change.
     expect(getStatsMock).toHaveBeenCalledTimes(1)
   })
@@ -1028,7 +1028,7 @@ describe('ActivitySettings', () => {
       .closest('section')!.querySelector('[role="table"]') as HTMLElement
     const projectRows = within(projectTable).getAllByRole('row')
     expect(within(projectRows[1]!).getAllByRole('cell').map((cell) => cell.textContent)).toEqual([
-      'proj-alpha', '3', '88', '19万', '$3.00',
+      'proj-alpha', '3', '88', '19万', '¥21.30',
     ])
     // Zero known cost reads as "no rate", not as a free project.
     expect(within(projectRows[2]!).getAllByRole('cell').map((cell) => cell.textContent)).toEqual([

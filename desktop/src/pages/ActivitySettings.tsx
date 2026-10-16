@@ -365,12 +365,24 @@ function withEstimatedCost(row: ModelUsageRow): ModelUsageRow {
   return { ...row, costUSD, estimated: true }
 }
 
-function formatCostUSD(cost: number, locale: Locale) {
+/**
+ * The gateways here bill in CNY, so the page reports CNY. Every rate table in
+ * this file is still quoted in USD per million tokens, because that is how the
+ * providers publish them, and the conversion happens once, here.
+ *
+ * ponytail: fixed rate, not a live quote. Upgrade path: read the rate from
+ * config, or convert at the provider when it starts billing in CNY.
+ */
+const USD_TO_CNY = 7.1
+
+function formatCostCNY(costUSD: number, locale: Locale) {
+  const cny = costUSD * USD_TO_CNY
   return new Intl.NumberFormat(DATE_LOCALES[locale], {
     style: 'currency',
-    currency: 'USD',
-    maximumFractionDigits: cost >= 100 ? 0 : 2,
-  }).format(cost)
+    currency: 'CNY',
+    currencyDisplay: 'narrowSymbol',
+    maximumFractionDigits: cny >= 100 ? 0 : 2,
+  }).format(cny)
 }
 
 function formatClock(iso: string, locale: Locale) {
@@ -1709,18 +1721,18 @@ export function ActivitySettings() {
     // move the priced figure into the detail, where it cannot be misread.
     value: costIsAbsentOutsideIndex || (unpricedInWindow > 0 && windowTotals.costUSD === 0)
       ? '—'
-      : formatCostUSD(windowTotals.costUSD, locale),
+      : formatCostCNY(windowTotals.costUSD, locale),
     detail: costIsAbsentOutsideIndex
       ? t('settings.activity.overview.costUnavailable')
       : unpricedInWindow > 0
         ? t('settings.activity.costBreakdown', {
-            priced: formatCostUSD(windowTotals.costUSD, locale),
+            priced: formatCostCNY(windowTotals.costUSD, locale),
             count: unpricedInWindow,
           })
         : estimatedInWindow > 0
           ? t('settings.activity.costEstimated', {
               count: estimatedInWindow,
-              paid: formatCostUSD(paidCostTotal, locale),
+              paid: formatCostCNY(paidCostTotal, locale),
             })
           : t('settings.activity.costComplete'),
   }
@@ -2772,7 +2784,7 @@ export function ActivitySettings() {
                       <div className="flex items-center justify-between gap-3 text-xs">
                         <span className="min-w-0 truncate font-mono" title={row.model}>{row.model}</span>
                         <span className="shrink-0 tabular-nums text-[var(--color-text-secondary)]">
-                          {formatCostUSD(row.costUSD, locale)} · {formatShare(row.costUSD, pricedCostTotal, locale)}
+                          {formatCostCNY(row.costUSD, locale)} · {formatShare(row.costUSD, pricedCostTotal, locale)}
                         </span>
                       </div>
                       <Progress
@@ -2830,15 +2842,15 @@ export function ActivitySettings() {
                       {row.unpriced && !row.estimated
                         ? <span className="text-[var(--color-text-tertiary)]">—</span>
                         : row.estimated
-                          ? <span title={t('settings.activity.models.estimatedNote')}>~{formatCostUSD(row.costUSD, locale)}</span>
-                          : formatCostUSD(row.costUSD, locale)}
+                          ? <span title={t('settings.activity.models.estimatedNote')}>~{formatCostCNY(row.costUSD, locale)}</span>
+                          : formatCostCNY(row.costUSD, locale)}
                     </span>
                     {/* No rate table can say what a free route actually cost, so this
                         column reports only what the server recorded. A dash means
                         "never priced", which is not the same as a measured $0. */}
                     <span role="cell" className="min-w-0 truncate text-right">
                       {row.paidUSD > 0
-                        ? formatCostUSD(row.paidUSD, locale)
+                        ? formatCostCNY(row.paidUSD, locale)
                         : <span className="text-[var(--color-text-tertiary)]">—</span>}
                     </span>
                   </div>
@@ -2917,7 +2929,7 @@ export function ActivitySettings() {
                     <span role="cell" className="min-w-0 truncate text-right">{formatInteger(row.messageCount, locale)}</span>
                     <span role="cell" className="min-w-0 truncate text-right">{formatTokens(row.total)}</span>
                     <span role="cell" className="min-w-0 truncate text-right">
-                      {row.costUSD > 0 ? formatCostUSD(row.costUSD, locale) : <span className="text-[var(--color-text-tertiary)]">—</span>}
+                      {row.costUSD > 0 ? formatCostCNY(row.costUSD, locale) : <span className="text-[var(--color-text-tertiary)]">—</span>}
                     </span>
                   </div>
                 ))}
@@ -3018,7 +3030,7 @@ export function ActivitySettings() {
                     </span>
                     <span role="cell" className="min-w-0 truncate text-right">{formatTokens(row.total)}</span>
                     <span role="cell" className="min-w-0 truncate text-right">
-                      {row.costUSD > 0 ? formatCostUSD(row.costUSD, locale) : <span className="text-[var(--color-text-tertiary)]">—</span>}
+                      {row.costUSD > 0 ? formatCostCNY(row.costUSD, locale) : <span className="text-[var(--color-text-tertiary)]">—</span>}
                     </span>
                   </div>
                 ))}
