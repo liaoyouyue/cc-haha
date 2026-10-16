@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import base64
 import ctypes
+import io
 import json
 import os
 import subprocess
@@ -74,9 +75,6 @@ def _enable_per_monitor_dpi_awareness() -> None:
 _enable_per_monitor_dpi_awareness()
 
 os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
-os.environ.setdefault("PYAUTOGUI_HIDE_SUPPORT_PROMPT", "1")
-
-import pyautogui  # noqa: E402
 
 # The desktop app decodes helper stdout as UTF-8. On Windows, redirected Python
 # stdout defaults to the active ANSI code page (for example GBK), which mangles
@@ -87,8 +85,13 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-pyautogui.FAILSAFE = False
-pyautogui.PAUSE = 0
+
+def cursor_pos() -> tuple[int, int]:
+    """Read the pointer position. pyautogui was only ever used for this, and
+    importing it costs ~1.1 s of every one-shot helper launch."""
+    point = wintypes.POINT()
+    _user32.GetCursorPos(ctypes.byref(point))
+    return int(point.x), int(point.y)
 
 DESKTOP_HOST_BUNDLE_ID = "com.claude-code-haha.desktop"
 
@@ -1889,8 +1892,7 @@ def main() -> int:
         if command == "drag":
             from_point = payload.get("from")
             if from_point is None:
-                current = pyautogui.position()
-                start_x, start_y = int(current.x), int(current.y)
+                start_x, start_y = cursor_pos()
             else:
                 start_x = int(from_point["x"])
                 start_y = int(from_point["y"])
@@ -1918,7 +1920,7 @@ def main() -> int:
             _send_inputs([_mouse_input(MOUSEEVENTF_LEFTUP)])
             return _finish(lease, True)
         if command == "cursor_position":
-            x, y = pyautogui.position()
+            x, y = cursor_pos()
             json_output({"ok": True, "result": {"x": int(x), "y": int(y)}})
             return 0
         if command == "frontmost_app":
@@ -1976,5 +1978,45 @@ def main() -> int:
                 pass
 
 
+def serve() -> int:
+    """Resident mode: one process, many commands.
+
+    Launching this helper costs ~0.3 s (interpreter plus imports) while the
+    action itself takes ~1-10 ms, so every one-shot call paid 30x the work.
+    Requests arrive as JSON lines and are dispatched through main() unchanged,
+    which keeps every safety gate exactly where it was.
+
+    Request:  {"id": 1, "command": "click", "payload": {...}}
+    Reply:    {"id": 1, "output": {"ok": true, "result": {...}}}
+    """
+    stdin, stdout = sys.stdin, sys.stdout
+    for raw in stdin:
+        raw = raw.strip()
+        if not raw:
+            continue
+        request = None
+        captured = io.StringIO()
+        try:
+            request = json.loads(raw)
+            sys.argv = ["win_helper.py", str(request.get("command")), "--payload",
+                        json.dumps(request.get("payload") or {})]
+            sys.stdout = captured
+            try:
+                main()
+            finally:
+                sys.stdout = stdout
+            text = captured.getvalue().strip()
+            output = json.loads(text) if text else {
+                "ok": False, "error": {"message": "helper produced no output"},
+            }
+        except Exception as error:  # never take the resident process down
+            output = {"ok": False, "error": {"message": f"{type(error).__name__}: {error}"}}
+        stdout.write(json.dumps({"id": request.get("id") if request else None, "output": output}) + "\n")
+        stdout.flush()
+    return 0
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "serve":
+        raise SystemExit(serve())
     raise SystemExit(main())
