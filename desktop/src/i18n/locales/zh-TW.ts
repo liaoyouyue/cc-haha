@@ -1296,6 +1296,8 @@ export const zh: Record<TranslationKey, string> = {
   'settings.activity.topAll': '全部',
   'settings.activity.comparison.detail': '較上一週期 {change}（上一週期 {tokens} Token）',
   'settings.activity.comparison.noPrevious': '上一週期無用量',
+  'settings.activity.costShare.title': '成本占比',
+  'settings.activity.costShare.note': '占比只計算已有費率的模型；未定價模型不計入分母。',
   'settings.activity.modelFilter': '模型：已選 {selected}/{total}',
   'settings.activity.selectAll': '全選',
   'settings.activity.clearAll': '清除',

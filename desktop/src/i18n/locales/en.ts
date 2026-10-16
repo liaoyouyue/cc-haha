@@ -1296,6 +1296,8 @@ Row 9, all 8 cells: continuing from straight down, turning left through lower-le
   'settings.activity.topAll': 'All rows',
   'settings.activity.comparison.detail': '{change} vs previous period ({tokens} tokens)',
   'settings.activity.comparison.noPrevious': 'No usage in the previous period',
+  'settings.activity.costShare.title': 'Cost share',
+  'settings.activity.costShare.note': 'Shares use priced models only; unpriced models are excluded from the denominator.',
   'settings.activity.modelFilter': 'Models: {selected} of {total}',
   'settings.activity.selectAll': 'Select all',
   'settings.activity.clearAll': 'Clear all',

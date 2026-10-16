@@ -1556,6 +1556,10 @@ export function ActivitySettings() {
   }, [modelUsageWindow])
   const windowPromptTokens = windowTotals.input + windowTotals.cacheRead + windowTotals.cacheWrite
   const unpricedInWindow = modelUsageWindow.rows.filter((row) => row.unpriced).length
+  const pricedModelRows = [...modelUsageWindow.rows]
+    .filter((row) => !row.unpriced && row.costUSD > 0)
+    .sort((a, b) => b.costUSD - a.costUSD || a.model.localeCompare(b.model))
+  const pricedCostTotal = pricedModelRows.reduce((sum, row) => sum + row.costUSD, 0)
   const indexGap = useMemo(() => buildIndexGap(stats), [stats])
   // Some of the stored history predates the local index, so an index-backed
   // sheet over a window reaching back that far has to name the days it cannot
@@ -2601,6 +2605,35 @@ export function ActivitySettings() {
               <div className="mt-1 text-xs text-[var(--color-text-tertiary)]">{costCard.detail}</div>
             </Card>
           </SettingsSection>
+
+          {!isLoading && pricedModelRows.length > 0 && (
+            <SettingsSection title={t('settings.activity.costShare.title')}>
+              <Card surface="lowest" padding="none" className="px-4 py-3.5">
+                <p className="mb-3 text-xs text-[var(--color-text-tertiary)]">
+                  {t('settings.activity.costShare.note')}
+                </p>
+                <div className="space-y-3">
+                  {pricedModelRows.map((row) => (
+                    <div key={row.model}>
+                      <div className="flex items-center justify-between gap-3 text-xs">
+                        <span className="min-w-0 truncate font-mono" title={row.model}>{row.model}</span>
+                        <span className="shrink-0 tabular-nums text-[var(--color-text-secondary)]">
+                          {formatCostUSD(row.costUSD, locale)} · {formatShare(row.costUSD, pricedCostTotal, locale)}
+                        </span>
+                      </div>
+                      <Progress
+                        className="mt-1.5"
+                        value={pricedCostTotal > 0 ? row.costUSD / pricedCostTotal * 100 : 0}
+                        size="md"
+                        tone="success"
+                        label={`${row.model}: ${formatShare(row.costUSD, pricedCostTotal, locale)}`}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            </SettingsSection>
+          )}
 
           <SettingsSection title={t('settings.activity.models.breakdownTitle')} action={rankingControls}>
             {isLoading ? (

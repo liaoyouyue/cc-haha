@@ -787,6 +787,33 @@ describe('ActivitySettings', () => {
     expect(within(unpriced).getByText('no published rate')).toBeInTheDocument()
   })
 
+  it('shows cost share across priced models only', async () => {
+    getStatsMock.mockResolvedValueOnce({
+      ...activityResponse,
+      modelUsage: {
+        ...activityResponse.modelUsage,
+        'claude-haiku': {
+          inputTokens: 1_000,
+          outputTokens: 0,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          costUSD: 12.5,
+        },
+      },
+      dailyModelUsage: [
+        ...activityResponse.dailyModelUsage,
+        { date: '2026-05-09', model: 'claude-haiku', inputTokens: 1_000, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 12.5 },
+      ],
+    })
+    render(<ActivitySettings />)
+    await flushActivityLoad()
+    openView('Model cost')
+
+    const costShare = screen.getByRole('heading', { name: 'Cost share' }).closest('section')!
+    expect(within(costShare).getAllByText('$12.50 · 50%')).toHaveLength(2)
+    expect(within(costShare).getByText(/unpriced models are excluded/)).toBeInTheDocument()
+  })
+
   it('separates priced cost from unpriced models instead of reading $0 as the whole bill', async () => {
     getStatsMock.mockResolvedValueOnce({
       ...activityResponse,

@@ -1297,6 +1297,8 @@ export const jp: Record<TranslationKey, string> = {
   'settings.activity.topAll': 'すべて',
   'settings.activity.comparison.detail': '前期間比 {change}（前期間 {tokens} トークン）',
   'settings.activity.comparison.noPrevious': '前期間の使用量はありません',
+  'settings.activity.costShare.title': 'コスト構成比',
+  'settings.activity.costShare.note': '構成比は料金が設定されたモデルのみで計算し、未設定モデルは分母から除外します。',
   'settings.activity.modelFilter': 'モデル: {selected}/{total} 選択',
   'settings.activity.selectAll': 'すべて選択',
   'settings.activity.clearAll': 'すべて解除',
