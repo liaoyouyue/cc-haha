@@ -47,7 +47,6 @@ import { useUIStore } from '../../stores/uiStore'
 import { SETTINGS_TAB_ID, useTabStore } from '../../stores/tabStore'
 import {
   getModelReasoningCapabilityOverride,
-  isOpenAIReasoningModel,
   isModelReasoningEffort,
   normalizeModelReasoningEffort,
   resolveModelReasoningProfile,
@@ -493,14 +492,6 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
       }
     : null
 
-  const selectedRuntimeProvider = activeRuntimeSelection?.providerId
-    ? providers.find((provider) => provider.id === activeRuntimeSelection.providerId) ?? null
-    : null
-  const runtimeEffortSuppressedByProvider =
-    selectedRuntimeProvider?.disableExperimentalBetas === true &&
-    (selectedRuntimeProvider.apiFormat ?? 'anthropic') === 'anthropic' &&
-    !isOpenAIReasoningModel(selectedRuntimeModel?.id ?? '')
-
   const needsProviderConfiguration = isRuntimeScoped && !activeRuntimeSelection && providerChoices.length === 0
   const buttonModelLabel = isRuntimeScoped
     ? selectedRuntimeModel?.name
@@ -511,7 +502,7 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
     : null
   const supportedRuntimeEfforts = selectedRuntimeModel?.supportedReasoningEfforts
   const requestedRuntimeEffort = activeRuntimeSelection?.effortLevel ?? effortLevel
-  const selectedRuntimeEffort = selectedRuntimeModel && !runtimeEffortSuppressedByProvider
+  const selectedRuntimeEffort = selectedRuntimeModel
     ? supportedRuntimeEfforts?.length === 0
       ? undefined
       : supportedRuntimeEfforts === undefined || supportedRuntimeEfforts.includes(requestedRuntimeEffort)

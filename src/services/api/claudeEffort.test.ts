@@ -118,7 +118,7 @@ describe('configureEffortParams', () => {
     expect(betas).not.toContain(EFFORT_BETA_HEADER)
   })
 
-  test('does not send effort output_config when direct providers disable experimental betas', () => {
+  test('keeps explicit effort on the Anthropic envelope when direct providers disable experimental betas', () => {
     process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS = '1'
 
     const outputConfig: Record<string, unknown> = {}
@@ -133,7 +133,7 @@ describe('configureEffortParams', () => {
       'glm-5.2',
     )
 
-    expect(outputConfig).toEqual({})
+    expect(outputConfig).toEqual({ effort: 'high' })
     expect(extraBodyParams).toEqual({})
     expect(betas).not.toContain(EFFORT_BETA_HEADER)
   })

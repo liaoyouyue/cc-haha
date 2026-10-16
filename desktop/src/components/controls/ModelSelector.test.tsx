@@ -1006,7 +1006,7 @@ describe('ModelSelector', () => {
     expect(screen.getAllByTestId('reasoning-effort-stop')).toHaveLength(5)
   })
 
-  it('does not offer an effort control that a non-GPT direct provider has explicitly disabled', () => {
+  it('still offers an effort control when a non-GPT direct provider disabled experimental betas', () => {
     useSettingsStore.setState({
       locale: 'en',
       availableModels: [],
@@ -1043,7 +1043,7 @@ describe('ModelSelector', () => {
     render(<ModelSelector runtimeKey="session-direct-disabled-claude-effort" />)
 
     expect(screen.getByRole('button', { name: 'claude-opus-4-8, Direct Claude Gateway' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Effort:/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Effort:/ })).toBeInTheDocument()
   })
 
   it('uses the ChatGPT Official catalog when that built-in provider is active', async () => {

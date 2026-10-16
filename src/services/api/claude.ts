@@ -499,7 +499,11 @@ export function configureEffortParams(
   if (
     !modelSupportsEffort(model) ||
     'effort' in effortOutputConfig ||
-    (suppressExperimentalEffort && !hasExplicitOpenAIEffort)
+    // A relay that rejects experimental betas still accepts output_config.effort
+    // on the Anthropic envelope — only the beta header is withheld (see below).
+    // An effort the user explicitly picked must survive that, so this guard only
+    // drops the synthetic default that the branch below would otherwise write.
+    (suppressExperimentalEffort && effortValue === undefined && !hasExplicitOpenAIEffort)
   ) {
     return
   }
