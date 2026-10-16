@@ -129,6 +129,8 @@ async function runCommand(
       stdout: 'pipe',
       stderr: 'pipe',
       env: getPythonCommandEnv(),
+      // python.exe is console-subsystem; the sidecar has no console to lend it.
+      windowsHide: true,
     })
     const [stdout, stderr] = await Promise.all([
       new Response(proc.stdout).text(),
