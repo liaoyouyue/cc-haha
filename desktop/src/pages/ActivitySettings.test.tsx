@@ -5,9 +5,10 @@ import '@testing-library/jest-dom'
 import { ActivitySettings } from './ActivitySettings'
 import { useSettingsStore } from '../stores/settingsStore'
 
-const { getStatsMock, captureToDataUrlMock } = vi.hoisted(() => ({
+const { getStatsMock, captureToDataUrlMock, openSessionSourceMock } = vi.hoisted(() => ({
   getStatsMock: vi.fn(),
   captureToDataUrlMock: vi.fn(),
+  openSessionSourceMock: vi.fn(),
 }))
 
 const createObjectUrlMock = vi.fn<(value: Blob) => string>(() => 'blob:usage-csv')
@@ -33,6 +34,10 @@ vi.mock('../api/activityStats', () => ({
 
 vi.mock('../preview-agent/screenshot', () => ({
   captureToDataUrl: captureToDataUrlMock,
+}))
+
+vi.mock('../lib/sessionNavigation', () => ({
+  openSessionSource: openSessionSourceMock,
 }))
 
 vi.mock('../api/desktopUiPreferences', () => ({
@@ -150,6 +155,7 @@ describe('ActivitySettings', () => {
     getStatsMock.mockResolvedValue(activityResponse)
     captureToDataUrlMock.mockReset()
     captureToDataUrlMock.mockResolvedValue('data:image/png;base64,MOCK')
+    openSessionSourceMock.mockReset()
     createObjectUrlMock.mockClear()
     revokeObjectUrlMock.mockClear()
     Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectUrlMock })
@@ -1011,6 +1017,10 @@ describe('ActivitySettings', () => {
     // instead of as a 0m that would read like a measured value.
     const agentOnly = within(sessionTable).getByText('sess-age').closest('[role="row"]') as HTMLElement
     expect(within(agentOnly).getByText('Not collected')).toBeInTheDocument()
+    expect(within(agentOnly).queryByRole('button')).not.toBeInTheDocument()
+
+    fireEvent.click(within(sessionTable).getByRole('button', { name: 'Open session sess-alpha-1' }))
+    expect(openSessionSourceMock).toHaveBeenCalledWith('sess-alpha-1')
 
     selectRange('Last 7 days')
 

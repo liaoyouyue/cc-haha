@@ -19,6 +19,7 @@ import { cx } from '@/lib/cx'
 import { type Locale, useTranslation } from '../i18n'
 import { useSettingsStore } from '../stores/settingsStore'
 import { publicAssetPath } from '../lib/publicAsset'
+import { openSessionSource } from '../lib/sessionNavigation'
 
 type HeatmapDay = {
   date: string
@@ -2898,7 +2899,18 @@ export function ActivitySettings() {
                     title={row.sessionId}
                     className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,1.1fr)_minmax(0,0.7fr)_minmax(0,0.7fr)_minmax(0,0.9fr)_minmax(0,0.8fr)] items-center gap-2 border-t border-[var(--color-border)] px-4 py-2.5 text-[13px] tabular-nums text-[var(--color-text-primary)]"
                   >
-                    <span role="cell" className="min-w-0 truncate font-mono text-xs">{row.sessionId.slice(0, 8)}</span>
+                    <span role="cell" className="min-w-0 truncate font-mono text-xs">
+                      {row.hasMainSession ? (
+                        <button
+                          type="button"
+                          className="max-w-full truncate text-left text-[var(--color-text-accent)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
+                          aria-label={t('settings.activity.sessions.open', { id: row.sessionId })}
+                          onClick={() => openSessionSource(row.sessionId)}
+                        >
+                          {row.sessionId.slice(0, 8)}
+                        </button>
+                      ) : row.sessionId.slice(0, 8)}
+                    </span>
                     <span role="cell" className="min-w-0 truncate">{row.projectName}</span>
                     <span role="cell" className="min-w-0 truncate text-right">
                       {row.startedAt ? formatShortDate(row.startedAt.slice(0, 10), locale) : '--'}

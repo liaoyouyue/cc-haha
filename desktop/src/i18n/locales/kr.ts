@@ -1228,6 +1228,7 @@ export const kr: Record<TranslationKey, string> = {
   'settings.activity.sessions.total': '기간 내 {count}개 세션',
   'settings.activity.sessions.scopeNote': '상위 세션 기준 집계입니다. 이 중 {count}개는 하위 에이전트 기록만 있어 메인 세션 소요 시간과 메시지 수가 없습니다. 개요의 세션 수는 메인 기록만 셉니다.',
   'settings.activity.sessions.duration': '시간',
+  'settings.activity.sessions.open': '세션 {id} 열기',
   'settings.activity.sessions.cap': '상위 {count}개',
   'settings.activity.tools.title': '도구 호출 순위',
   'settings.activity.tools.tool': '도구',

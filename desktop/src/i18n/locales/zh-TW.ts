@@ -1225,6 +1225,7 @@ export const zh: Record<TranslationKey, string> = {
   'settings.activity.sessions.total': '區間內共 {count} 個工作階段',
   'settings.activity.sessions.scopeNote': '依父工作階段彙總：其中 {count} 個僅有子代理記錄，沒有主工作階段耗時與訊息數。總覽的工作階段數只統計主工作階段記錄。',
   'settings.activity.sessions.duration': '時長',
+  'settings.activity.sessions.open': '開啟工作階段 {id}',
   'settings.activity.sessions.cap': '前 {count} 筆',
   'settings.activity.tools.title': '工具呼叫排行',
   'settings.activity.tools.tool': '工具',

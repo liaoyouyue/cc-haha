@@ -1224,6 +1224,7 @@ export const zh: Record<TranslationKey, string> = {
   'settings.activity.sessions.total': '区间内共 {count} 个会话',
   'settings.activity.sessions.scopeNote': '按父会话归集：其中 {count} 个仅有子代理记录，没有主会话耗时与消息数。总览的会话数只统计主会话记录。',
   'settings.activity.sessions.duration': '时长',
+  'settings.activity.sessions.open': '打开会话 {id}',
   'settings.activity.sessions.cap': '前 {count} 条',
   'settings.activity.tools.title': '工具调用排行',
   'settings.activity.tools.tool': '工具',

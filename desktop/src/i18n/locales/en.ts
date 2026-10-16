@@ -1225,6 +1225,7 @@ Row 9, all 8 cells: continuing from straight down, turning left through lower-le
   'settings.activity.sessions.total': '{count} sessions in range',
   'settings.activity.sessions.scopeNote': 'Ranked by parent session: {count} of them exist only as subagent transcripts, so they carry no main-session duration. The overview session count comes from main transcripts alone.',
   'settings.activity.sessions.duration': 'Duration',
+  'settings.activity.sessions.open': 'Open session {id}',
   'settings.activity.sessions.cap': 'Top {count}',
   'settings.activity.tools.title': 'Tool call ranking',
   'settings.activity.tools.tool': 'Tool',

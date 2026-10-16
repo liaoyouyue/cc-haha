@@ -1226,6 +1226,7 @@ export const jp: Record<TranslationKey, string> = {
   'settings.activity.sessions.total': '期間内 {count} セッション',
   'settings.activity.sessions.scopeNote': '親セッション単位で集計しています。うち {count} 件はサブエージェントの記録のみで、メインセッションの所要時間とメッセージ数がありません。概要のセッション数はメイン記録のみを数えます。',
   'settings.activity.sessions.duration': '時間',
+  'settings.activity.sessions.open': 'セッション {id} を開く',
   'settings.activity.sessions.cap': '上位 {count} 件',
   'settings.activity.tools.title': 'ツール呼び出しランキング',
   'settings.activity.tools.tool': 'ツール',
