@@ -1333,6 +1333,9 @@ export function ActivitySettings() {
   const [excludedModels, setExcludedModels] = useState<string[]>(urlState.excluded ?? [])
   const [refreshNonce, setRefreshNonce] = useState(0)
   const [sessionLimit, setSessionLimit] = useState(SESSION_ROW_LIMIT)
+  const [tableSearch, setTableSearch] = useState('')
+  const [sessionSearch, setSessionSearch] = useState('')
+  const [tableLimit, setTableLimit] = useState<number | null>(10)
   const [modelSort, setModelSort] = useState<SortState | null>(null)
   const [projectSort, setProjectSort] = useState<SortState | null>(null)
   const [sessionSort, setSessionSort] = useState<SortState | null>(null)
@@ -1341,6 +1344,13 @@ export function ActivitySettings() {
   useEffect(() => {
     writeUsageUrlState(activeView, range, excludedModels, customFrom, customTo)
   }, [activeView, excludedModels, range, customFrom, customTo])
+
+  useEffect(() => {
+    setTableSearch('')
+    setSessionSearch('')
+    setTableLimit(10)
+    setSessionLimit(SESSION_ROW_LIMIT)
+  }, [activeView])
 
   useEffect(() => {
     if (!autoRefresh) return
@@ -1487,11 +1497,24 @@ export function ActivitySettings() {
     () => buildProjectUsageRows(stats, rangeSpan),
     [rangeSpan, stats],
   )
-  const sessionWindow = useMemo(
-    () => buildSessionUsageRows(stats, rangeSpan, sessionLimit),
-    [rangeSpan, sessionLimit, stats],
+  const sessionPopulation = useMemo(
+    () => buildSessionUsageRows(stats, rangeSpan, Number.MAX_SAFE_INTEGER),
+    [rangeSpan, stats],
   )
-  const sessionRows = sessionWindow.rows
+  const normalizedTableSearch = tableSearch.trim().toLocaleLowerCase()
+  const normalizedSessionSearch = sessionSearch.trim().toLocaleLowerCase()
+  const matchingSessionRows = sessionPopulation.rows.filter((row) => (
+    normalizedSessionSearch === '' ||
+    row.sessionId.toLocaleLowerCase().includes(normalizedSessionSearch) ||
+    row.projectName.toLocaleLowerCase().includes(normalizedSessionSearch)
+  ))
+  const sessionRows = matchingSessionRows.slice(0, sessionLimit)
+  const sessionWindow = {
+    ...sessionPopulation,
+    rows: sessionRows,
+    total: matchingSessionRows.length,
+    subagentOnly: matchingSessionRows.filter((row) => !row.hasMainSession).length,
+  }
   const toolRankRows = useMemo(() => buildToolRankRows(stats, TOOL_ROW_LIMIT), [stats])
   const subagentOnlyCount = sessionWindow.subagentOnly
   const coverageItems = useMemo(() => buildCoverageItems(stats), [stats])
@@ -1661,20 +1684,20 @@ export function ActivitySettings() {
     if (activeView === 'models') {
       downloadCsv(`model-usage-${rangeSlug}.csv`, [
         ['model', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'total_tokens', 'estimated_cost_usd', 'priced'],
-        ...modelUsageWindow.rows.map((row) => [row.model, row.input, row.output, row.cacheRead, row.cacheWrite, row.total, row.costUSD, row.unpriced ? 'no' : 'yes']),
+        ...modelTableRows.map((row) => [row.model, row.input, row.output, row.cacheRead, row.cacheWrite, row.total, row.costUSD, row.unpriced ? 'no' : 'yes']),
       ])
       return
     }
     downloadCsv(`project-usage-${rangeSlug}.csv`, [
       ['project', 'session_days', 'messages', 'tool_calls', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'total_tokens', 'estimated_cost_usd'],
-      ...projectRows.map((row) => [row.projectName, row.sessionCount, row.messageCount, row.toolCallCount, row.input, row.output, row.cacheRead, row.cacheWrite, row.total, row.costUSD]),
+      ...projectTableRows.map((row) => [row.projectName, row.sessionCount, row.messageCount, row.toolCallCount, row.input, row.output, row.cacheRead, row.cacheWrite, row.total, row.costUSD]),
     ])
   }
 
   const exportSessions = () => {
     downloadCsv(`session-usage-${rangeSlug}-available.csv`, [
       ['session_id', 'project', 'started_at', 'duration_ms', 'messages', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'total_tokens', 'estimated_cost_usd', 'main_transcript_collected'],
-      ...sessionRows.map((row) => [row.sessionId, row.projectName, row.startedAt, row.activeDurationMs, row.messageCount, row.input, row.output, row.cacheRead, row.cacheWrite, row.total, row.costUSD, row.hasMainSession ? 'yes' : 'no']),
+      ...sessionTableRows.map((row) => [row.sessionId, row.projectName, row.startedAt, row.activeDurationMs, row.messageCount, row.input, row.output, row.cacheRead, row.cacheWrite, row.total, row.costUSD, row.hasMainSession ? 'yes' : 'no']),
     ])
   }
 
@@ -1760,8 +1783,22 @@ export function ActivitySettings() {
   const toggleModelSort = toggleSort(setModelSort)
   const toggleProjectSort = toggleSort(setProjectSort)
   const toggleSessionSort = toggleSort(setSessionSort)
-  const modelTableRows = sortRows(modelUsageWindow.rows, modelSort)
-  const projectTableRows = sortRows(projectRows, projectSort)
+  const sortedModelTableRows = sortRows(
+    modelUsageWindow.rows.filter((row) => (
+      normalizedTableSearch === '' || row.model.toLocaleLowerCase().includes(normalizedTableSearch)
+    )),
+    modelSort,
+  )
+  const modelTableRows = tableLimit === null ? sortedModelTableRows : sortedModelTableRows.slice(0, tableLimit)
+  const sortedProjectTableRows = sortRows(
+    projectRows.filter((row) => (
+      normalizedTableSearch === '' ||
+      row.projectName.toLocaleLowerCase().includes(normalizedTableSearch) ||
+      row.projectPath.toLocaleLowerCase().includes(normalizedTableSearch)
+    )),
+    projectSort,
+  )
+  const projectTableRows = tableLimit === null ? sortedProjectTableRows : sortedProjectTableRows.slice(0, tableLimit)
   const sessionTableRows = sortRows(sessionRows, sessionSort)
   const lastUpdated = stats?.generatedAt ? formatClock(stats.generatedAt, locale) : null
   const topModelRows = modelUsageWindow.rows.slice(0, 5)
@@ -1782,6 +1819,29 @@ export function ActivitySettings() {
     return `${modelColors[index]} ${start}% ${modelShareEnd}%`
   })
   if (modelShareEnd < 100) modelDonut.push(`var(--color-outline) ${modelShareEnd}% 100%`)
+
+  const rankingControls = (
+    <div className="flex items-center gap-2">
+      <Input
+        aria-label={t('settings.activity.tableSearch')}
+        placeholder={t('settings.activity.tableSearch')}
+        value={tableSearch}
+        onChange={(event) => setTableSearch(event.target.value)}
+        size="sm"
+        containerClassName="w-40"
+      />
+      <select
+        aria-label={t('settings.activity.topRows')}
+        value={tableLimit ?? 'all'}
+        onChange={(event) => setTableLimit(event.target.value === 'all' ? null : Number(event.target.value))}
+        className="h-7 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-2 text-xs text-[var(--color-text-primary)] outline-none focus:border-[var(--color-border-focus)]"
+      >
+        <option value="10">{t('settings.activity.topCount', { count: 10 })}</option>
+        <option value="25">{t('settings.activity.topCount', { count: 25 })}</option>
+        <option value="all">{t('settings.activity.topAll')}</option>
+      </select>
+    </div>
+  )
 
   return (
     <div className="activity-dashboard w-full min-w-0">
@@ -2506,12 +2566,12 @@ export function ActivitySettings() {
             </Card>
           </SettingsSection>
 
-          <SettingsSection title={t('settings.activity.models.breakdownTitle')}>
+          <SettingsSection title={t('settings.activity.models.breakdownTitle')} action={rankingControls}>
             {isLoading ? (
               <Card surface="lowest" padding="none" aria-hidden="true" className="min-h-[120px] px-4 py-4">
                 <div className="h-3 w-1/4 animate-pulse rounded-[var(--radius-xs)] bg-[var(--color-surface-container)]" />
               </Card>
-            ) : modelUsageWindow.rows.length === 0 ? (
+            ) : modelTableRows.length === 0 ? (
               <EmptyState
                 size="md"
                 icon={<ChartNoAxesColumn size={18} strokeWidth={1.75} />}
@@ -2579,12 +2639,12 @@ export function ActivitySettings() {
             </div>
           )}
 
-          <SettingsSection title={t('settings.activity.projects.title')}>
+          <SettingsSection title={t('settings.activity.projects.title')} action={rankingControls}>
             {isLoading ? (
               <Card surface="lowest" padding="none" aria-hidden="true" className="min-h-[120px] px-4 py-4">
                 <div className="h-3 w-1/4 animate-pulse rounded-[var(--radius-xs)] bg-[var(--color-surface-container)]" />
               </Card>
-            ) : projectRows.length === 0 ? (
+            ) : projectTableRows.length === 0 ? (
               <EmptyState
                 size="md"
                 icon={<ChartNoAxesColumn size={18} strokeWidth={1.75} />}
@@ -2627,6 +2687,14 @@ export function ActivitySettings() {
             title={t('settings.activity.sessions.title')}
             action={
               <div className="flex items-center gap-2">
+                <Input
+                  aria-label={t('settings.activity.sessionSearch')}
+                  placeholder={t('settings.activity.sessionSearch')}
+                  value={sessionSearch}
+                  onChange={(event) => setSessionSearch(event.target.value)}
+                  size="sm"
+                  containerClassName="w-40"
+                />
                 <span className="text-[11px] text-[var(--color-text-tertiary)]">
                   {t('settings.activity.sessions.cap', { count: sessionRows.length })}
                   {sessionWindow.total > sessionRows.length &&

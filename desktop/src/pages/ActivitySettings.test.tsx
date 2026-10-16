@@ -499,6 +499,46 @@ describe('ActivitySettings', () => {
     expect(getStatsMock).toHaveBeenCalledTimes(1)
   })
 
+  it('searches ranking tables and can expand a Top 10 to all rows', async () => {
+    getStatsMock.mockResolvedValue({
+      ...activityResponse,
+      projectUsage: Array.from({ length: 12 }, (_, index) => ({
+        date: '2026-05-09',
+        projectPath: `C--project-${String(index + 1).padStart(2, '0')}`,
+        projectName: `project-${String(index + 1).padStart(2, '0')}`,
+        sessionCount: 1,
+        messageCount: 1,
+        toolCallCount: 1,
+        inputTokens: 12 - index,
+        outputTokens: 0,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        costUSD: 0,
+      })),
+    })
+    render(<ActivitySettings />)
+    await flushActivityLoad()
+    openView('Projects')
+
+    const projectTable = () => screen.getByRole('heading', { name: 'Usage by project' })
+      .closest('section')!.querySelector('[role="table"]') as HTMLElement
+    expect(within(projectTable()).getAllByRole('row')).toHaveLength(11)
+
+    fireEvent.change(screen.getByLabelText('Top rows'), { target: { value: 'all' } })
+    expect(within(projectTable()).getAllByRole('row')).toHaveLength(13)
+
+    fireEvent.change(screen.getByLabelText('Search table'), { target: { value: 'PROJECT-12' } })
+    expect(within(projectTable()).getAllByRole('row')).toHaveLength(2)
+    expect(within(projectTable()).getByText('project-12')).toBeInTheDocument()
+
+    const sessionTable = screen.getByRole('heading', { name: 'Session ranking' })
+      .closest('section')!.querySelector('[role="table"]') as HTMLElement
+    fireEvent.change(screen.getByLabelText('Search sessions'), { target: { value: 'sess-beta' } })
+    expect(within(sessionTable).getAllByRole('row')).toHaveLength(2)
+    expect(within(sessionTable).getByText('sess-bet')).toBeInTheDocument()
+    expect(getStatsMock).toHaveBeenCalledTimes(1)
+  })
+
   it('splits the trend onto two scales when the cache volumes dwarf input and output', async () => {
     render(<ActivitySettings />)
     await flushActivityLoad()
