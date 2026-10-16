@@ -61,6 +61,8 @@ export type SettingsSectionProps = {
   /** Right-aligned slot beside the label, e.g. a small "Reset" button. */
   action?: ReactNode
   className?: string
+  /** Anchor target for in-page jump links. */
+  id?: string
   children?: ReactNode
 }
 
@@ -69,9 +71,9 @@ export type SettingsSectionProps = {
  * of (normally) one `SettingsGroup`. Sections are spaced 28px apart and from
  * the page header.
  */
-export function SettingsSection({ title, description, action, className, children }: SettingsSectionProps) {
+export function SettingsSection({ title, description, action, className, id, children }: SettingsSectionProps) {
   return (
-    <section className={cx('mt-7', className)}>
+    <section id={id} className={cx('mt-7', className)}>
       <div className="mb-2 flex items-end justify-between gap-3 px-0.5">
         <div className="min-w-0">
           <h3 className="text-[13px] font-semibold leading-5 text-[var(--color-text-secondary)]">{title}</h3>

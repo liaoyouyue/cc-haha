@@ -1,5 +1,11 @@
 import type { LocalIndexDatabase, LocalIndexReadOperation } from './database.js'
-import { createActivityIndex, type ActivityIndex } from './activityIndex.js'
+import {
+  createActivityIndex,
+  type ActivityIndex,
+  type DailyModelUsage,
+  type ProjectUsage,
+  type SessionUsage,
+} from './activityIndex.js'
 import type {
   ClaudeCodeStats,
   StatsDateRange,
@@ -80,6 +86,31 @@ export interface LocalIndexGateway extends SessionIndexReader {
   isSessionScopeReady(): boolean
   isActivityScopeReady?(): boolean
   getActivityStats?(range: StatsDateRange, now?: Date): ClaudeCodeStats | null
+  /**
+   * Token Intelligence (Phase A) reads. Each returns null when the local index
+   * cannot answer — the JSONL fallback path has no per-project or per-session
+   * token grain — so callers must render an explicit "unavailable" state rather
+   * than a zero.
+   */
+  getDailyModelUsage?(range: StatsDateRange, now?: Date): DailyModelUsage[] | null
+  getProjectUsage?(
+    range: StatsDateRange,
+    now?: Date,
+  ): Array<ProjectUsage & { projectName: string }> | null
+  getSessionUsage?(
+    range: StatsDateRange,
+    now?: Date,
+    limit?: number,
+  ): Array<SessionUsage & { projectName: string }> | null
+  /**
+   * Session starts by local hour of day (keys "0".."23"), or null when the
+   * index cannot answer. Mirrors `getProjectUsage`'s null contract: an
+   * all-zero histogram is a measured empty range, not an unknown one.
+   */
+  getSessionStartHours?(
+    range: StatsDateRange,
+    now?: Date,
+  ): Record<string, number> | null
   rebuild(): Promise<LocalIndexStatus>
   updateSessionTitle?(sessionId: string, title: string): boolean
   getSessionEntryLocators?(

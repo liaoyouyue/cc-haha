@@ -47,6 +47,9 @@ import type { ClaudeCodeStats, StatsDateRange } from '../../../utils/stats.js'
 import {
   markActivityBackfillBuilding,
   writeActivityBackfillState,
+  type DailyModelUsage,
+  type ProjectUsage,
+  type SessionUsage,
 } from './activityIndex.js'
 
 export type LocalIndexSchedulingMetrics = {
@@ -59,6 +62,16 @@ export interface LocalIndexCoordinator extends LocalIndexGateway {
   isActivityScopeReady(): boolean
   getActivityStats(range: StatsDateRange, now?: Date): ClaudeCodeStats | null
 }
+
+/**
+ * Token Intelligence (Phase A): a project/session row plus the display name the
+ * UI shows. The stored `projectPath` is the sanitized transcript directory name
+ * (`C--Users-Administrator`), which is what identifies the project row; the name
+ * is the last segment of the best-effort de-sanitized path, matching how
+ * `getRecentProjects` labels the same projects in the sidebar.
+ */
+export type NamedProjectUsage = ProjectUsage & { projectName: string }
+export type NamedSessionUsage = SessionUsage & { projectName: string }
 
 export type SourceDiscoveryResult = {
   complete: boolean
@@ -169,6 +182,17 @@ function desanitizeProjectPath(projectPath: string): string {
   const windowsDriveRoot = projectPath.match(/^([a-zA-Z])--$/)
   if (windowsDriveRoot) return `${windowsDriveRoot[1]}:\\`
   return projectPath.replace(/-/g, sep)
+}
+
+/**
+ * Display name for a sanitized project directory name. `sanitizePath` maps every
+ * non-alphanumeric character to `-`, so the reconstruction is lossy
+ * (`my_project` comes back as `my-project`): this is a label, not a path to
+ * write to.
+ */
+function projectNameFor(projectPath: string): string {
+  const desanitized = desanitizeProjectPath(projectPath).replace(/\\/g, '/')
+  return desanitized.split('/').filter(Boolean).pop() || projectPath
 }
 
 function isMissing(error: unknown): boolean {
@@ -1540,6 +1564,77 @@ export function createLocalIndexCoordinator(
       ) return null
       try {
         return index.aggregateActivity(range, queryNow)
+      } catch {
+        return null
+      }
+    },
+
+    getProjectUsage(
+      range: StatsDateRange,
+      queryNow?: Date,
+    ): NamedProjectUsage[] | null {
+      if (
+        !indexReadAllowed() ||
+        !index ||
+        !coordinator.isActivityScopeReady()
+      ) return null
+      try {
+        return index.aggregateProjectUsage(range, queryNow).map(row => ({
+          ...row,
+          projectName: projectNameFor(row.projectPath),
+        }))
+      } catch {
+        return null
+      }
+    },
+
+    getSessionUsage(
+      range: StatsDateRange,
+      queryNow?: Date,
+      limit?: number,
+    ): NamedSessionUsage[] | null {
+      if (
+        !indexReadAllowed() ||
+        !index ||
+        !coordinator.isActivityScopeReady()
+      ) return null
+      try {
+        return index.aggregateSessionUsage(range, queryNow, limit).map(row => ({
+          ...row,
+          projectName: projectNameFor(row.projectPath),
+        }))
+      } catch {
+        return null
+      }
+    },
+
+    getDailyModelUsage(
+      range: StatsDateRange,
+      queryNow?: Date,
+    ): DailyModelUsage[] | null {
+      if (
+        !indexReadAllowed() ||
+        !index ||
+        !coordinator.isActivityScopeReady()
+      ) return null
+      try {
+        return index.aggregateDailyModelUsage(range, queryNow)
+      } catch {
+        return null
+      }
+    },
+
+    getSessionStartHours(
+      range: StatsDateRange,
+      queryNow?: Date,
+    ): Record<string, number> | null {
+      if (
+        !indexReadAllowed() ||
+        !index ||
+        !coordinator.isActivityScopeReady()
+      ) return null
+      try {
+        return index.aggregateSessionStartHours(range, queryNow)
       } catch {
         return null
       }
