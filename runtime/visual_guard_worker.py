@@ -96,6 +96,18 @@ class CaptureBlocked(RuntimeError):
 write_lock = threading.Lock()
 watch_stop = threading.Event()
 ocr_engine = None
+# Last marked read per (window, region), so a caller can ask whether the
+# interface reacted instead of diffing two full dumps itself.
+snapshots = {}
+
+
+def encode_png(image):
+    import base64
+    import io
+
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
 def send(message):
@@ -383,18 +395,41 @@ def read_text(hwnd, region, wait_seconds):
     return image, lines
 
 
-def see(hwnd, region=None, wait_seconds=0):
+def item_key(item):
+    """Identity of a read item across reads: what it is, where, what it says."""
+    label = item.get("name") if item.get("source") == "uia" else item.get("text")
+    return (item["source"], item.get("role", ""), label or "", tuple(item["box"]))
+
+
+def annotate(image, items):
+    """Draw numbered boxes so a vision model can pick a target by number
+    instead of estimating pixels. Only the drawing is local; no model runs."""
+    from PIL import ImageDraw
+
+    marked = image.copy()
+    draw = ImageDraw.Draw(marked)
+    for item in items:
+        left, top, width, height = item["box"]
+        draw.rectangle([left, top, left + width, top + height], outline=(220, 38, 38), width=2)
+        draw.text((left + 3, max(0, top + 2)), str(item["index"]), fill=(220, 38, 38))
+    return marked
+
+
+def see(hwnd, region=None, wait_seconds=0, mark=False):
     """Read the window as positioned text, in screen coordinates.
 
     Two independent reads, returned side by side rather than merged: the
     control tree names things and says what is actionable, OCR catches text
     the tree cannot expose. Neither is a superset of the other, and a fuzzy
     merge would only invent disagreements.
+
+    mark=True also renders the window with every item numbered, so a caller
+    that can look at a picture can name a target instead of doing arithmetic.
     """
     elements = read_controls(hwnd)
     image, lines = read_text(hwnd, region, wait_seconds)
     readable = [item["name"] for item in elements if item["name"]]
-    return {
+    result = {
         "window": window_info(hwnd),
         "region": region,
         "width": image.width,
@@ -403,6 +438,18 @@ def see(hwnd, region=None, wait_seconds=0):
         "lines": lines,
         "text": "\n".join(readable + [item["text"] for item in lines]),
     }
+    if mark:
+        items = elements + lines
+        for index, item in enumerate(items):
+            item["index"] = index
+        key = (hwnd, tuple(region) if region else None)
+        previous = snapshots.get(key)
+        current = {item_key(item) for item in items}
+        result["items"] = items
+        result["changed"] = previous is None or current != previous
+        result["image_png_base64"] = encode_png(annotate(image, items))
+        snapshots[key] = current
+    return result
 
 
 def find(hwnd, query, region=None, wait_seconds=0):
@@ -492,7 +539,7 @@ def handle(command):
     if action == "windows":
         return list_windows()
     if action == "see":
-        return see(int(args["hwnd"]), args.get("region"), wait)
+        return see(int(args["hwnd"]), args.get("region"), wait, bool(args.get("mark")))
     if action == "find":
         return find(int(args["hwnd"]), args.get("query"), args.get("region"), wait)
     if action == "select_region":
