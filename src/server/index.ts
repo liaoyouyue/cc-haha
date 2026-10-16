@@ -29,7 +29,9 @@ import { sessionService } from './services/sessionService.js'
 import { localIndexCoordinator } from './services/localIndex/coordinator.js'
 import { searchContentCoordinator } from './services/localIndex/searchContentCoordinator.js'
 import { conversationService } from './services/conversationService.js'
-import { visualGuardService } from './services/visualGuardService.js'
+// Side-effect import: writes the 真实之眼 worker + MCP scripts the registered
+// MCP server imports. Nothing else in the app uses this module.
+import './services/visualGuardService.js'
 import { OPENAI_CODEX_REDIRECT_PATH } from '../services/openaiAuth/client.js'
 import { ensureDesktopCliLauncherInstalled } from './services/desktopCliLauncherService.js'
 import { enableConfigs } from '../utils/config.js'
@@ -764,7 +766,6 @@ export async function stopServerRuntimeForShutdown(
   await Promise.all([
     localIndexCoordinator.stop(),
     searchContentCoordinator.stop(),
-    visualGuardService.dispose(),
     pendingIndexStartup,
   ])
 

@@ -33,7 +33,6 @@ import { handleDesktopUiApi } from './api/desktop-ui.js'
 import { handleTracesApi } from './api/traces.js'
 import { handleWorkflowsApi } from './api/workflows.js'
 import { handleVoiceApi } from './api/voice.js'
-import { handleVisualGuardApi } from './api/visual-guard.js'
 import { apiPerformanceMonitor } from './services/apiPerformanceMonitor.js'
 
 import { remoteProviderRouteAllowed, remoteSettingsRouteAllowed, projectRemoteProvider, projectRemoteSettings, replaceRemoteCompatibility, validateRemoteSettingsPatch, type ApiRequestContext } from './remoteBrowserPolicy.js'
@@ -56,7 +55,6 @@ async function handleApiRequestWithoutPerformance(req: Request, url: URL, contex
   const parts = url.pathname.split('/').filter(Boolean)
   const isProvider = parts[1] === 'providers'
   const isSettings = parts[1] === 'settings'
-  if (parts[1] === 'visual-guard') return Response.json({ error: 'Desktop-only capability' }, { status: 403 })
   if (!isProvider && !isSettings) return routeApiRequest(req, url)
   if ((isProvider && !remoteProviderRouteAllowed(parts, req.method)) || (isSettings && !remoteSettingsRouteAllowed(parts, req.method))) {
     return Response.json({ error: 'Desktop-only capability' }, { status: 403 })
@@ -212,9 +210,6 @@ async function routeApiRequest(req: Request, url: URL): Promise<Response> {
 
     case 'voice':
       return handleVoiceApi(req, url, segments)
-
-    case 'visual-guard':
-      return handleVisualGuardApi(req, segments)
 
     case 'traces':
       return handleTracesApi(req, url, segments)
