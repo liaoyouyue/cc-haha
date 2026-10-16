@@ -61,12 +61,6 @@ export type ActivityStats = {
   lastSessionDate: string | null
   peakActivityDay: string | null
   peakActivityHour: number | null
-  /**
-   * Sessions started in each **local** hour, keyed 0–23 (JSON keys arrive as
-   * strings). Only main transcripts are counted. Absent on a sidecar older than
-   * the field, which is why it is optional rather than defaulted to zeros.
-   */
-  hourCounts?: Record<string, number> | null
   totalSpeculationTimeSavedMs: number
 }
 
@@ -135,6 +129,12 @@ export type ActivityStatsAddOns = {
   dailyModelUsage: DailyModelUsage[] | null
   projectUsage: ProjectUsage[] | null
   sessionUsage: SessionUsage[] | null
+  /**
+   * Sessions started in each **local** hour, keyed "0"–"23" (every hour present,
+   * zero when unused). `null` means the local index could not answer, so the
+   * hourly chart hides instead of drawing a flat line it did not measure.
+   */
+  hourCounts: Record<string, number> | null
 }
 
 export type ActivityStatsApiResponse = {
@@ -162,6 +162,7 @@ export const activityStatsApi = {
       dailyModelUsage: response.dailyModelUsage ?? null,
       projectUsage: response.projectUsage ?? null,
       sessionUsage: response.sessionUsage ?? null,
+      hourCounts: response.hourCounts ?? null,
     }
   },
 }
