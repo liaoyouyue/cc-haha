@@ -5,8 +5,9 @@ import '@testing-library/jest-dom'
 import { ActivitySettings } from './ActivitySettings'
 import { useSettingsStore } from '../stores/settingsStore'
 
-const { getStatsMock, captureToDataUrlMock, openSessionSourceMock } = vi.hoisted(() => ({
+const { getStatsMock, getGatewayMock, captureToDataUrlMock, openSessionSourceMock } = vi.hoisted(() => ({
   getStatsMock: vi.fn(),
+  getGatewayMock: vi.fn(),
   captureToDataUrlMock: vi.fn(),
   openSessionSourceMock: vi.fn(),
 }))
@@ -29,6 +30,9 @@ const {
 vi.mock('../api/activityStats', () => ({
   activityStatsApi: {
     getStats: getStatsMock,
+  },
+  gatewayActivityApi: {
+    get: getGatewayMock,
   },
 }))
 
@@ -156,6 +160,8 @@ describe('ActivitySettings', () => {
     captureToDataUrlMock.mockReset()
     captureToDataUrlMock.mockResolvedValue('data:image/png;base64,MOCK')
     openSessionSourceMock.mockReset()
+    getGatewayMock.mockReset()
+    getGatewayMock.mockResolvedValue(null)
     createObjectUrlMock.mockClear()
     revokeObjectUrlMock.mockClear()
     Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectUrlMock })
@@ -1087,6 +1093,28 @@ describe('ActivitySettings', () => {
 
     expect(screen.getByText(/Project attribution needs the local index/)).toBeInTheDocument()
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
+  })
+
+  it('shows gateway latency and failure rate, and says so when the gateway is silent', async () => {
+    getGatewayMock.mockResolvedValue({
+      source: 'C:/gateway/freeapi.db',
+      firstRequestAt: '2026-05-07 01:00:00',
+      lastRequestAt: '2026-05-09 02:00:00',
+      days: [
+        { date: '2026-05-09', requests: 8, succeeded: 6, failed: 2, canceled: 0, latencyP50Ms: 900, latencyP95Ms: 4200 },
+      ],
+      platforms: [{ platform: 'kilo', requests: 8, failed: 2, latencyP50Ms: 900 }],
+    })
+    render(<ActivitySettings />)
+    await flushActivityLoad()
+    openView('Agent tools')
+
+    const row = within(screen.getByRole('heading', { name: 'Gateway requests' })
+      .closest('section')!).getAllByRole('row')[1]!
+    expect(within(row).getAllByRole('cell').map((cell) => cell.textContent))
+      .toEqual(['5/9', '8', '2', '25%', '900ms', '4.2s'])
+    // The note has to name the window and the fact that it is not the model sheet.
+    expect(screen.getByText(/do not line up with the model sheet/)).toBeInTheDocument()
   })
 
   it('ranks tool calls and refuses to invent durations or failure rates', async () => {
