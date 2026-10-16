@@ -1293,6 +1293,8 @@ export const zh: Record<TranslationKey, string> = {
   'settings.activity.topRows': '显示条数',
   'settings.activity.topCount': '前 {count} 条',
   'settings.activity.topAll': '全部',
+  'settings.activity.comparison.detail': '较上一周期 {change}（上一周期 {tokens} Token）',
+  'settings.activity.comparison.noPrevious': '上一周期无用量',
   'settings.activity.modelFilter': '模型：已选 {selected}/{total}',
   'settings.activity.selectAll': '全选',
   'settings.activity.clearAll': '清空',

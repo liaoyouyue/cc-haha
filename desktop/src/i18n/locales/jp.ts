@@ -1295,6 +1295,8 @@ export const jp: Record<TranslationKey, string> = {
   'settings.activity.topRows': '表示件数',
   'settings.activity.topCount': '上位 {count} 件',
   'settings.activity.topAll': 'すべて',
+  'settings.activity.comparison.detail': '前期間比 {change}（前期間 {tokens} トークン）',
+  'settings.activity.comparison.noPrevious': '前期間の使用量はありません',
   'settings.activity.modelFilter': 'モデル: {selected}/{total} 選択',
   'settings.activity.selectAll': 'すべて選択',
   'settings.activity.clearAll': 'すべて解除',

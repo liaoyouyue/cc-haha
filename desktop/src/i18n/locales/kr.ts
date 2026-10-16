@@ -1297,6 +1297,8 @@ export const kr: Record<TranslationKey, string> = {
   'settings.activity.topRows': '표시 개수',
   'settings.activity.topCount': '상위 {count}개',
   'settings.activity.topAll': '전체',
+  'settings.activity.comparison.detail': '이전 기간 대비 {change} (이전 기간 {tokens} 토큰)',
+  'settings.activity.comparison.noPrevious': '이전 기간 사용량 없음',
   'settings.activity.modelFilter': '모델: {selected}/{total} 선택',
   'settings.activity.selectAll': '모두 선택',
   'settings.activity.clearAll': '모두 해제',

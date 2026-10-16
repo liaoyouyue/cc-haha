@@ -858,6 +858,27 @@ describe('ActivitySettings', () => {
     expect(getStatsMock).toHaveBeenCalledTimes(1)
   })
 
+  it('compares a bounded window with the immediately preceding equal period', async () => {
+    getStatsMock.mockResolvedValue({
+      ...activityResponse,
+      dailyModelTokens: [
+        activityResponse.dailyModelTokens[0],
+        { date: '2026-05-05', tokensByModel: { 'claude-sonnet': 96_000 } },
+        ...activityResponse.dailyModelTokens.slice(1),
+      ],
+    })
+    render(<ActivitySettings />)
+    await flushActivityLoad()
+
+    selectRange('Custom')
+    fireEvent.change(screen.getByLabelText('Range start'), { target: { value: '2026-05-07' } })
+    fireEvent.change(screen.getByLabelText('Range end'), { target: { value: '2026-05-09' } })
+
+    // 192k in the selected three days against 96k in the previous three.
+    expect(screen.getByText(/\+100% vs previous period \(10万 tokens\)/)).toBeInTheDocument()
+    expect(getStatsMock).toHaveBeenCalledTimes(1)
+  })
+
   it('carries the custom bounds in the URL and clears them for a preset range', async () => {
     render(<ActivitySettings />)
     await flushActivityLoad()

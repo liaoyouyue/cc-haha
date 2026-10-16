@@ -243,6 +243,16 @@ function formatPercent(numerator: number, denominator: number, locale: Locale) {
   }).format(numerator / denominator)
 }
 
+function formatPercentChange(current: number, previous: number, locale: Locale) {
+  if (previous <= 0) return null
+  const change = (current - previous) / previous
+  const value = new Intl.NumberFormat(DATE_LOCALES[locale], {
+    maximumFractionDigits: 1,
+    style: 'percent',
+  }).format(Math.abs(change))
+  return `${change > 0 ? '+' : change < 0 ? '−' : ''}${value}`
+}
+
 function formatDayCount(value: number, t: ReturnType<typeof useTranslation>) {
   return t(value === 1 ? 'settings.activity.count.dayOne' : 'settings.activity.count.dayOther', { count: value })
 }
@@ -697,6 +707,16 @@ function spanDayCount(span: DateSpan): number | null {
   const end = span.end !== null ? parseLocalDate(span.end) : startOfToday()
   const days = Math.round((end.getTime() - parseLocalDate(span.start).getTime()) / 86_400_000) + 1
   return days > 0 ? days : null
+}
+
+function getPreviousSpan(span: DateSpan): DateSpan | null {
+  const days = spanDayCount(span)
+  if (span.start === null || days === null) return null
+  const end = addDays(parseLocalDate(span.start), -1)
+  return {
+    start: localDateKey(addDays(end, -(days - 1))),
+    end: localDateKey(end),
+  }
 }
 
 function isDateInSpan(dateKey: string, span: DateSpan) {
@@ -1546,6 +1566,21 @@ export function ActivitySettings() {
     () => sumDailyTokensInWindow(stats, rangeSpan, selectedModels),
     [rangeSpan, selectedModels, stats],
   )
+  const previousRangeSpan = useMemo(() => getPreviousSpan(rangeSpan), [rangeSpan])
+  const previousTokenTotal = useMemo(
+    () => previousRangeSpan === null
+      ? null
+      : sumDailyTokensInWindow(stats, previousRangeSpan, selectedModels),
+    [previousRangeSpan, selectedModels, stats],
+  )
+  const periodComparisonDetail = previousTokenTotal === null
+    ? null
+    : previousTokenTotal === 0
+      ? t('settings.activity.comparison.noPrevious')
+      : t('settings.activity.comparison.detail', {
+          change: formatPercentChange(windowTokenTotal, previousTokenTotal, locale) ?? '0%',
+          tokens: formatTokens(previousTokenTotal),
+        })
   const metrics: SummaryMetric[] = [
     {
       label: t('settings.activity.totalTokens'),
@@ -2071,6 +2106,7 @@ export function ActivitySettings() {
               value: isLoading ? '—' : formatTokens(windowTokenTotal || trendTotalTokens),
               detail: [
                 rangeLabel,
+                periodComparisonDetail,
                 indexGap && range === 'all'
                   ? t('settings.activity.indexGap', { start: formatShortDate(indexGap.start, locale), days: indexGap.days })
                   : null,
