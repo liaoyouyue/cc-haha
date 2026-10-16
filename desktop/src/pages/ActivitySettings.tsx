@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type Dispatch, type SetStateAction, type SyntheticEvent } from 'react'
 import { ArrowUpDown, Box, ChartNoAxesColumn, CircleAlert, Download, Pencil, Puzzle, RefreshCw, Upload } from 'lucide-react'
-import { activityStatsApi, type ActivityStatsResponse, type DailyActivity } from '../api/activityStats'
+import {
+  activityStatsApi,
+  gatewayActivityApi,
+  type ActivityStatsResponse,
+  type DailyActivity,
+  type GatewayActivity,
+} from '../api/activityStats'
 import {
   desktopUiPreferencesApi,
   getProfileAvatarUrl,
@@ -383,6 +389,12 @@ function formatCostCNY(costUSD: number, locale: Locale) {
     currencyDisplay: 'narrowSymbol',
     maximumFractionDigits: cny >= 100 ? 0 : 2,
   }).format(cny)
+}
+
+/** A null percentile is "no call recorded a latency", not a zero-millisecond call. */
+function formatLatency(ms: number | null): string {
+  if (ms === null) return '--'
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`
 }
 
 function formatClock(iso: string, locale: Locale) {
@@ -1416,6 +1428,7 @@ export function ActivitySettings() {
   const heatmapMeasureRef = useRef<HTMLDivElement | null>(null)
   const avatarInputRef = useRef<HTMLInputElement | null>(null)
   const [stats, setStats] = useState<ActivityStatsResponse | null>(null)
+  const [gateway, setGateway] = useState<GatewayActivity | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [exportError, setExportError] = useState<string | null>(null)
@@ -1493,6 +1506,16 @@ export function ActivitySettings() {
     return () => {
       cancelled = true
     }
+  }, [refreshNonce])
+
+  // A separate request from the stats read: the gateway answers for its own
+  // retention window, and a gateway that is down must not blank the page.
+  useEffect(() => {
+    let cancelled = false
+    gatewayActivityApi.get()
+      .then((result) => { if (!cancelled) setGateway(result) })
+      .catch(() => { if (!cancelled) setGateway(null) })
+    return () => { cancelled = true }
   }, [refreshNonce])
 
   useEffect(() => {
@@ -3107,6 +3130,63 @@ export function ActivitySettings() {
               </Card>
             </SettingsSection>
           )}
+
+          <SettingsSection title={t('settings.activity.gateway.title')}>
+            {gateway === null || gateway.days.length === 0 ? (
+              <div className="rounded-[var(--radius-md)] bg-[var(--color-surface-container)] px-3 py-2 text-xs text-[var(--color-text-tertiary)]">
+                {t('settings.activity.gateway.unavailable')}
+              </div>
+            ) : (
+              <>
+                <p className="mb-2 text-xs text-[var(--color-text-tertiary)]">
+                  {t('settings.activity.gateway.note', {
+                    from: gateway.firstRequestAt?.slice(0, 10) ?? '--',
+                    to: gateway.lastRequestAt?.slice(0, 10) ?? '--',
+                  })}
+                </p>
+                <Card surface="lowest" padding="none" role="table" className="overflow-hidden">
+                  <div
+                    role="row"
+                    className="grid grid-cols-[minmax(0,0.9fr)_repeat(3,minmax(0,0.6fr))_repeat(2,minmax(0,0.7fr))] gap-2 bg-[var(--color-surface-container)] px-4 py-2.5 text-xs font-semibold text-[var(--color-text-tertiary)]"
+                  >
+                    <span role="columnheader" className="min-w-0 truncate">{t('settings.activity.gateway.day')}</span>
+                    <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.gateway.requests')}</span>
+                    <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.gateway.failed')}</span>
+                    <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.gateway.failureRate')}</span>
+                    <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.gateway.p50')}</span>
+                    <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.gateway.p95')}</span>
+                  </div>
+                  {[...gateway.days].reverse().map((day) => (
+                    <div
+                      key={day.date}
+                      role="row"
+                      className="grid grid-cols-[minmax(0,0.9fr)_repeat(3,minmax(0,0.6fr))_repeat(2,minmax(0,0.7fr))] items-center gap-2 border-t border-[var(--color-border)] px-4 py-2.5 text-[13px] tabular-nums text-[var(--color-text-primary)]"
+                    >
+                      <span role="cell" className="min-w-0 truncate">{formatShortDate(day.date, locale)}</span>
+                      <span role="cell" className="min-w-0 truncate text-right">{formatInteger(day.requests, locale)}</span>
+                      <span role="cell" className="min-w-0 truncate text-right">{formatInteger(day.failed, locale)}</span>
+                      <span role="cell" className="min-w-0 truncate text-right">{formatPercent(day.failed, day.requests, locale)}</span>
+                      <span role="cell" className="min-w-0 truncate text-right">{formatLatency(day.latencyP50Ms)}</span>
+                      <span role="cell" className="min-w-0 truncate text-right">{formatLatency(day.latencyP95Ms)}</span>
+                    </div>
+                  ))}
+                </Card>
+                <Card surface="lowest" padding="none" className="mt-3 overflow-hidden">
+                  <ul className="divide-y divide-[var(--color-border)]">
+                    {gateway.platforms.slice(0, 8).map((row) => (
+                      <li key={row.platform} className="flex min-h-[44px] items-center gap-3 px-4 py-2">
+                        <span className="min-w-0 flex-1 truncate font-mono text-xs text-[var(--color-text-primary)]">{row.platform}</span>
+                        <span className="shrink-0 text-xs tabular-nums text-[var(--color-text-tertiary)]">
+                          {formatInteger(row.requests, locale)} · {formatPercent(row.failed, row.requests, locale)}
+                        </span>
+                        <span className="shrink-0 text-xs tabular-nums text-[var(--color-text-tertiary)]">{formatLatency(row.latencyP50Ms)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </Card>
+              </>
+            )}
+          </SettingsSection>
 
           <SettingsSection title={t('settings.activity.tools.summaryTitle')}>
             <Card surface="lowest" padding="none" className="overflow-hidden">

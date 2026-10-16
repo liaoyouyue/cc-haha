@@ -148,6 +148,44 @@ export type ActivityStatsResponse = ActivityStats & {
   generatedAt: string
 } & Required<ActivityStatsAddOns>
 
+/**
+ * Latency and outcomes as the local LLM gateway recorded them. A different
+ * population from everything above: the gateway's own retention window, keyed
+ * by the upstream model it served, never joined onto the model leaderboard.
+ * `null` means the gateway is absent or unreadable — not an empty window.
+ */
+export type GatewayDay = {
+  date: string
+  requests: number
+  succeeded: number
+  failed: number
+  canceled: number
+  latencyP50Ms: number | null
+  latencyP95Ms: number | null
+}
+
+export type GatewayPlatformRow = {
+  platform: string
+  requests: number
+  failed: number
+  latencyP50Ms: number | null
+}
+
+export type GatewayActivity = {
+  source: string
+  firstRequestAt: string | null
+  lastRequestAt: string | null
+  days: GatewayDay[]
+  platforms: GatewayPlatformRow[]
+}
+
+export const gatewayActivityApi = {
+  async get(days = 14): Promise<GatewayActivity | null> {
+    const response = await api.get<{ gateway: GatewayActivity | null }>(`/api/gateway-activity?days=${days}`)
+    return response.gateway ?? null
+  },
+}
+
 export const activityStatsApi = {
   async getStats(range: ActivityStatsRange = 'all'): Promise<ActivityStatsResponse> {
     const suffix = range === 'all' ? '' : `/${range}`
