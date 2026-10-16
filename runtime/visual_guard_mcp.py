@@ -35,6 +35,13 @@ TOOLS = [
                     "type": "array", "items": {"type": "integer"}, "minItems": 4, "maxItems": 4,
                     "description": "可选，只读窗口内的这一块 [x, y, 宽, 高]",
                 },
+                "mark": {
+                    "type": "boolean",
+                    "description": (
+                        "返回一张把每个元素编号画好的窗口图，适合能看图的模型按编号选目标；"
+                        "同时给出 changed，表示相比上一次读取界面有没有变化"
+                    ),
+                },
             },
             "additionalProperties": False,
         },
@@ -82,9 +89,13 @@ def call_tool(name, args):
     if name == "eye_windows":
         return wrap("可见窗口：", worker.list_windows())
     if name == "eye_see":
-        sight = worker.see(resolve_target(args.get("target")), args.get("region"), 0)
+        sight = worker.see(resolve_target(args.get("target")), args.get("region"), 0, bool(args.get("mark")))
         sight["lines"] = sight["lines"][:MAX_LINES]
-        return wrap("窗口内容与坐标：", sight)
+        png = sight.pop("image_png_base64", None)
+        content = wrap("窗口内容与坐标：", sight)["content"]
+        if png:
+            content.append({"type": "image", "data": png, "mimeType": "image/png"})
+        return {"content": content}
     if name == "eye_find":
         found = worker.find(resolve_target(args.get("target")), args.get("query"), None, 0)
         return wrap("定位结果：", found)
