@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import { openLocalIndexDatabase } from './database.js'
 import { createActivityIndex } from './activityIndex.js'
 import type { LocalIndexDatabase } from './database.js'
+import type { LocalIndexGateway } from './sessionIndex.js'
+import { readTokenIntelligence } from '../../api/activityStats.js'
 
 const tempDirs: string[] = []
 const openDatabases: LocalIndexDatabase[] = []
@@ -52,6 +54,8 @@ type SessionSeed = {
   firstTimestamp: string
   activeDurationMs: number
   messageCount: number
+  /** Local hour of day, 0-23. Only main transcripts carry one. */
+  startHour?: number
 }
 
 type DailySeed = {
@@ -84,10 +88,10 @@ const SOURCES: SourceSeed[] = [
 ]
 
 const SESSIONS: SessionSeed[] = [
-  { path: '/p/a/s1.jsonl', sessionId: 's1', firstTimestamp: '2026-05-08T10:00:00.000Z', activeDurationMs: 3_600_000, messageCount: 10 },
-  { path: '/p/a/s1/subagents/a1.jsonl', sessionId: 's1', firstTimestamp: '2026-05-08T11:00:00.000Z', activeDurationMs: 600_000, messageCount: 2 },
-  { path: '/p/b/s2.jsonl', sessionId: 's2', firstTimestamp: '2026-05-09T09:00:00.000Z', activeDurationMs: 1_800_000, messageCount: 5 },
-  { path: '/p/b/s3/subagents/a2.jsonl', sessionId: 's3', firstTimestamp: '2026-05-09T10:00:00.000Z', activeDurationMs: 300_000, messageCount: 3 },
+  { path: '/p/a/s1.jsonl', sessionId: 's1', firstTimestamp: '2026-05-08T10:00:00.000Z', activeDurationMs: 3_600_000, messageCount: 10, startHour: 10 },
+  { path: '/p/a/s1/subagents/a1.jsonl', sessionId: 's1', firstTimestamp: '2026-05-08T11:00:00.000Z', activeDurationMs: 600_000, messageCount: 2, startHour: 11 },
+  { path: '/p/b/s2.jsonl', sessionId: 's2', firstTimestamp: '2026-05-09T09:00:00.000Z', activeDurationMs: 1_800_000, messageCount: 5, startHour: 9 },
+  { path: '/p/b/s3/subagents/a2.jsonl', sessionId: 's3', firstTimestamp: '2026-05-09T10:00:00.000Z', activeDurationMs: 300_000, messageCount: 3, startHour: 10 },
 ]
 
 const DAILY: DailySeed[] = [
@@ -116,14 +120,24 @@ const TOTAL_TOKENS = MODELS.reduce(
   0,
 )
 
-async function seedIndex() {
+async function seedIndex(extraSessions: SessionSeed[] = []) {
   const directory = await mkdtemp(join(tmpdir(), 'cc-haha-activity-reads-'))
   tempDirs.push(directory)
   const database = openLocalIndexDatabase({ path: join(directory, 'index-v1.sqlite') })
   openDatabases.push(database)
 
+  // Copied per call so an extra fixture never leaks into the shared arrays and
+  // shifts a later test's expectations.
+  const sources = [...SOURCES, ...extraSessions.map(session => ({
+    path: session.path,
+    sessionId: session.sessionId,
+    projectPath: 'C--proj-extra',
+    isSubagent: false,
+  }))]
+  const sessions = [...SESSIONS, ...extraSessions]
+
   database.write(operation => {
-    for (const source of SOURCES) {
+    for (const source of sources) {
       operation.run(`
         INSERT INTO activity_sources (
           path, parent_session_id, project_path, is_subagent, size_bytes, mtime_ms,
@@ -131,16 +145,18 @@ async function seedIndex() {
           last_error_code, updated_at_ms
         ) VALUES (?, ?, ?, ?, 1, ?, NULL, 'hash', 0, 1, 'ready', NULL, 1)
       `, source.path, source.sessionId, source.projectPath, source.isSubagent ? 1 : 0, MTIME_MS)
+      const seed = sessions.find(s => s.path === source.path)
       operation.run(`
         INSERT INTO activity_sessions (
           transcript_path, session_id, first_timestamp, last_timestamp,
           duration_ms, active_duration_ms, message_count, start_hour,
           speculation_time_saved_ms, shot_count
-        ) VALUES (?, ?, ?, ?, 0, ?, ?, NULL, 0, NULL)
-      `, source.path, source.sessionId, SESSIONS.find(s => s.path === source.path)?.firstTimestamp ?? null,
-      SESSIONS.find(s => s.path === source.path)?.firstTimestamp ?? null,
-      SESSIONS.find(s => s.path === source.path)?.activeDurationMs ?? 0,
-      SESSIONS.find(s => s.path === source.path)?.messageCount ?? 0)
+        ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, 0, NULL)
+      `, source.path, source.sessionId, seed?.firstTimestamp ?? null,
+      seed?.firstTimestamp ?? null,
+      seed?.activeDurationMs ?? 0,
+      seed?.messageCount ?? 0,
+      seed?.startHour ?? null)
     }
 
     for (const day of DAILY) {
@@ -297,5 +313,60 @@ describe('activity index Token Intelligence reads', () => {
 
     expect(rows).toHaveLength(1)
     expect(rows[0]!.sessionId).toBe('s1')
+  })
+})
+
+describe('activity index session start hours', () => {
+  const sum = (hours: Record<string, number>) =>
+    Object.values(hours).reduce((total, count) => total + count, 0)
+
+  it('buckets main-transcript starts by local hour and zero-fills unused hours', async () => {
+    const index = await seedIndex()
+    const hours = index.aggregateSessionStartHours('all', NOW)
+
+    // A fixed 24-bucket axis: every hour is a key so the chart never has to
+    // infer a missing bucket from a hole in the object.
+    expect(Object.keys(hours)).toHaveLength(24)
+    // Only the two main transcripts carry a start_hour (s1 at 10, s2 at 9);
+    // the subagent transcripts are excluded from the histogram.
+    expect(hours['9']).toBe(1)
+    expect(hours['10']).toBe(1)
+    expect(sum(hours)).toBe(2)
+    // An hour with no session is present and zero, not absent.
+    expect(hours['3']).toBe(0)
+    expect(hours['23']).toBe(0)
+  })
+
+  it('respects the range, dropping out-of-window starts like peakActivityHour', async () => {
+    const index = await seedIndex([{
+      path: '/p/a/s9.jsonl',
+      sessionId: 's9',
+      firstTimestamp: '2026-04-20T03:00:00.000Z',
+      activeDurationMs: 1_000,
+      messageCount: 1,
+      startHour: 3,
+    }])
+
+    // The 04-20 session falls outside the 7-day window ending 2026-05-10, so it
+    // leaves the histogram exactly as it leaves the other range-filtered reads.
+    expect(index.aggregateSessionStartHours('all', NOW)['3']).toBe(1)
+    expect(sum(index.aggregateSessionStartHours('all', NOW))).toBe(3)
+    const week = index.aggregateSessionStartHours('7d', NOW)
+    expect(week['3']).toBe(0)
+    expect(sum(week)).toBe(2)
+  })
+
+  it('reports null, not zeros, when the gateway cannot answer', () => {
+    const unavailable = {
+      getSessionStartHours: undefined,
+    } as unknown as LocalIndexGateway
+    expect(readTokenIntelligence('7d', NOW, unavailable).hourCounts).toBeNull()
+
+    const failing = {
+      getSessionStartHours: () => {
+        throw new Error('index read failed')
+      },
+    } as unknown as LocalIndexGateway
+    expect(readTokenIntelligence('7d', NOW, failing).hourCounts).toBeNull()
   })
 })

@@ -1624,6 +1624,22 @@ export function createLocalIndexCoordinator(
       }
     },
 
+    getSessionStartHours(
+      range: StatsDateRange,
+      queryNow?: Date,
+    ): Record<string, number> | null {
+      if (
+        !indexReadAllowed() ||
+        !index ||
+        !coordinator.isActivityScopeReady()
+      ) return null
+      try {
+        return index.aggregateSessionStartHours(range, queryNow)
+      } catch {
+        return null
+      }
+    },
+
     listSessions(options): SessionIndexPage {
       if (!indexReadAllowed() || !index) return { sessions: [], total: 0 }
       try {

@@ -2234,6 +2234,32 @@ body.sidebar-resizing * {
   background: var(--color-outline-a92);
 }
 
+.activity-dashboard {
+  container-type: inline-size;
+}
+
+.activity-dashboard .activity-profile-strip {
+  background: transparent;
+  border-radius: 0;
+  border-width: 0 0 1px;
+  padding: 4px 0 14px;
+}
+
+.activity-dashboard .activity-toolbar {
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 15px;
+}
+
+.activity-dashboard .activity-toolbar [role='radio'][aria-checked='true'] {
+  background: var(--color-brand);
+  border-color: var(--color-brand);
+  color: var(--color-btn-primary-fg);
+}
+
+.activity-dashboard .activity-trend-bars {
+  background-image: repeating-linear-gradient(to top, transparent 0, transparent 61px, var(--color-border) 62px);
+}
+
 .activity-summary-panel {
   container-type: inline-size;
 }
@@ -2242,30 +2268,20 @@ body.sidebar-resizing * {
   grid-template-columns: minmax(0, 1fr);
 }
 
-.activity-summary-metric-primary {
-  grid-column: auto;
-}
-
 .activity-summary-value {
   overflow-wrap: normal;
   word-break: keep-all;
 }
 
-/* Five tiles on a 700px page: the headline total takes two columns so the rows
-   read 2+1 / 1+1+1 instead of leaving a hole at the end of the second row. */
 @container (min-width: 360px) {
   .activity-summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-
-  .activity-summary-metric-primary {
-    grid-column: span 2;
-  }
 }
 
-@container (min-width: 520px) {
+@container (min-width: 720px) {
   .activity-summary-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
 

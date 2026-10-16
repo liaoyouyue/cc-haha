@@ -61,6 +61,12 @@ export type ActivityStats = {
   lastSessionDate: string | null
   peakActivityDay: string | null
   peakActivityHour: number | null
+  /**
+   * Sessions started in each **local** hour, keyed 0–23 (JSON keys arrive as
+   * strings). Only main transcripts are counted. Absent on a sidecar older than
+   * the field, which is why it is optional rather than defaulted to zeros.
+   */
+  hourCounts?: Record<string, number> | null
   totalSpeculationTimeSavedMs: number
 }
 

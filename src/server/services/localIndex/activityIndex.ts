@@ -75,6 +75,10 @@ export interface ActivityIndex {
     now?: Date,
     limit?: number,
   ): SessionUsage[]
+  aggregateSessionStartHours(
+    range: StatsDateRange,
+    now?: Date,
+  ): Record<string, number>
 }
 
 /** One day of one model's spend — the per-day grain the range filter needs. */
@@ -1012,6 +1016,42 @@ export function createActivityIndex(
               left.sessionId.localeCompare(right.sessionId)
           })
           .slice(0, limit)
+      })
+    },
+
+    /**
+     * Session starts bucketed by local hour of day. Reuses the same session
+     * predicate, range filter and `is_subagent = 0` restriction as the
+     * `hourCounts` that `aggregateActivity` derives `peakActivityHour` from, so
+     * the two agree for the same range. Every hour 0-23 is present (zero when
+     * no session started then) because the caller draws a fixed 24-bucket
+     * chart; an unknown answer is the gateway's null, never all-zero here.
+     */
+    aggregateSessionStartHours(range, now = new Date()): Record<string, number> {
+      const sessionRange = rangePredicate(
+        range,
+        now,
+        'date(activity_sessions.first_timestamp)',
+        'activity_sources.mtime_ms',
+      )
+      return database.read(operation => {
+        const rows = operation.all<{ start_hour: number }>(`
+          SELECT activity_sessions.start_hour
+          FROM activity_sessions
+          JOIN activity_sources
+            ON activity_sources.path = activity_sessions.transcript_path
+          ${sessionRange.sql}${sessionRange.sql ? ' AND' : ' WHERE'}
+            activity_sources.is_subagent = 0
+            AND activity_sessions.first_timestamp IS NOT NULL
+            AND activity_sessions.start_hour IS NOT NULL
+        `, ...sessionRange.bindings)
+        const counts: Record<string, number> = {}
+        for (let hour = 0; hour < 24; hour++) counts[String(hour)] = 0
+        for (const row of rows) {
+          const key = String(row.start_hour)
+          counts[key] = (counts[key] ?? 0) + 1
+        }
+        return counts
       })
     },
 

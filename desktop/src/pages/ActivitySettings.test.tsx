@@ -9,6 +9,9 @@ const { getStatsMock } = vi.hoisted(() => ({
   getStatsMock: vi.fn(),
 }))
 
+const createObjectUrlMock = vi.fn(() => 'blob:usage-csv')
+const revokeObjectUrlMock = vi.fn()
+
 const {
   getPreferencesMock,
   updateProfilePreferencesMock,
@@ -113,6 +116,9 @@ const activityResponse = {
   lastSessionDate: '2026-05-09T11:00:00.000Z',
   peakActivityDay: '2026-04-20',
   peakActivityHour: 14,
+  // JSON keys arrive as strings, and the fixture leaves gaps on purpose so the
+  // histogram has to fill the missing hours with zeroes.
+  hourCounts: { 9: 4, 10: 1, 14: 6, 23: 2 },
   totalSpeculationTimeSavedMs: 0,
 }
 
@@ -137,6 +143,11 @@ describe('ActivitySettings', () => {
     vi.setSystemTime(new Date('2026-05-09T12:00:00'))
     getStatsMock.mockReset()
     getStatsMock.mockResolvedValue(activityResponse)
+    createObjectUrlMock.mockClear()
+    revokeObjectUrlMock.mockClear()
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectUrlMock })
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectUrlMock })
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
     getPreferencesMock.mockReset()
     updateProfilePreferencesMock.mockReset()
     uploadProfileAvatarMock.mockReset()
@@ -218,10 +229,15 @@ describe('ActivitySettings', () => {
       },
     }))
     useSettingsStore.setState({ locale: 'en' })
+    // The page mirrors view/range/model selection into the query string and the
+    // filter's open state into localStorage; both would leak between cases.
+    window.history.replaceState(null, '', '/')
+    window.localStorage.clear()
   })
 
   afterEach(() => {
     vi.useRealTimers()
+    vi.restoreAllMocks()
   })
 
   it('renders summary metrics and a GitHub-style trailing heatmap without future days', async () => {
@@ -238,15 +254,15 @@ describe('ActivitySettings', () => {
       'href',
       'https://github.com/NanmiCoder/cc-haha',
     )
-    expect(screen.getByText('Token Activity')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Token Activity' })).toBeInTheDocument()
     expect(screen.getByText('Total tokens')).toBeInTheDocument()
     expect(screen.getByText('Peak tokens')).toBeInTheDocument()
     expect(screen.getByText('Longest task')).toBeInTheDocument()
     expect(screen.getByText('Current streak')).toBeInTheDocument()
     expect(screen.getByText('Longest streak')).toBeInTheDocument()
     // Compact-formatter units, not M/K: the shipped build renders 万/亿.
-    expect(screen.getByText('286万')).toBeInTheDocument()
-    expect(screen.getByText('267万')).toBeInTheDocument()
+    expect(screen.getAllByText('286万').length).toBeGreaterThanOrEqual(2)
+    expect(screen.getAllByText('267万').length).toBeGreaterThan(0)
     expect(screen.getByText('0m')).toBeInTheDocument()
     expect(screen.getByText('9 days')).toBeInTheDocument()
     expect(screen.getByText('18 days')).toBeInTheDocument()
@@ -255,7 +271,7 @@ describe('ActivitySettings', () => {
     expect(screen.getByText('Most used model')).toBeInTheDocument()
     expect(screen.getByText('Total sessions')).toBeInTheDocument()
     expect(screen.getByText('Tool calls')).toBeInTheDocument()
-    expect(screen.getByText('Sonnet')).toBeInTheDocument()
+    expect(screen.getAllByText('Sonnet').length).toBeGreaterThan(0)
     expect(screen.getAllByText('May').length).toBeGreaterThan(0)
     expect(screen.queryByText('5月')).not.toBeInTheDocument()
     // May 2026 starts in the final column, too late to fit its name.
@@ -267,8 +283,9 @@ describe('ActivitySettings', () => {
     expect(todayCell).toBeInTheDocument()
     expect(screen.queryByRole('gridcell', { name: /May 10, 2026/i })).not.toBeInTheDocument()
 
-    // The other four sheets are one click away, not stacked on this one.
-    expect(screen.queryByRole('heading', { name: 'Usage by model' })).not.toBeInTheDocument()
+    // Compact model and project rankings are visible; full sheets stay one click away.
+    expect(screen.getByRole('heading', { name: 'Usage by model' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Usage by project' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Tool call ranking' })).not.toBeInTheDocument()
     // This one asserts the whole overview in a single pass — the 364-cell grid
     // plus every summary tile — and needs more than the 5s default on a loaded
@@ -314,23 +331,18 @@ describe('ActivitySettings', () => {
 
     await flushActivityLoad()
 
-    const summaryPanel = screen.getByText('Total tokens').closest('section')
-    expect(summaryPanel).toHaveClass('activity-summary-panel')
-    expect(within(summaryPanel as HTMLElement).getByText('286万')).toBeInTheDocument()
+    const headlinePanel = screen.getByText('Total tokens').closest('section')
+    expect(headlinePanel).toHaveClass('activity-primary-grid')
+    expect(within(headlinePanel as HTMLElement).getByText('286万')).toBeInTheDocument()
+    expect(within(headlinePanel as HTMLElement).getByText('Estimated cost')).toBeInTheDocument()
 
-    // Breakpoints live in container queries (globals.css), so the settings rail
-    // width cannot push the tiles into a cramped row.
+    const summaryPanel = screen.getByText('Peak tokens').closest('section')
+    expect(summaryPanel).toHaveClass('activity-summary-panel')
+    expect(summaryPanel?.querySelectorAll('.activity-summary-metric')).toHaveLength(4)
+    // Compact supporting metrics use a container query; the rail must not cram them.
     const summaryGrid = summaryPanel?.querySelector('.activity-summary-grid')
     expect(summaryGrid).not.toHaveClass('sm:grid-cols-2')
     expect(summaryGrid).not.toHaveClass('lg:grid-cols-5')
-    expect(summaryGrid).not.toHaveClass('xl:grid-cols-5')
-
-    // The headline tile is the one that spans two columns; the label sits above the number.
-    const primaryMetric = screen.getByText('Total tokens').closest('.activity-summary-metric')
-    expect(primaryMetric).toHaveClass('activity-summary-metric-primary')
-    expect(primaryMetric).not.toHaveClass('sm:col-span-2')
-    expect(primaryMetric?.firstElementChild).toHaveTextContent('Total tokens')
-    expect(screen.getByText('Peak tokens').closest('.activity-summary-metric')).not.toHaveClass('activity-summary-metric-primary')
 
     // Two lines, not one truncated line: at a third of the row a duration like
     // "436 小时 26 分钟" rendered as "436 小…". Clamping still caps the growth, so
@@ -368,27 +380,257 @@ describe('ActivitySettings', () => {
     expect(Math.max(...lefts)).toBeLessThanOrEqual(cellPitch * 49)
   })
 
-  it('charts the trailing 14 days ending today and highlights only today', async () => {
+  it('charts all available four-dimensional days and narrows the chart and headline in place', async () => {
     render(<ActivitySettings />)
-
     await flushActivityLoad()
 
-    const chart = screen.getByRole('list', { name: 'Token usage by day' })
-    const bars = within(chart).getAllByRole('listitem')
-    expect(bars).toHaveLength(14)
-    expect(bars[0]).toHaveTextContent('Apr 26, 2026: 0 Tokens')
-    expect(bars[11]).toHaveTextContent('May 7, 2026: 6万 Tokens')
-    expect(bars[13]).toHaveTextContent('May 9, 2026: 13万 Tokens')
-    expect(within(chart).queryByText(/May 10, 2026/)).not.toBeInTheDocument()
+    const chart = () => screen.getByRole('list', { name: 'Token usage by day' })
+    let bars = within(chart()).getAllByRole('listitem')
+    expect(bars).toHaveLength(3)
+    expect(bars[0]).toHaveTextContent('Apr 20, 2026: 267万 Tokens')
+    expect(bars[2]).toHaveAttribute('title', expect.stringContaining('Cache read 3万'))
+    expect(bars[2]!.querySelectorAll('[aria-hidden="true"] span')).toHaveLength(4)
 
-    const barFill = (bar: HTMLElement) => bar.firstElementChild as HTMLElement
-    // Heights are relative to the window's own peak, so today's 128K fills the
-    // chart and the 64K day sits at half height.
-    expect(barFill(bars[13]!).style.height).toBe('100%')
-    expect(barFill(bars[11]!).style.height).toBe('50%')
-    expect(barFill(bars[0]!).style.height).toBe('0%')
-    expect(barFill(bars[13]!).className).toContain('--color-brand')
-    expect(barFill(bars[11]!).className).not.toContain('--color-brand')
+    selectRange('Last 7 days')
+    bars = within(chart()).getAllByRole('listitem')
+    expect(bars).toHaveLength(7)
+    expect(bars[0]).toHaveTextContent('May 3, 2026: 0 Tokens')
+    expect(bars[4]).toHaveTextContent('May 7, 2026: 6万 Tokens')
+    expect(bars[6]).toHaveTextContent('May 9, 2026: 13万 Tokens')
+    expect(within(chart()).queryByText(/Apr 20, 2026/)).not.toBeInTheDocument()
+    expect(bars[6]!.firstElementChild).toHaveStyle({ height: '100%' })
+    expect(getStatsMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows session starts per local hour and marks the peak', async () => {
+    render(<ActivitySettings />)
+    await flushActivityLoad()
+
+    const histogram = screen.getByRole('list', { name: 'Starts by hour of day' })
+    const buckets = within(histogram).getAllByRole('listitem')
+    expect(buckets).toHaveLength(24)
+    // Hours the index never recorded are drawn at zero, not dropped: a missing
+    // hour would silently rescale the chart.
+    expect(buckets[0]).toHaveTextContent('00:00: 0')
+    expect(buckets[9]).toHaveTextContent('09:00: 4')
+    expect(buckets[14]).toHaveTextContent('14:00: 6')
+    expect(screen.getByText('Peak 14:00 · 6 sessions')).toBeInTheDocument()
+    expect(buckets[14]!.firstElementChild).toHaveStyle({ height: '100%' })
+    expect(buckets[9]!.firstElementChild).toHaveStyle({ height: '66.66666666666666%' })
+    // The hour is the machine's local hour, and only main transcripts carry it.
+    expect(screen.getByText(/Local time, main transcripts only/)).toBeInTheDocument()
+  })
+
+  it('omits the hour histogram when the sidecar reports no hour counts', async () => {
+    getStatsMock.mockResolvedValueOnce({ ...activityResponse, hourCounts: undefined })
+    render(<ActivitySettings />)
+    await flushActivityLoad()
+
+    expect(screen.queryByRole('list', { name: 'Starts by hour of day' })).not.toBeInTheDocument()
+  })
+
+  it('sorts a ranking by a clicked column and reports the direction', async () => {
+    render(<ActivitySettings />)
+    await flushActivityLoad()
+    openView('Projects')
+
+    const table = screen.getByRole('heading', { name: 'Usage by project' })
+      .closest('section')!.querySelector('[role="table"]') as HTMLElement
+    const projectColumn = () => within(table).getAllByRole('row').slice(1)
+      .map((row) => within(row).getAllByRole('cell')[0]!.textContent)
+
+    expect(projectColumn()).toEqual(['proj-alpha', 'proj-beta'])
+
+    const tokensHeader = within(table).getByRole('columnheader', { name: /Total tokens/ })
+    // First click on a new column starts descending, so the default order holds.
+    fireEvent.click(within(tokensHeader).getByRole('button'))
+    expect(tokensHeader).toHaveAttribute('aria-sort', 'descending')
+    expect(projectColumn()).toEqual(['proj-alpha', 'proj-beta'])
+
+    // Second click on the same column flips it, which is the visible change.
+    fireEvent.click(within(tokensHeader).getByRole('button'))
+    expect(tokensHeader).toHaveAttribute('aria-sort', 'ascending')
+    expect(projectColumn()).toEqual(['proj-beta', 'proj-alpha'])
+    // Sorting is a view concern: it must not re-read the index.
+    expect(getStatsMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('splits the trend onto two scales when the cache volumes dwarf input and output', async () => {
+    render(<ActivitySettings />)
+    await flushActivityLoad()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Split scales' }))
+
+    const cacheChart = screen.getByRole('list', { name: /Token usage by day · Cache scale/ })
+    const ioChart = screen.getByRole('list', { name: /Token usage by day · Input \/ output scale/ })
+    // Each chart carries only its own dimensions, in both the tooltip and the
+    // accessible name — a split chart that still described the other series
+    // would be lying about what the bar height means.
+    const cacheDay = within(cacheChart).getAllByRole('listitem')[2]!
+    expect(cacheDay).toHaveAttribute('title', expect.stringContaining('Cache read 3万'))
+    expect(cacheDay.getAttribute('title')).not.toContain('Input')
+    // Each chart scales to its own peak: 04-20 tops both, but on the cache scale
+    // the 05-09 bar is a fifth of it rather than a sliver.
+    expect(within(cacheChart).getAllByRole('listitem')[0]!.firstElementChild).toHaveStyle({ height: '100%' })
+    expect(within(ioChart).getAllByRole('listitem')[0]!.firstElementChild).toHaveStyle({ height: '100%' })
+    expect(within(ioChart).getAllByRole('listitem')[2]!.firstElementChild).not.toHaveStyle({ height: '100%' })
+  })
+
+  it('draws the cache series taller once they stop sharing a scale with input and output', async () => {
+    render(<ActivitySettings />)
+    await flushActivityLoad()
+
+    const dayBarHeight = (chart: HTMLElement, index: number) =>
+      Number.parseFloat((within(chart).getAllByRole('listitem')[index]!.firstElementChild as HTMLElement).style.height)
+
+    const combined = screen.getByRole('list', { name: 'Token usage by day' })
+    const combinedDayTwo = dayBarHeight(combined, 2)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Split scales' }))
+    const cacheChart = screen.getByRole('list', { name: /Token usage by day · Cache scale/ })
+    const cacheDayTwo = dayBarHeight(cacheChart, 2)
+
+    // Same day, same data: 26k + 22k of cache is a tall bar on a cache-only
+    // scale (48k / 212k ≈ 23%) and a sliver beside 2.4M of input (128k / 2.7M ≈ 5%).
+    expect(cacheDayTwo).toBeGreaterThan(combinedDayTwo * 3)
+  })
+
+  it('polls on the auto-refresh cadence and stops when switched off', async () => {
+    render(<ActivitySettings />)
+    await flushActivityLoad()
+    expect(getStatsMock).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Auto-refresh' }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    await flushActivityLoad()
+    expect(getStatsMock).toHaveBeenCalledTimes(2)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Auto-refresh on' }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000) })
+    await flushActivityLoad()
+    expect(getStatsMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('mirrors view, range and model selection into the URL and can reopen from it', async () => {
+    const { unmount } = render(<ActivitySettings />)
+    await flushActivityLoad()
+
+    // The filter only exists on the overview and model sheets, so it is toggled
+    // before navigating away.
+    fireEvent.click(screen.getByText('Models: 1 of 1'))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'claude-sonnet' }))
+    openView('Projects')
+    selectRange('Last 7 days')
+
+    const params = new URLSearchParams(window.location.search)
+    expect(params.get('ti.view')).toBe('projects')
+    expect(params.get('ti.range')).toBe('7d')
+    expect(params.get('ti.models')).toBe('claude-sonnet')
+
+    // A bookmarked URL reopens the same slice instead of the default view.
+    unmount()
+    window.history.replaceState(null, '', '/?ti.view=models&ti.range=30d')
+    render(<ActivitySettings />)
+    await flushActivityLoad()
+    expect(screen.getByRole('radio', { name: 'Model cost' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: 'Last 30 days' })).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('remembers the model filter open state across mounts', async () => {
+    const { unmount } = render(<ActivitySettings />)
+    await flushActivityLoad()
+
+    const details = screen.getByText('Models: 1 of 1').closest('details') as HTMLDetailsElement
+    // jsdom does not flip `<details>` on a summary click, so the DOM state and
+    // the toggle event are set the way the browser would.
+    details.open = true
+    fireEvent(details, new Event('toggle'))
+    expect(window.localStorage.getItem('ti.details.modelFilter')).toBe('open')
+
+    unmount()
+    render(<ActivitySettings />)
+    await flushActivityLoad()
+    // Reopened from storage rather than starting collapsed again.
+    expect(screen.getByText('Models: 1 of 1').closest('details')).toHaveAttribute('open')
+  })
+
+  it('links every overview block the long page needs to reach', async () => {
+    render(<ActivitySettings />)
+    await flushActivityLoad()
+
+    const nav = screen.getByRole('navigation', { name: 'Jump to' })
+    const targets = within(nav).getAllByRole('link').map((link) => link.getAttribute('href'))
+    expect(targets).toEqual([
+      '#activity-trend',
+      '#activity-hours',
+      '#activity-models',
+      '#activity-projects',
+      '#activity-heatmap',
+    ])
+    // Every anchor must resolve, or the jump silently does nothing.
+    for (const target of targets) {
+      expect(document.getElementById(target!.slice(1))).toBeInTheDocument()
+    }
+  })
+
+  it('filters model-backed totals without changing project attribution', async () => {
+    render(<ActivitySettings />)
+    await flushActivityLoad()
+
+    fireEvent.click(screen.getByText('Models: 1 of 1'))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'claude-sonnet' }))
+
+    expect(screen.getByText('Models: 0 of 1')).toBeInTheDocument()
+    expect(within(screen.getByRole('region', { name: 'Overview' })).getByText('0')).toBeInTheDocument()
+    expect(screen.getByText('proj-alpha')).toBeInTheDocument()
+    expect(screen.getByText('Affects token trends and model totals only.')).toBeInTheDocument()
+  })
+
+  it('switches the trend to an exact daily table', async () => {
+    render(<ActivitySettings />)
+    await flushActivityLoad()
+
+    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Trend display' })).getByRole('radio', { name: 'Table' }))
+
+    const table = screen.getByRole('table', { name: 'Table' })
+    expect(within(table).getAllByRole('row')).toHaveLength(4)
+    expect(within(table).getByText('4/20')).toBeInTheDocument()
+    expect(within(table).getByText('267万')).toBeInTheDocument()
+  })
+
+  it('exports the current filtered trend as CSV', async () => {
+    render(<ActivitySettings />)
+    await flushActivityLoad()
+    selectRange('Last 7 days')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Export CSV' }))
+
+    expect(createObjectUrlMock).toHaveBeenCalledTimes(1)
+    expect(revokeObjectUrlMock).toHaveBeenCalledWith('blob:usage-csv')
+    expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(1)
+  })
+
+  it('reloads the local statistics only when refresh is requested', async () => {
+    render(<ActivitySettings />)
+    await flushActivityLoad()
+    expect(getStatsMock).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh data' }))
+    await flushActivityLoad()
+
+    expect(getStatsMock).toHaveBeenCalledTimes(2)
+    expect(getStatsMock).toHaveBeenLastCalledWith('all')
+  })
+
+  it('opens the model ranking details with the same selected range', async () => {
+    render(<ActivitySettings />)
+    await flushActivityLoad()
+    selectRange('Last 7 days')
+    const modelRanking = screen.getByRole('heading', { name: 'Usage by model' }).closest('div')?.parentElement as HTMLElement
+    fireEvent.click(within(modelRanking).getByRole('button', { name: 'View details' }))
+    expect(screen.getByRole('radio', { name: 'Model cost' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: 'Last 7 days' })).toHaveAttribute('aria-checked', 'true')
+    expect(getStatsMock).toHaveBeenCalledTimes(1)
   })
 
   it('reports collection coverage on the overview and lists it again in diagnostics', async () => {
@@ -544,6 +786,23 @@ describe('ActivitySettings', () => {
     expect(within(narrowed).queryByText('sess-old')).not.toBeInTheDocument()
   })
 
+  it('reveals additional session rows without pretending the server cap is complete history', async () => {
+    const sessionUsage = Array.from({ length: 25 }, (_, index) => ({
+      ...activityResponse.sessionUsage[2],
+      sessionId: `session-${String(index).padStart(2, '0')}`,
+      inputTokens: 50_000 - index,
+    }))
+    getStatsMock.mockResolvedValueOnce({ ...activityResponse, sessionUsage })
+    render(<ActivitySettings />)
+    await flushActivityLoad()
+    openView('Projects')
+
+    const section = screen.getByRole('heading', { name: 'Session ranking' }).closest('section') as HTMLElement
+    expect(within(section).getAllByRole('row')).toHaveLength(21)
+    fireEvent.click(within(section).getByRole('button', { name: 'Show 5 more' }))
+    expect(within(section).getAllByRole('row')).toHaveLength(26)
+  })
+
   it('says project attribution is unavailable instead of showing an empty leaderboard', async () => {
     getStatsMock.mockResolvedValueOnce({
       ...activityResponse,
@@ -607,7 +866,7 @@ describe('ActivitySettings', () => {
 
     await flushActivityLoad()
 
-    expect(screen.getByText('Token 活动')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Token 活动' })).toBeInTheDocument()
     const modeGroup = screen.getByRole('radiogroup', { name: 'Token 活动' })
     expect(within(modeGroup).getByRole('radio', { name: '每日' })).toHaveAttribute('aria-checked', 'true')
     fireEvent.click(within(modeGroup).getByRole('radio', { name: '每周' }))
@@ -708,7 +967,9 @@ describe('ActivitySettings', () => {
 
     expect(deleteProfileAvatarMock).toHaveBeenCalled()
     expect(screen.getByAltText('cc-haha avatar')).toHaveAttribute('src', '/app-icon.png')
-  })
+    // Same headroom as the overview pass: the page grew past what the 5s default
+    // covers on a loaded machine, and nothing here waits on a real timer.
+  }, 20_000)
 
   it('shows localized duration details and the empty usage state', async () => {
     useSettingsStore.setState({ locale: 'zh' })

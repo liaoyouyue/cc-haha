@@ -102,6 +102,15 @@ export interface LocalIndexGateway extends SessionIndexReader {
     now?: Date,
     limit?: number,
   ): Array<SessionUsage & { projectName: string }> | null
+  /**
+   * Session starts by local hour of day (keys "0".."23"), or null when the
+   * index cannot answer. Mirrors `getProjectUsage`'s null contract: an
+   * all-zero histogram is a measured empty range, not an unknown one.
+   */
+  getSessionStartHours?(
+    range: StatsDateRange,
+    now?: Date,
+  ): Record<string, number> | null
   rebuild(): Promise<LocalIndexStatus>
   updateSessionTitle?(sessionId: string, title: string): boolean
   getSessionEntryLocators?(

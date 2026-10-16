@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
-import { Box, ChartNoAxesColumn, CircleAlert, Pencil, Puzzle, Upload } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type Dispatch, type SetStateAction, type SyntheticEvent } from 'react'
+import { ArrowUpDown, Box, ChartNoAxesColumn, CircleAlert, Download, Pencil, Puzzle, RefreshCw, Upload } from 'lucide-react'
 import { activityStatsApi, type ActivityStatsResponse, type DailyActivity } from '../api/activityStats'
 import {
   desktopUiPreferencesApi,
@@ -13,6 +13,7 @@ import { EmptyState } from '@/components/ui/EmptyState'
 import { IconButton } from '@/components/ui/IconButton'
 import { Input } from '@/components/ui/Input'
 import { Modal } from '@/components/ui/Modal'
+import { Progress } from '@/components/ui/Progress'
 import { SegmentedControl } from '@/components/ui/SegmentedControl'
 import { cx } from '@/lib/cx'
 import { type Locale, useTranslation } from '../i18n'
@@ -45,6 +46,7 @@ type PluginRankItem = {
 }
 
 type HeatmapMode = 'daily' | 'weekly' | 'cumulative'
+type OverviewMode = 'chart' | 'table'
 
 /**
  * The five Token Intelligence sheets. `overview` is the original page: lifetime
@@ -53,10 +55,8 @@ type HeatmapMode = 'daily' | 'weekly' | 'cumulative'
 type ActivityView = 'overview' | 'models' | 'projects' | 'tools' | 'diagnostics'
 
 /**
- * Only the two sheets whose data carries a date grain can honour a range
- * filter — model spend from `dailyModelUsage` and project spend from
- * `projectUsage`. Tools and diagnostics are all-time aggregates, so they get no
- * control rather than a dead one.
+ * Only the sheets with daily data can honour a range filter. Tools and
+ * diagnostics are all-time aggregates, so they get no dead control.
  */
 type UsageRange = 'all' | '30d' | '7d'
 
@@ -67,7 +67,7 @@ const RANGE_DAY_COUNTS: Record<UsageRange, number | null> = {
 }
 
 /** Sheets whose data carries a date grain, so the range filter actually bites. */
-const RANGE_AWARE_VIEWS: ReadonlySet<ActivityView> = new Set<ActivityView>(['models', 'projects'])
+const RANGE_AWARE_VIEWS: ReadonlySet<ActivityView> = new Set<ActivityView>(['overview', 'models', 'projects'])
 
 /** Tokens a model processed rather than replayed from cache, plus cost. */
 type ModelUsageRow = {
@@ -126,7 +126,6 @@ type DiagnosticItem = {
 }
 
 const WEEK_COUNT = 52
-const CHART_DAY_COUNT = 14
 /** Leaderboards, not exports — the sheets say how many rows they show. */
 const SESSION_ROW_LIMIT = 20
 const TOOL_ROW_LIMIT = 12
@@ -286,12 +285,199 @@ function formatCostUSD(cost: number, locale: Locale) {
   }).format(cost)
 }
 
+function formatClock(iso: string, locale: Locale) {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return iso
+  return new Intl.DateTimeFormat(DATE_LOCALES[locale], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).format(date)
+}
+
 function formatShare(part: number, whole: number, locale: Locale) {
   if (whole <= 0) return '0%'
   return new Intl.NumberFormat(DATE_LOCALES[locale], {
     maximumFractionDigits: part / whole < 0.1 ? 1 : 0,
     style: 'percent',
   }).format(part / whole)
+}
+
+/** Four token dimensions, coloured from the theme so all six palettes work. */
+const SERIES_COLORS = {
+  input: 'var(--color-brand)',
+  output: 'var(--color-warning)',
+  cacheRead: 'var(--color-info)',
+  cacheWrite: 'var(--color-success)',
+} as const
+
+type SeriesKey = keyof typeof SERIES_COLORS
+
+/** Reference dashboard polls every 30s; the same cadence here. */
+const AUTO_REFRESH_MS = 30_000
+
+type SortDirection = 'asc' | 'desc'
+type SortState = { key: string; direction: SortDirection }
+
+function nextSort(current: SortState, key: string): SortState {
+  return current.key === key
+    ? { key, direction: current.direction === 'asc' ? 'desc' : 'asc' }
+    : { key, direction: 'desc' }
+}
+
+/** Numbers compare numerically, everything else as text; nulls sort last. */
+function sortRows<T>(rows: T[], sort: SortState | null): T[] {
+  if (!sort) return rows
+  const factor = sort.direction === 'asc' ? 1 : -1
+  return [...rows].sort((left, right) => {
+    const a = (left as Record<string, unknown>)[sort.key]
+    const b = (right as Record<string, unknown>)[sort.key]
+    if (a === b) return 0
+    if (a === null || a === undefined) return 1
+    if (b === null || b === undefined) return -1
+    if (typeof a === 'number' && typeof b === 'number') return (a - b) * factor
+    return String(a).localeCompare(String(b)) * factor
+  })
+}
+
+/**
+ * A sortable column header. `aria-sort` belongs on the header itself, so the
+ * button sits inside the `columnheader` rather than replacing its role.
+ */
+function SortHeader({
+  label,
+  sortKey,
+  sort,
+  onSort,
+  align = 'left',
+}: {
+  label: string
+  sortKey: string
+  sort: SortState | null
+  onSort: (key: string) => void
+  align?: 'left' | 'right'
+}) {
+  const active = sort?.key === sortKey
+  const ariaSort = active ? (sort!.direction === 'asc' ? 'ascending' : 'descending') : 'none'
+  return (
+    <span
+      role="columnheader"
+      aria-sort={ariaSort}
+      className={cx('min-w-0', align === 'right' && 'text-right')}
+    >
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        className={cx(
+          'inline-flex max-w-full cursor-pointer items-center gap-1 text-xs font-semibold transition-colors hover:text-[var(--color-text-primary)]',
+          align === 'right' && 'flex-row-reverse',
+          active && 'text-[var(--color-text-primary)]',
+        )}
+      >
+        <span className="min-w-0 truncate">{label}</span>
+        <ArrowUpDown size={11} strokeWidth={2} aria-hidden="true" className={active ? 'opacity-100' : 'opacity-40'} />
+      </button>
+    </span>
+  )
+}
+
+/**
+ * How many sessions started in each local hour, 0–23. Only main transcripts
+ * carry `start_hour` (subagent sources are excluded upstream), and the hour is
+ * the machine's local hour, so the card says so rather than implying UTC.
+ */
+function buildHourHistogram(stats: ActivityStatsResponse | null) {
+  const counts = stats?.hourCounts
+  if (!counts) return null
+  const table = counts as Record<string | number, number>
+  return Array.from({ length: 24 }, (_, hour) => ({
+    hour,
+    sessions: table[hour] ?? table[String(hour)] ?? 0,
+  }))
+}
+
+/**
+ * One stacked bar per day, scaled to the tallest bar in this chart. Extracted so
+ * the dual-axis toggle can draw the cache and input/output series on separate
+ * scales instead of hiding the smaller series under the cache volumes.
+ */
+function TrendBars({
+  days,
+  keys,
+  label,
+  locale,
+  t,
+  onHoverDate,
+}: {
+  days: Array<{ date: string; input: number; output: number; cacheRead: number; cacheWrite: number; total: number }>
+  keys: SeriesKey[]
+  label: string
+  locale: Locale
+  t: ReturnType<typeof useTranslation>
+  onHoverDate?: (date: string | null) => void
+}) {
+  const valueOf = (day: (typeof days)[number]) => keys.reduce((sum, key) => sum + day[key], 0)
+  const peak = days.reduce((top, day) => Math.max(top, valueOf(day)), 0)
+
+  return (
+    <div className="flex gap-3">
+      <div aria-hidden="true" className="flex w-12 shrink-0 flex-col justify-between pb-7 text-right font-mono text-[10px] tabular-nums text-[var(--color-text-tertiary)]">
+        <span>{formatTokens(peak)}</span><span>{formatTokens(peak / 2)}</span><span>0</span>
+      </div>
+      <div className="min-w-0 flex-1 overflow-x-auto pb-2">
+        <ol
+          aria-label={label}
+          className="activity-trend-bars flex h-[260px] min-w-full items-end gap-1 border-b border-[var(--color-border)]"
+          style={{ width: `max(100%, ${days.length * 19}px)` }}
+        >
+          {days.map((day) => {
+            const total = valueOf(day)
+            const dateLabel = formatDateLabel(day.date, locale)
+            const description = `${dateLabel}: ${formatTokens(total)} ${t('settings.activity.tokens')} · ${keys.map((key) => `${t(`settings.activity.dims.${key}`)} ${formatTokens(day[key])}`).join(' · ')}`
+            return (
+              <li
+                key={day.date}
+                className="group relative flex h-full min-w-0 flex-1 items-end"
+                title={description}
+                onMouseEnter={onHoverDate ? () => onHoverDate(day.date) : undefined}
+                onMouseLeave={onHoverDate ? () => onHoverDate(null) : undefined}
+              >
+                <span
+                  className="flex w-full flex-col justify-end overflow-hidden rounded-t-sm"
+                  style={{ height: `${peak ? total / peak * 100 : 0}%` }}
+                  aria-hidden="true"
+                >
+                  {[...keys].reverse().map((key) => (
+                    <span key={key} style={{ flexGrow: day[key], backgroundColor: SERIES_COLORS[key] }} />
+                  ))}
+                </span>
+                <span className="sr-only">{description}</span>
+                <span aria-hidden="true" className="pointer-events-none absolute bottom-full left-1/2 z-10 hidden -translate-x-1/2 whitespace-nowrap rounded bg-[var(--color-surface-container)] px-2 py-1 text-xs group-hover:block">
+                  {formatShortDate(day.date, locale)} · {formatTokens(total)}
+                </span>
+              </li>
+            )
+          })}
+        </ol>
+        <div className="mt-2 flex justify-between font-mono text-xs text-[var(--color-text-tertiary)]">
+          <span>{formatShortDate(days[0]!.date, locale)}</span>
+          <span>{formatShortDate(days[days.length - 1]!.date, locale)}</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function downloadCsv(filename: string, rows: Array<Array<string | number>>) {
+  const csv = rows
+    .map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(','))
+    .join('\r\n')
+  const url = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.click()
+  URL.revokeObjectURL(url)
 }
 
 function formatModelName(model: string) {
@@ -375,15 +561,42 @@ function getDailyTokenMap(stats: ActivityStatsResponse | null) {
   return map
 }
 
-/** The trailing window the daily bar chart covers, ending today. */
-function buildRecentDailyTokens(stats: ActivityStatsResponse | null, dayCount: number) {
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  const tokenMap = getDailyTokenMap(stats)
-  return Array.from({ length: dayCount }, (_, index) => {
-    const date = localDateKey(addDays(today, index - (dayCount - 1)))
-    return { date, tokens: tokenMap.get(date) ?? 0 }
-  })
+function buildDailyTrend(
+  stats: ActivityStatsResponse | null,
+  cutoff: string | null,
+  range: UsageRange,
+  selectedModels: ReadonlySet<string>,
+) {
+  const byDay = new Map<string, { date: string; input: number; output: number; cacheRead: number; cacheWrite: number; total: number }>()
+  if (stats?.dailyModelUsage) {
+    for (const row of stats.dailyModelUsage) {
+      if (!selectedModels.has(row.model) || !isDateInSelectedRange(row.date, cutoff)) continue
+      const day = byDay.get(row.date) ?? { date: row.date, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
+      day.input += row.inputTokens
+      day.output += row.outputTokens
+      day.cacheRead += row.cacheReadInputTokens
+      day.cacheWrite += row.cacheCreationInputTokens
+      day.total += getModelTokenTotal(row)
+      byDay.set(row.date, day)
+    }
+  } else {
+    for (const day of stats?.dailyModelTokens ?? []) {
+      if (!isDateInSelectedRange(day.date, cutoff)) continue
+      const total = Object.entries(day.tokensByModel)
+        .filter(([model]) => selectedModels.has(model))
+        .reduce((sum, [, tokens]) => sum + tokens, 0)
+      byDay.set(day.date, { date: day.date, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total })
+    }
+  }
+  if (range !== 'all') {
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    for (let index = 0; index < RANGE_DAY_COUNTS[range]!; index += 1) {
+      const date = localDateKey(addDays(today, -index))
+      if (!byDay.has(date)) byDay.set(date, { date, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 })
+    }
+  }
+  return [...byDay.values()].sort((a, b) => a.date.localeCompare(b.date))
 }
 
 function buildModelRows(stats: ActivityStatsResponse | null) {
@@ -415,6 +628,59 @@ function getRangeCutoff(range: UsageRange): string | null {
   return localDateKey(addDays(today, -(days - 1)))
 }
 
+/**
+ * View, range and model selection ride in the query string so a bookmarked or
+ * pasted URL reopens the same slice. The app has no router, and these keys are
+ * namespaced (`ti.`) so nothing else reads them.
+ */
+const URL_KEYS = { view: 'ti.view', range: 'ti.range', models: 'ti.models' } as const
+
+function readUsageUrlState(): { view?: ActivityView; range?: UsageRange; excluded?: string[] } {
+  if (typeof window === 'undefined') return {}
+  const params = new URLSearchParams(window.location.search)
+  const view = params.get(URL_KEYS.view)
+  const range = params.get(URL_KEYS.range)
+  const models = params.get(URL_KEYS.models)
+  return {
+    view: view && ['overview', 'models', 'projects', 'tools', 'diagnostics'].includes(view)
+      ? view as ActivityView
+      : undefined,
+    range: range && ['all', '30d', '7d'].includes(range) ? range as UsageRange : undefined,
+    // The exclusions are listed in the URL, not the inclusions: a model that
+    // appears later should be counted by default rather than silently missing.
+    excluded: models === null ? undefined : models.split(',').filter(Boolean),
+  }
+}
+
+function writeUsageUrlState(view: ActivityView, range: UsageRange, excluded: string[]) {
+  if (typeof window === 'undefined') return
+  const params = new URLSearchParams(window.location.search)
+  params.set(URL_KEYS.view, view)
+  params.set(URL_KEYS.range, range)
+  params.set(URL_KEYS.models, excluded.join(','))
+  window.history.replaceState(null, '', `${window.location.pathname}?${params}`)
+}
+
+/** `<details>` open state, remembered per key so a reload keeps the layout. */
+function useStickyDetails(key: string) {
+  const [open, setOpen] = useState(() => {
+    if (typeof window === 'undefined') return false
+    return window.localStorage.getItem(`ti.details.${key}`) === 'open'
+  })
+  return {
+    open,
+    onToggle: (event: SyntheticEvent<HTMLDetailsElement>) => {
+      const next = event.currentTarget.open
+      setOpen(next)
+      try {
+        window.localStorage.setItem(`ti.details.${key}`, next ? 'open' : 'closed')
+      } catch {
+        // Private mode or a full quota: the layout just stops being sticky.
+      }
+    },
+  }
+}
+
 function isDateInSelectedRange(dateKey: string, cutoff: string | null) {
   if (cutoff === null) return true
   return dateKey.slice(0, 10) >= cutoff
@@ -433,13 +699,14 @@ function isDateInSelectedRange(dateKey: string, cutoff: string | null) {
 function buildModelUsageRows(
   stats: ActivityStatsResponse | null,
   cutoff: string | null,
+  selectedModels: ReadonlySet<string>,
 ): { rows: ModelUsageRow[]; rangeApplied: boolean } {
   const unpriced = new Set(stats?.unpricedModels ?? [])
   const daily = stats?.dailyModelUsage
 
   if (!daily) {
     return {
-      rows: buildModelRows(stats).map((row) => ({
+      rows: buildModelRows(stats).filter((row) => selectedModels.has(row.model)).map((row) => ({
         model: row.model,
         input: 0,
         output: 0,
@@ -456,7 +723,7 @@ function buildModelUsageRows(
 
   const byModel = new Map<string, ModelUsageRow>()
   for (const day of daily) {
-    if (!isDateInSelectedRange(day.date, cutoff)) continue
+    if (!selectedModels.has(day.model) || !isDateInSelectedRange(day.date, cutoff)) continue
     const row = byModel.get(day.model) ?? {
       model: day.model,
       input: 0,
@@ -899,8 +1166,29 @@ export function ActivitySettings() {
   const [hoveredDate, setHoveredDate] = useState<string | null>(null)
   const [focusedDate, setFocusedDate] = useState<string | null>(null)
   const [heatCellSize, setHeatCellSize] = useState(10)
-  const [activeView, setActiveView] = useState<ActivityView>('overview')
-  const [range, setRange] = useState<UsageRange>('all')
+  const urlState = useMemo(readUsageUrlState, [])
+  const [activeView, setActiveView] = useState<ActivityView>(urlState.view ?? 'overview')
+  const [range, setRange] = useState<UsageRange>(urlState.range ?? 'all')
+  const [overviewMode, setOverviewMode] = useState<OverviewMode>('chart')
+  const [splitAxis, setSplitAxis] = useState(false)
+  const [autoRefresh, setAutoRefresh] = useState(false)
+  const [excludedModels, setExcludedModels] = useState<string[]>(urlState.excluded ?? [])
+  const [refreshNonce, setRefreshNonce] = useState(0)
+  const [sessionLimit, setSessionLimit] = useState(SESSION_ROW_LIMIT)
+  const [modelSort, setModelSort] = useState<SortState | null>(null)
+  const [projectSort, setProjectSort] = useState<SortState | null>(null)
+  const [sessionSort, setSessionSort] = useState<SortState | null>(null)
+  const modelFilterDetails = useStickyDetails('modelFilter')
+
+  useEffect(() => {
+    writeUsageUrlState(activeView, range, excludedModels)
+  }, [activeView, excludedModels, range])
+
+  useEffect(() => {
+    if (!autoRefresh) return
+    const timer = window.setInterval(() => setRefreshNonce((value) => value + 1), AUTO_REFRESH_MS)
+    return () => window.clearInterval(timer)
+  }, [autoRefresh])
 
   useEffect(() => {
     let cancelled = false
@@ -923,7 +1211,7 @@ export function ActivitySettings() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [refreshNonce])
 
   useEffect(() => {
     let cancelled = false
@@ -1007,17 +1295,6 @@ export function ActivitySettings() {
     return Object.values(stats?.skillUsage ?? {}).reduce((sum, count) => sum + count, 0)
   }, [stats])
   const exploredSkillsCount = Object.keys(stats?.skillUsage ?? {}).length
-  const topModel = useMemo(() => {
-    return Object.entries(stats?.modelUsage ?? {}).reduce<{
-      model: string
-      tokens: number
-    } | null>((top, [model, usage]) => {
-      const tokens = getModelTokenTotal(usage)
-      if (tokens <= 0) return top
-      if (!top || tokens > top.tokens) return { model, tokens }
-      return top
-    }, null)
-  }, [stats])
   const peakTokens = useMemo(() => {
     return (stats?.dailyModelTokens ?? []).reduce((peak, day) => {
       const dayTotal = Object.values(day.tokensByModel).reduce((sum, tokens) => sum + tokens, 0)
@@ -1025,19 +1302,33 @@ export function ActivitySettings() {
     }, 0)
   }, [stats])
   const topPluginItems = useMemo(() => buildPluginAndSkillRankItems(stats), [stats])
-  const recentDays = useMemo(() => buildRecentDailyTokens(stats, CHART_DAY_COUNT), [stats])
+  const availableModels = useMemo(() => {
+    const models = stats?.dailyModelUsage?.map((row) => row.model) ?? Object.keys(stats?.modelUsage ?? {})
+    return [...new Set(models)].sort((a, b) => a.localeCompare(b))
+  }, [stats])
+  const selectedModels = useMemo(() => {
+    const excluded = new Set(excludedModels)
+    return new Set(availableModels.filter((model) => !excluded.has(model)))
+  }, [availableModels, excludedModels])
   const rangeCutoff = useMemo(() => getRangeCutoff(range), [range])
-  const modelUsageWindow = useMemo(
-    () => buildModelUsageRows(stats, rangeCutoff),
-    [rangeCutoff, stats],
+  const trendDays = useMemo(
+    () => buildDailyTrend(stats, rangeCutoff, range, selectedModels),
+    [stats, rangeCutoff, range, selectedModels],
   )
+  const modelUsageWindow = useMemo(
+    () => buildModelUsageRows(stats, rangeCutoff, selectedModels),
+    [rangeCutoff, selectedModels, stats],
+  )
+  const topModel = modelUsageWindow.rows[0]
+    ? { model: modelUsageWindow.rows[0].model, tokens: modelUsageWindow.rows[0].total }
+    : null
   const projectRows = useMemo(
     () => buildProjectUsageRows(stats, rangeCutoff),
     [rangeCutoff, stats],
   )
   const sessionWindow = useMemo(
-    () => buildSessionUsageRows(stats, rangeCutoff, SESSION_ROW_LIMIT),
-    [rangeCutoff, stats],
+    () => buildSessionUsageRows(stats, rangeCutoff, sessionLimit),
+    [rangeCutoff, sessionLimit, stats],
   )
   const sessionRows = sessionWindow.rows
   const toolRankRows = useMemo(() => buildToolRankRows(stats, TOOL_ROW_LIMIT), [stats])
@@ -1174,6 +1465,34 @@ export function ActivitySettings() {
     },
   ]
 
+  const exportCurrentView = () => {
+    if (activeView === 'overview') {
+      downloadCsv(`token-usage-${range}.csv`, [
+        ['date', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'total_tokens'],
+        ...trendDays.map((day) => [day.date, day.input, day.output, day.cacheRead, day.cacheWrite, day.total]),
+      ])
+      return
+    }
+    if (activeView === 'models') {
+      downloadCsv(`model-usage-${range}.csv`, [
+        ['model', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'total_tokens', 'estimated_cost_usd', 'priced'],
+        ...modelUsageWindow.rows.map((row) => [row.model, row.input, row.output, row.cacheRead, row.cacheWrite, row.total, row.costUSD, row.unpriced ? 'no' : 'yes']),
+      ])
+      return
+    }
+    downloadCsv(`project-usage-${range}.csv`, [
+      ['project', 'session_days', 'messages', 'tool_calls', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'total_tokens', 'estimated_cost_usd'],
+      ...projectRows.map((row) => [row.projectName, row.sessionCount, row.messageCount, row.toolCallCount, row.input, row.output, row.cacheRead, row.cacheWrite, row.total, row.costUSD]),
+    ])
+  }
+
+  const exportSessions = () => {
+    downloadCsv(`session-usage-${range}-available.csv`, [
+      ['session_id', 'project', 'started_at', 'duration_ms', 'messages', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'total_tokens', 'estimated_cost_usd', 'main_transcript_collected'],
+      ...sessionRows.map((row) => [row.sessionId, row.projectName, row.startedAt, row.activeDurationMs, row.messageCount, row.input, row.output, row.cacheRead, row.cacheWrite, row.total, row.costUSD, row.hasMainSession ? 'yes' : 'no']),
+    ])
+  }
+
   const cancelProfileEdit = () => {
     setIsEditingProfile(false)
     setDraftDisplayName(profile.displayName)
@@ -1239,12 +1558,48 @@ export function ActivitySettings() {
     }
   }
 
-  const recentPeakTokens = Math.max(...recentDays.map((day) => day.tokens), 0)
-  const recentFirstDay = recentDays[0]
-  const recentLastDay = recentDays[recentDays.length - 1]
+  const trendTotalTokens = trendDays.reduce((sum, day) => sum + day.total, 0)
+  // The JSONL fallback has totals but no dimensions, so it draws one series from
+  // `total` rather than four series of zeroes.
+  const chartDays = stats?.dailyModelUsage
+    ? trendDays
+    : trendDays.map((day) => ({ ...day, input: day.total }))
+  const trendFirstDay = trendDays[0]
+  const trendLastDay = trendDays[trendDays.length - 1]
+  const hourHistogram = useMemo(() => buildHourHistogram(stats), [stats])
+  const peakHour = hourHistogram?.reduce((top, bucket) => (bucket.sessions > (top?.sessions ?? -1) ? bucket : top), hourHistogram[0]) ?? null
+  // A fresh column opens descending — the useful end of a usage ranking — and a
+  // second click on the same column flips it.
+  const toggleSort = (setter: Dispatch<SetStateAction<SortState | null>>) =>
+    (key: string) => setter((current) => (current ? nextSort(current, key) : { key, direction: 'desc' }))
+  const toggleModelSort = toggleSort(setModelSort)
+  const toggleProjectSort = toggleSort(setProjectSort)
+  const toggleSessionSort = toggleSort(setSessionSort)
+  const modelTableRows = sortRows(modelUsageWindow.rows, modelSort)
+  const projectTableRows = sortRows(projectRows, projectSort)
+  const sessionTableRows = sortRows(sessionRows, sessionSort)
+  const lastUpdated = stats?.generatedAt ? formatClock(stats.generatedAt, locale) : null
+  const topModelRows = modelUsageWindow.rows.slice(0, 5)
+  const modelRankTotal = modelUsageWindow.rows.reduce((sum, row) => sum + row.total, 0)
+  // Series colours come from the theme tokens so they follow the six palettes
+  // and the dark variants instead of freezing one product's screenshot colours.
+  const modelColors = [
+    SERIES_COLORS.input,
+    SERIES_COLORS.cacheRead,
+    SERIES_COLORS.cacheWrite,
+    SERIES_COLORS.output,
+    'var(--color-text-tertiary)',
+  ]
+  let modelShareEnd = 0
+  const modelDonut = topModelRows.map((row, index) => {
+    const start = modelShareEnd
+    modelShareEnd += modelRankTotal ? row.total / modelRankTotal * 100 : 0
+    return `${modelColors[index]} ${start}% ${modelShareEnd}%`
+  })
+  if (modelShareEnd < 100) modelDonut.push(`var(--color-outline) ${modelShareEnd}% 100%`)
 
   return (
-    <div className="w-full min-w-0">
+    <div className="activity-dashboard w-full min-w-0">
       <SettingsPageHeader
         title={t('settings.activity.title')}
         description={t('settings.activity.subtitleLoading')}
@@ -1252,7 +1607,7 @@ export function ActivitySettings() {
 
       {/* The identity this page is screenshotted under. The edit control stays
           invisible until hover or keyboard focus so it never lands in a shot. */}
-      <div className="group/activity-profile mt-6 flex items-center gap-3.5 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] px-4 py-3.5">
+      <div className="activity-profile-strip group/activity-profile mt-4 flex items-center gap-3.5 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] px-4 py-2.5">
         <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-full border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)]">
           <img
             src={avatarSrc}
@@ -1299,7 +1654,7 @@ export function ActivitySettings() {
         />
       </div>
 
-      <div className="mt-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+      <div className="activity-toolbar mt-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
         <SegmentedControl
           size="sm"
           appearance="chip"
@@ -1308,17 +1663,86 @@ export function ActivitySettings() {
           onChange={setActiveView}
           items={viewOptions.map((option) => ({ value: option.view, label: option.label }))}
         />
-        {RANGE_AWARE_VIEWS.has(activeView) && (
-          <SegmentedControl
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {RANGE_AWARE_VIEWS.has(activeView) && (
+            <SegmentedControl
+              size="sm"
+              appearance="chip"
+              label={t('settings.activity.range.label')}
+              value={range}
+              onChange={(nextRange) => {
+                setRange(nextRange)
+                setSessionLimit(SESSION_ROW_LIMIT)
+              }}
+              items={rangeOptions.map((option) => ({ value: option.range, label: option.label }))}
+            />
+          )}
+          {(activeView === 'overview' || activeView === 'models' || activeView === 'projects') && !isLoading && (
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={<Download size={14} strokeWidth={1.75} aria-hidden="true" />}
+              onClick={exportCurrentView}
+            >
+              {t('settings.activity.exportCsv')}
+            </Button>
+          )}
+          <Button
+            variant="ghost"
             size="sm"
-            appearance="chip"
-            label={t('settings.activity.range.label')}
-            value={range}
-            onChange={setRange}
-            items={rangeOptions.map((option) => ({ value: option.range, label: option.label }))}
-          />
-        )}
+            loading={isLoading}
+            icon={<RefreshCw size={14} strokeWidth={1.75} aria-hidden="true" />}
+            onClick={() => setRefreshNonce((value) => value + 1)}
+          >
+            {t('settings.activity.refresh')}
+          </Button>
+          <Button
+            variant={autoRefresh ? 'secondary' : 'ghost'}
+            size="sm"
+            aria-pressed={autoRefresh}
+            onClick={() => setAutoRefresh((value) => !value)}
+          >
+            {autoRefresh ? t('settings.activity.autoRefreshOn') : t('settings.activity.autoRefresh')}
+          </Button>
+        </div>
       </div>
+
+      {lastUpdated && (
+        <div className="mt-2 text-right font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]">
+          {t('settings.activity.updatedAt', { time: lastUpdated })}
+        </div>
+      )}
+
+      {(activeView === 'overview' || activeView === 'models') && availableModels.length > 0 && (
+        <details
+          className="activity-model-filter mt-3 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] px-3 py-2"
+          open={modelFilterDetails.open}
+          onToggle={modelFilterDetails.onToggle}
+        >
+          <summary className="cursor-pointer text-xs font-medium text-[var(--color-text-secondary)]">
+            {t('settings.activity.modelFilter', { selected: selectedModels.size, total: availableModels.length })}
+          </summary>
+          <div className="mt-3 flex flex-wrap items-center gap-2 border-b border-[var(--color-border)] pb-3">
+            <Button variant="ghost" size="xs" onClick={() => setExcludedModels([])}>{t('settings.activity.selectAll')}</Button>
+            <Button variant="ghost" size="xs" onClick={() => setExcludedModels(availableModels)}>{t('settings.activity.clearAll')}</Button>
+            <span className="text-[11px] text-[var(--color-text-tertiary)]">{t('settings.activity.modelFilterScope')}</span>
+          </div>
+          <div className="mt-3 grid max-h-48 gap-2 overflow-y-auto sm:grid-cols-2 lg:grid-cols-3">
+            {availableModels.map((model) => (
+              <label key={model} className="flex min-w-0 cursor-pointer items-center gap-2 text-xs text-[var(--color-text-secondary)]">
+                <input
+                  type="checkbox"
+                  checked={selectedModels.has(model)}
+                  onChange={(event) => setExcludedModels((current) => event.target.checked
+                    ? current.filter((item) => item !== model)
+                    : [...current, model])}
+                />
+                <span className="min-w-0 truncate font-mono" title={model}>{model}</span>
+              </label>
+            ))}
+          </div>
+        </details>
+      )}
 
       {error && (
         <div
@@ -1330,126 +1754,247 @@ export function ActivitySettings() {
         </div>
       )}
 
-      {activeView === 'overview' && (
-      <section className="activity-summary-panel mt-3 w-full min-w-0">
-        <div className="activity-summary-grid grid gap-3">
-          {isLoading
-            ? Array.from({ length: 5 }).map((_, index) => (
-                <Card
-                  key={index}
-                  surface="lowest"
-                  padding="none"
-                  aria-hidden="true"
-                  className={cx(
-                    'activity-summary-metric grid min-h-[92px] animate-pulse content-start gap-2 px-4 py-3.5',
-                    index === 0 && 'activity-summary-metric-primary',
-                  )}
-                >
-                  <div className="h-3 w-16 rounded-[var(--radius-xs)] bg-[var(--color-surface-container)]" />
-                  <div className="h-6 w-20 rounded-[var(--radius-xs)] bg-[var(--color-surface-container)]" />
-                  <div className="h-3 w-12 rounded-[var(--radius-xs)] bg-[var(--color-surface-container)]" />
-                </Card>
-              ))
-            : metrics.map((metric, index) => (
-                <Card
-                  key={metric.label}
-                  surface="lowest"
-                  padding="none"
-                  // `backwards` holds the entry frame through `animationDelay` so the stagger still
-                  // reads, without a standalone `opacity-0`: that pairing is what made these cards
-                  // invisible once the keyframes they named were dropped from globals.css.
-                  className={cx(
-                    'activity-summary-metric grid min-w-0 content-start gap-1 px-4 py-3.5',
-                    '[animation:screen-pop_420ms_cubic-bezier(0.16,1,0.3,1)_backwards] motion-reduce:animate-none',
-                    index === 0 && 'activity-summary-metric-primary',
-                  )}
-                  style={{ animationDelay: `${index * 45}ms` }}
-                >
-                  <div className="min-w-0 truncate text-xs text-[var(--color-text-tertiary)]">{metric.label}</div>
-                  <div
-                    // Two lines rather than one truncated one: durations like "436 小时 26 分钟"
-                    // do not fit a third of the row and were rendering as "436 小…".
-                    className="activity-summary-value line-clamp-2 min-w-0 max-w-full text-[22px] font-semibold leading-tight tabular-nums text-[var(--color-text-primary)]"
-                  >
-                    {metric.value}
-                  </div>
-                  {metric.detail && (
-                    <div className="min-w-0 truncate text-xs text-[var(--color-text-tertiary)]">{metric.detail}</div>
-                  )}
-                </Card>
-              ))}
-        </div>
-      </section>
+      {activeView === 'overview' && !isLoading && !error && hasUsage && (
+        // Plain anchors, so jumping needs no scroll JS. The long overview is the
+        // only view where hunting for a block is a real cost.
+        <nav aria-label={t('settings.activity.jump.label')} className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--color-text-tertiary)]">
+          <span>{t('settings.activity.jump.label')}</span>
+          {([
+            ['activity-trend', 'settings.activity.heatmapLabel'],
+            ['activity-hours', 'settings.activity.hours.title'],
+            ['activity-models', 'settings.activity.modelUsage'],
+            ['activity-projects', 'settings.activity.projects.title'],
+            ['activity-heatmap', 'settings.activity.tokenActivity'],
+          ] as const).map(([id, label]) => (
+            <a key={id} href={`#${id}`} className="transition-colors hover:text-[var(--color-text-primary)]">
+              {t(label)}
+            </a>
+          ))}
+        </nav>
       )}
 
-      {activeView === 'overview' && !isLoading && !error && hasUsage && recentFirstDay && recentLastDay && (
-        <Card surface="lowest" padding="none" className="mt-3 px-4 pb-2.5 pt-4">
-          <div className="mb-1 flex items-baseline justify-between gap-3">
-            <span className="min-w-0 truncate text-xs text-[var(--color-text-secondary)]">
-              {t('settings.activity.heatmapLabel')}
-            </span>
-            <span className="shrink-0 font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]">
-              {formatShortDate(recentFirstDay.date, locale)} – {formatShortDate(recentLastDay.date, locale)}
-            </span>
+      {activeView === 'overview' && (
+        <section className="activity-primary-grid mt-4 grid gap-3 sm:grid-cols-2" aria-label={t('settings.activity.view.overview')}>
+          {[
+            {
+              label: t('settings.activity.totalTokens'),
+              value: isLoading ? '—' : formatTokens(stats?.dailyModelUsage ? windowTotals.total : trendTotalTokens),
+              detail: rangeOptions.find((item) => item.range === range)?.label,
+            },
+            {
+              ...costCard,
+              value: isLoading || (!stats?.dailyModelUsage && range !== 'all') ? '—' : costCard.value,
+              detail: !stats?.dailyModelUsage && range !== 'all' ? t('settings.activity.overview.costUnavailable') : costCard.detail,
+            },
+          ].map((metric, index) => (
+            <Card key={metric.label} surface="lowest" padding="none" className="activity-primary-card min-w-0 px-5 py-4">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">{metric.label}</div>
+              <div className={cx('mt-2 text-[30px] font-semibold leading-tight tabular-nums tracking-tight', index === 0 ? 'text-[var(--color-brand)]' : metric.value === '—' ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-success)]')}>{metric.value}</div>
+              <div className="mt-1.5 text-xs text-[var(--color-text-secondary)]">{metric.detail}</div>
+            </Card>
+          ))}
+        </section>
+      )}
+
+      {activeView === 'overview' && (
+        <section className="activity-summary-panel mt-3 w-full min-w-0" aria-label={t('settings.activity.range.all')}>
+          <div className="activity-summary-grid grid gap-3">
+            {metrics.slice(1).map((metric) => (
+              <Card key={metric.label} surface="lowest" padding="none" className="activity-summary-metric grid min-w-0 content-start gap-1 px-4 py-3.5">
+                <div className="min-w-0 truncate text-xs text-[var(--color-text-tertiary)]">{metric.label}</div>
+                <div className="activity-summary-value line-clamp-2 min-w-0 max-w-full text-[22px] font-semibold leading-tight tabular-nums text-[var(--color-text-primary)]">{metric.value}</div>
+                {metric.detail && <div className="min-w-0 truncate text-xs text-[var(--color-text-tertiary)]">{metric.detail}</div>}
+              </Card>
+            ))}
           </div>
-          <ol
-            aria-label={t('settings.activity.heatmapLabel')}
-            className="flex h-[150px] items-end gap-2 pt-5"
-            style={{
-              backgroundImage: 'repeating-linear-gradient(to top, var(--color-border) 0 1px, transparent 1px 43px)',
-            }}
-          >
-            {recentDays.map((day, index) => {
-              const isLast = index === recentDays.length - 1
-              const isPeak = day.tokens > 0 && day.tokens === recentPeakTokens
-              const height = recentPeakTokens > 0 ? (day.tokens / recentPeakTokens) * 100 : 0
-              const dateLabel = formatDateLabel(day.date, locale)
+        </section>
+      )}
+
+      {activeView === 'overview' && !isLoading && !error && hasUsage && trendFirstDay && trendLastDay && (
+        <Card id="activity-trend" surface="lowest" padding="none" className="mt-3 px-5 pb-4 pt-5">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-text-secondary)]">{t('settings.activity.heatmapLabel')}</h3>
+            <div className="flex flex-wrap items-center justify-end gap-3">
+              <span className="font-mono text-xs text-[var(--color-text-tertiary)]">
+                {formatShortDate(trendFirstDay.date, locale)} – {formatShortDate(trendLastDay.date, locale)}
+              </span>
+              {overviewMode === 'chart' && stats?.dailyModelUsage && (
+                <Button variant={splitAxis ? 'secondary' : 'ghost'} size="sm" aria-pressed={splitAxis} onClick={() => setSplitAxis((value) => !value)}>
+                  {t('settings.activity.overview.splitAxis')}
+                </Button>
+              )}
+              <SegmentedControl
+                size="sm"
+                label={t('settings.activity.overview.mode')}
+                value={overviewMode}
+                onChange={setOverviewMode}
+                items={[
+                  { value: 'chart', label: t('settings.activity.overview.chart') },
+                  { value: 'table', label: t('settings.activity.overview.table') },
+                ]}
+              />
+            </div>
+          </div>
+          {overviewMode === 'chart' ? (
+            <>
+          {!stats?.dailyModelUsage && <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">{t('settings.activity.overview.trendFallback')}</p>}
+          {stats?.dailyModelUsage && (
+            <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--color-text-secondary)]">
+              {(Object.keys(SERIES_COLORS) as SeriesKey[]).map((key) => (
+                <span key={key} className="flex items-center gap-1.5"><span className="size-2.5 rounded-sm" style={{ backgroundColor: SERIES_COLORS[key] }} />{t(`settings.activity.dims.${key}`)}</span>
+              ))}
+            </div>
+          )}
+          <div className="mt-4">
+            {splitAxis && stats?.dailyModelUsage ? (
+              // Cache volumes run two orders of magnitude above input/output;
+              // on one scale the smaller pair is a sliver. Two charts, one x-axis.
+              <div className="space-y-5">
+                {([
+                  [['cacheRead', 'cacheWrite'] as SeriesKey[], 'settings.activity.overview.cacheScale'],
+                  [['input', 'output'] as SeriesKey[], 'settings.activity.overview.ioScale'],
+                ] as const).map(([keys, label]) => (
+                  <div key={label}>
+                    <div className="mb-1 text-[11px] text-[var(--color-text-tertiary)]">{t(label)}</div>
+                    <TrendBars days={chartDays} keys={keys} label={`${t('settings.activity.heatmapLabel')} · ${t(label)}`} locale={locale} t={t} />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <TrendBars
+                days={chartDays}
+                keys={stats?.dailyModelUsage ? ['input', 'output', 'cacheRead', 'cacheWrite'] : ['input']}
+                label={t('settings.activity.heatmapLabel')}
+                locale={locale}
+                t={t}
+              />
+            )}
+          </div>
+            </>
+          ) : (
+            <div role="table" aria-label={t('settings.activity.overview.table')} className="mt-4 overflow-x-auto rounded-[var(--radius-md)] border border-[var(--color-border)]">
+              <div role="row" className="grid min-w-[720px] grid-cols-[1fr_repeat(5,minmax(0,0.8fr))] gap-2 bg-[var(--color-surface-container)] px-3 py-2 text-xs font-semibold text-[var(--color-text-tertiary)]">
+                <span role="columnheader">{t('settings.activity.date')}</span>
+                <span role="columnheader" className="text-right">{t('settings.activity.dims.input')}</span>
+                <span role="columnheader" className="text-right">{t('settings.activity.dims.output')}</span>
+                <span role="columnheader" className="text-right">{t('settings.activity.dims.cacheRead')}</span>
+                <span role="columnheader" className="text-right">{t('settings.activity.dims.cacheWrite')}</span>
+                <span role="columnheader" className="text-right">{t('settings.activity.totalTokens')}</span>
+              </div>
+              {trendDays.map((day) => (
+                <div key={day.date} role="row" className="grid min-w-[720px] grid-cols-[1fr_repeat(5,minmax(0,0.8fr))] gap-2 border-t border-[var(--color-border)] px-3 py-2 text-xs tabular-nums">
+                  <span role="cell">{formatShortDate(day.date, locale)}</span>
+                  <span role="cell" className="text-right">{formatTokens(day.input)}</span>
+                  <span role="cell" className="text-right">{formatTokens(day.output)}</span>
+                  <span role="cell" className="text-right">{formatTokens(day.cacheRead)}</span>
+                  <span role="cell" className="text-right">{formatTokens(day.cacheWrite)}</span>
+                  <span role="cell" className="text-right font-medium">{formatTokens(day.total)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      )}
+
+      {activeView === 'overview' && !isLoading && !error && hasUsage && hourHistogram && (
+        <Card id="activity-hours" surface="lowest" padding="none" className="mt-3 px-5 pb-4 pt-5">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-text-secondary)]">{t('settings.activity.hours.title')}</h3>
+            {peakHour && peakHour.sessions > 0 && (
+              <span className="text-xs text-[var(--color-text-secondary)]">
+                {t('settings.activity.hours.peak', { hour: `${String(peakHour.hour).padStart(2, '0')}:00`, count: peakHour.sessions })}
+              </span>
+            )}
+          </div>
+          <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">{t('settings.activity.hours.note')}</p>
+          <ol aria-label={t('settings.activity.hours.title')} className="mt-4 flex h-[120px] items-end gap-1 border-b border-[var(--color-border)]">
+            {hourHistogram.map((bucket) => {
+              const peakSessions = peakHour?.sessions ?? 0
+              const isPeak = bucket.sessions > 0 && bucket.sessions === peakSessions
+              const label = `${String(bucket.hour).padStart(2, '0')}:00`
               return (
-                <li
-                  key={day.date}
-                  className="group/activity-bar relative flex h-full min-w-0 flex-1 items-end"
-                  title={`${dateLabel} · ${formatTokens(day.tokens)} ${t('settings.activity.tokens')}`}
-                >
+                <li key={bucket.hour} className="group relative flex h-full min-w-0 flex-1 items-end" title={`${label} · ${bucket.sessions}`}>
                   <span
                     aria-hidden="true"
                     className={cx(
-                      'w-full rounded-t-[var(--radius-xs)] transition-colors',
-                      isLast
+                      'w-full rounded-t-sm',
+                      isPeak
                         ? 'bg-[var(--color-brand)]'
-                        : 'bg-[var(--color-outline)] group-hover/activity-bar:bg-[var(--color-text-tertiary)]',
+                        : bucket.sessions > 0
+                          ? 'bg-[var(--color-info)]'
+                          : 'bg-[var(--color-outline)]',
                     )}
-                    // Today keeps a 2px stub even before its first reply, so the
-                    // highlighted "now" end of the window never disappears.
-                    style={{ height: `${height}%`, minHeight: isLast ? 2 : undefined }}
+                    style={{ height: `${peakSessions ? bucket.sessions / peakSessions * 100 : 0}%` }}
                   />
-                  {day.tokens > 0 && (
-                    <span
-                      aria-hidden="true"
-                      className={cx(
-                        'pointer-events-none absolute left-1/2 -translate-x-1/2 whitespace-nowrap font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]',
-                        isLast || isPeak ? 'opacity-100' : 'opacity-0 group-hover/activity-bar:opacity-100',
-                      )}
-                      style={{ bottom: `calc(${height}% + 4px)` }}
-                    >
-                      {formatTokens(day.tokens)}
-                    </span>
-                  )}
-                  <span className="sr-only">{`${dateLabel}: ${formatTokens(day.tokens)} ${t('settings.activity.tokens')}`}</span>
+                  <span className="sr-only">{`${label}: ${bucket.sessions}`}</span>
                 </li>
               )
             })}
           </ol>
-          <div aria-hidden="true" className="mt-1.5 flex gap-2">
-            {recentDays.map((day, index) => (
-              <span
-                key={day.date}
-                className="min-w-0 flex-1 whitespace-nowrap text-center font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]"
-              >
-                {(recentDays.length - 1 - index) % 3 === 0 ? formatShortDate(day.date, locale) : ''}
+          <div aria-hidden="true" className="mt-1.5 flex gap-1 font-mono text-[10px] tabular-nums text-[var(--color-text-tertiary)]">
+            {hourHistogram.map((bucket) => (
+              <span key={bucket.hour} className="min-w-0 flex-1 text-center">
+                {bucket.hour % 3 === 0 ? bucket.hour : ''}
               </span>
             ))}
           </div>
         </Card>
+      )}
+
+      {activeView === 'overview' && !isLoading && !error && hasUsage && (
+        <div id="activity-models" className="activity-rank-grid mt-3 grid gap-3 lg:grid-cols-2">
+          <Card surface="lowest" padding="none" className="min-w-0 px-5 py-4">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-text-secondary)]">{t('settings.activity.modelUsage')}</h3>
+              <Button variant="ghost" size="sm" onClick={() => setActiveView('models')}>{t('settings.activity.overview.details')}</Button>
+            </div>
+            <div className="mt-4 flex flex-wrap items-center justify-center gap-6 sm:flex-nowrap">
+              {modelRankTotal > 0 && (
+                <div aria-hidden="true" className="relative size-40 shrink-0 rounded-full" style={{ background: `conic-gradient(${modelDonut.join(', ')})` }}>
+                  <div className="absolute inset-[22%] flex flex-col items-center justify-center rounded-full bg-[var(--color-surface-container-lowest)] text-center">
+                    <span className="text-xl font-semibold tabular-nums">{formatTokens(modelRankTotal)}</span>
+                    <span className="text-[10px] text-[var(--color-text-tertiary)]">{t('settings.activity.tokens')}</span>
+                  </div>
+                </div>
+              )}
+              <div className="min-w-0 flex-1 space-y-2.5">
+                {topModelRows.map((row, index) => (
+                  <div key={row.model} className="flex items-center gap-2 text-xs">
+                    <span aria-hidden="true" className="size-2.5 shrink-0 rounded-sm" style={{ backgroundColor: modelColors[index] }} />
+                    <span className="min-w-0 flex-1 truncate" title={row.model}>{formatModelName(row.model)}</span>
+                    <span className="shrink-0 font-mono tabular-nums text-[var(--color-text-secondary)]">{formatShare(row.total, modelRankTotal, locale)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            {range !== 'all' && !modelUsageWindow.rangeApplied && <p className="mt-3 text-xs text-[var(--color-text-tertiary)]">{t('settings.activity.models.rangeUnavailable')}</p>}
+          </Card>
+          <Card id="activity-projects" surface="lowest" padding="none" className="min-w-0 px-5 py-4">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-text-secondary)]">{t('settings.activity.projects.title')}</h3>
+              <Button variant="ghost" size="sm" onClick={() => setActiveView('projects')}>{t('settings.activity.overview.details')}</Button>
+            </div>
+            {stats?.projectUsage ? (
+              <div className="mt-4 space-y-3.5">
+                {projectRows.slice(0, 6).map((row) => (
+                  <div key={row.projectPath} title={row.projectPath}>
+                    <div className="flex items-center justify-between gap-3 text-xs">
+                      <span className="min-w-0 truncate">{row.projectName}</span>
+                      <span className="shrink-0 font-mono tabular-nums text-[var(--color-text-secondary)]">{formatTokens(row.total)}</span>
+                    </div>
+                    <Progress
+                      className="mt-1.5"
+                      value={projectRows[0]?.total ? row.total / projectRows[0].total * 100 : 0}
+                      size="md"
+                      tone="info"
+                      label={`${row.projectName}: ${formatTokens(row.total)}`}
+                    />
+                  </div>
+                ))}
+              </div>
+            ) : <p className="mt-3 text-xs text-[var(--color-text-tertiary)]">{t('settings.activity.projects.unavailable')}</p>}
+          </Card>
+        </div>
       )}
 
       <Modal
@@ -1521,6 +2066,7 @@ export function ActivitySettings() {
 
       {activeView === 'overview' && (
       <SettingsSection
+        id="activity-heatmap"
         title={t('settings.activity.tokenActivity')}
         action={
           <SegmentedControl
@@ -1743,14 +2289,14 @@ export function ActivitySettings() {
                   role="row"
                   className="grid grid-cols-[minmax(0,1.5fr)_repeat(4,minmax(0,0.7fr))_minmax(0,0.8fr)] gap-2 bg-[var(--color-surface-container)] px-4 py-2.5 text-xs font-semibold text-[var(--color-text-tertiary)]"
                 >
-                  <span role="columnheader" className="min-w-0 truncate">{t('settings.agents.model')}</span>
-                  <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.dims.input')}</span>
-                  <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.dims.output')}</span>
-                  <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.dims.cacheRead')}</span>
-                  <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.dims.cacheWrite')}</span>
-                  <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.estimatedCost')}</span>
+                  <SortHeader label={t('settings.agents.model')} sortKey="model" sort={modelSort} onSort={toggleModelSort} />
+                  <SortHeader label={t('settings.activity.dims.input')} sortKey="input" sort={modelSort} onSort={toggleModelSort} align="right" />
+                  <SortHeader label={t('settings.activity.dims.output')} sortKey="output" sort={modelSort} onSort={toggleModelSort} align="right" />
+                  <SortHeader label={t('settings.activity.dims.cacheRead')} sortKey="cacheRead" sort={modelSort} onSort={toggleModelSort} align="right" />
+                  <SortHeader label={t('settings.activity.dims.cacheWrite')} sortKey="cacheWrite" sort={modelSort} onSort={toggleModelSort} align="right" />
+                  <SortHeader label={t('settings.activity.estimatedCost')} sortKey="costUSD" sort={modelSort} onSort={toggleModelSort} align="right" />
                 </div>
-                {modelUsageWindow.rows.map((row) => (
+                {modelTableRows.map((row) => (
                   <div
                     key={row.model}
                     role="row"
@@ -1816,13 +2362,13 @@ export function ActivitySettings() {
                   role="row"
                   className="grid grid-cols-[minmax(0,1.6fr)_minmax(0,0.6fr)_minmax(0,0.6fr)_minmax(0,0.9fr)_minmax(0,0.8fr)] gap-2 bg-[var(--color-surface-container)] px-4 py-2.5 text-xs font-semibold text-[var(--color-text-tertiary)]"
                 >
-                  <span role="columnheader" className="min-w-0 truncate">{t('settings.activity.projects.project')}</span>
-                  <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.projects.sessions')}</span>
-                  <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.projects.messages')}</span>
-                  <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.totalTokens')}</span>
-                  <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.estimatedCost')}</span>
+                  <SortHeader label={t('settings.activity.projects.project')} sortKey="projectName" sort={projectSort} onSort={toggleProjectSort} />
+                  <SortHeader label={t('settings.activity.projects.sessions')} sortKey="sessionCount" sort={projectSort} onSort={toggleProjectSort} align="right" />
+                  <SortHeader label={t('settings.activity.projects.messages')} sortKey="messageCount" sort={projectSort} onSort={toggleProjectSort} align="right" />
+                  <SortHeader label={t('settings.activity.totalTokens')} sortKey="total" sort={projectSort} onSort={toggleProjectSort} align="right" />
+                  <SortHeader label={t('settings.activity.estimatedCost')} sortKey="costUSD" sort={projectSort} onSort={toggleProjectSort} align="right" />
                 </div>
-                {projectRows.map((row) => (
+                {projectTableRows.map((row) => (
                   <div
                     key={row.projectPath}
                     role="row"
@@ -1845,11 +2391,18 @@ export function ActivitySettings() {
           <SettingsSection
             title={t('settings.activity.sessions.title')}
             action={
-              <span className="text-[11px] text-[var(--color-text-tertiary)]">
-                {t('settings.activity.sessions.cap', { count: SESSION_ROW_LIMIT })}
-                {sessionWindow.total > sessionRows.length &&
-                  ` · ${t('settings.activity.sessions.total', { count: sessionWindow.total })}`}
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] text-[var(--color-text-tertiary)]">
+                  {t('settings.activity.sessions.cap', { count: sessionRows.length })}
+                  {sessionWindow.total > sessionRows.length &&
+                    ` · ${t('settings.activity.sessions.total', { count: sessionWindow.total })}`}
+                </span>
+                {!isLoading && sessionRows.length > 0 && (
+                  <Button variant="ghost" size="xs" icon={<Download size={12} strokeWidth={1.75} aria-hidden="true" />} onClick={exportSessions}>
+                    {t('settings.activity.exportCsv')}
+                  </Button>
+                )}
+              </div>
             }
           >
             {!isLoading && subagentOnlyCount > 0 && (
@@ -1872,19 +2425,20 @@ export function ActivitySettings() {
                 description={t('settings.activity.emptyBody')}
               />
             ) : (
+              <>
               <Card surface="lowest" padding="none" role="table" className="overflow-hidden">
                 <div
                   role="row"
                   className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,1.1fr)_minmax(0,0.7fr)_minmax(0,0.7fr)_minmax(0,0.9fr)_minmax(0,0.8fr)] gap-2 bg-[var(--color-surface-container)] px-4 py-2.5 text-xs font-semibold text-[var(--color-text-tertiary)]"
                 >
-                  <span role="columnheader" className="min-w-0 truncate">{t('settings.activity.sessions.session')}</span>
-                  <span role="columnheader" className="min-w-0 truncate">{t('settings.activity.projects.project')}</span>
-                  <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.sessions.started')}</span>
-                  <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.sessions.duration')}</span>
-                  <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.totalTokens')}</span>
-                  <span role="columnheader" className="min-w-0 truncate text-right">{t('settings.activity.estimatedCost')}</span>
+                  <SortHeader label={t('settings.activity.sessions.session')} sortKey="sessionId" sort={sessionSort} onSort={toggleSessionSort} />
+                  <SortHeader label={t('settings.activity.projects.project')} sortKey="projectName" sort={sessionSort} onSort={toggleSessionSort} />
+                  <SortHeader label={t('settings.activity.sessions.started')} sortKey="startedAt" sort={sessionSort} onSort={toggleSessionSort} align="right" />
+                  <SortHeader label={t('settings.activity.sessions.duration')} sortKey="activeDurationMs" sort={sessionSort} onSort={toggleSessionSort} align="right" />
+                  <SortHeader label={t('settings.activity.totalTokens')} sortKey="total" sort={sessionSort} onSort={toggleSessionSort} align="right" />
+                  <SortHeader label={t('settings.activity.estimatedCost')} sortKey="costUSD" sort={sessionSort} onSort={toggleSessionSort} align="right" />
                 </div>
-                {sessionRows.map((row) => (
+                {sessionTableRows.map((row) => (
                   <div
                     key={row.sessionId}
                     role="row"
@@ -1913,6 +2467,14 @@ export function ActivitySettings() {
                   </div>
                 ))}
               </Card>
+              {sessionWindow.total > sessionRows.length && (
+                <div className="mt-3 flex justify-center">
+                  <Button variant="secondary" size="sm" onClick={() => setSessionLimit((limit) => limit + SESSION_ROW_LIMIT)}>
+                    {t('settings.activity.showMore', { count: Math.min(SESSION_ROW_LIMIT, sessionWindow.total - sessionRows.length) })}
+                  </Button>
+                </div>
+              )}
+              </>
             )}
           </SettingsSection>
         </>

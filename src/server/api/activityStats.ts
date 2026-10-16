@@ -115,6 +115,12 @@ export type TokenIntelligenceReads = {
   dailyModelUsage: DailyModelUsage[] | null
   projectUsage: NamedProjectUsage[] | null
   sessionUsage: NamedSessionUsage[] | null
+  /**
+   * Session starts by local hour of day: keys "0".."23", every hour present
+   * (zero when unused). Null, not all-zero, means the index could not answer —
+   * the page hides the chart rather than drawing a fabricated flat line.
+   */
+  hourCounts: Record<string, number> | null
 }
 
 export function readTokenIntelligence(
@@ -136,6 +142,7 @@ export function readTokenIntelligence(
     projectUsage: read(() => gateway.getProjectUsage?.(range, now) ?? null),
     sessionUsage: read(() =>
       gateway.getSessionUsage?.(range, now, SESSION_USAGE_LIMIT) ?? null),
+    hourCounts: read(() => gateway.getSessionStartHours?.(range, now) ?? null),
   }
 }
 
