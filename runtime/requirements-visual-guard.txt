@@ -6,3 +6,6 @@
 # never open the visual guard page.
 rapidocr_onnxruntime>=1.4.4,<2
 uiautomation>=2.0.29,<3
+# Windows' own OCR engine through WinRT: ~0.4 s per read vs ~4 s for
+# rapidocr, at the cost of a few misread Chinese characters.
+winsdk>=1.0.0b10
