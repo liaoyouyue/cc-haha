@@ -1294,7 +1294,7 @@ Row 9, all 8 cells: continuing from straight down, turning left through lower-le
   'settings.activity.overview.chart': 'Chart',
   'settings.activity.overview.table': 'Table',
   'settings.activity.date': 'Date',
-  'settings.activity.indexGap': 'Model, project and session sheets, plus the four-dimension trend, come from the local index, which starts {start}: the earlier {days} days are missing from them.',
+  'settings.activity.indexGap': 'The four-dimension trend, the project table and the session table come from the local index, which starts {start}: the earlier {days} days are missing from them.',
   'settings.activity.diag.indexGapTitle': 'Local index covers fewer days than the daily series ({days} days missing)',
   'settings.activity.showMore': 'Show {count} more',
   'settings.activity.autoRefresh': 'Auto-refresh',

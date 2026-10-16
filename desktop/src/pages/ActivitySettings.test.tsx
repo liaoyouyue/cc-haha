@@ -426,6 +426,16 @@ describe('ActivitySettings', () => {
     expect(within(headline).getByText('286万')).toBeInTheDocument()
     expect(within(headline).getByText(/which starts/)).toBeInTheDocument()
 
+    // The model sheet matches the stock usage page over the whole history, not
+    // just the days the index happens to hold.
+    openView('Model cost')
+    const modelTable = screen.getByRole('heading', { name: 'Tokens by model' })
+      .closest('section')!.querySelector('[role="table"]') as HTMLElement
+    const modelCells = within(modelTable).getAllByRole('row').slice(1)
+      .map((row) => within(row).getAllByRole('cell').map((cell) => cell.textContent))
+    expect(modelCells).toEqual([['claude-sonnet', '190万', '70万', '23万', '3万', '$12.50']])
+    expect(within(modelTable).queryByText('236万')).not.toBeInTheDocument()
+
     openView('Projects')
     const note = screen.getByText(/which starts/)
     // The index starts on 05-07 here, so 04-15 and 04-20 are outside it.

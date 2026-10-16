@@ -604,14 +604,45 @@ function buildModelRows(stats: ActivityStatsResponse | null) {
   return Object.entries(stats?.modelUsage ?? {})
     .map(([model, usage]) => ({
       model,
+      input: usage.inputTokens ?? 0,
+      output: usage.outputTokens ?? 0,
+      cacheRead: usage.cacheReadInputTokens ?? 0,
+      cacheWrite: usage.cacheCreationInputTokens ?? 0,
       fresh: getFreshTokenTotal(usage),
-      cached: usage.cacheReadInputTokens ?? 0,
       total: getModelTokenTotal(usage),
       costUSD: usage.costUSD ?? 0,
       unpriced: unpriced.has(model),
     }))
     .filter((row) => row.total > 0)
     .sort((a, b) => b.total - a.total || a.model.localeCompare(b.model))
+}
+
+/**
+ * All-time per-model rows, built from the cached `modelUsage` aggregate.
+ *
+ * This is the same source the stock usage page reads, and it is the only one
+ * that reaches the whole history: the local index starts 2026-09-25 while the
+ * cache series goes back to 2026-09-01, so folding the index for "all time"
+ * reported 30.03亿 against a real 52.26亿. The four dimensions are on the
+ * aggregate too, so nothing has to be mixed in from the index.
+ */
+function buildAllTimeModelRows(
+  stats: ActivityStatsResponse | null,
+  selectedModels: ReadonlySet<string>,
+): ModelUsageRow[] {
+  return buildModelRows(stats)
+    .filter((row) => selectedModels.has(row.model))
+    .map((row) => ({
+      model: row.model,
+      input: row.input,
+      output: row.output,
+      cacheRead: row.cacheRead,
+      cacheWrite: row.cacheWrite,
+      total: row.total,
+      fresh: row.fresh,
+      costUSD: row.costUSD,
+      unpriced: row.unpriced,
+    }))
 }
 
 /**
@@ -689,12 +720,13 @@ function isDateInSelectedRange(dateKey: string, cutoff: string | null) {
 /**
  * Per-model rows for the selected range.
  *
- * With the local index available this folds `dailyModelUsage` down to the
- * window, so changing the range never costs a request. Without it (index
- * disabled, still building, or the JSONL fallback answered) it falls back to the
- * all-time `modelUsage` map and reports `rangeApplied: false`, so the sheet can
- * say the filter did not take effect instead of silently showing wider numbers
- * than the control claims.
+ * "All time" comes from the cached aggregate so the sheet matches the stock
+ * usage page and the headline over the whole history. A bounded range needs a
+ * per-day grain, which only the local index has, so it folds `dailyModelUsage`
+ * down to the window — no extra request either way. When the index cannot
+ * answer, the all-time rows are shown with `rangeApplied: false` so the sheet
+ * can say the filter did not take effect rather than quietly showing wider
+ * numbers than the control claims.
  */
 function buildModelUsageRows(
   stats: ActivityStatsResponse | null,
@@ -704,21 +736,12 @@ function buildModelUsageRows(
   const unpriced = new Set(stats?.unpricedModels ?? [])
   const daily = stats?.dailyModelUsage
 
+  if (cutoff === null) {
+    return { rows: buildAllTimeModelRows(stats, selectedModels), rangeApplied: true }
+  }
+
   if (!daily) {
-    return {
-      rows: buildModelRows(stats).filter((row) => selectedModels.has(row.model)).map((row) => ({
-        model: row.model,
-        input: 0,
-        output: 0,
-        cacheRead: row.cached,
-        cacheWrite: 0,
-        total: row.total,
-        fresh: row.fresh,
-        costUSD: row.costUSD,
-        unpriced: row.unpriced,
-      })),
-      rangeApplied: false,
-    }
+    return { rows: buildAllTimeModelRows(stats, selectedModels), rangeApplied: false }
   }
 
   const byModel = new Map<string, ModelUsageRow>()
@@ -1812,10 +1835,15 @@ export function ActivitySettings() {
         </div>
       )}
 
-      {indexGap && !isLoading && (activeView === 'models' || activeView === 'projects') && (
-        // The model, project and session numbers come from the index, which
-        // starts later than the daily series. Without this the sheet looks like
-        // it contradicts the headline by 22亿.
+      {indexGap && !isLoading && (
+        // "All time" on the model sheet is the cached aggregate, so it matches
+        // the headline and needs no warning. The project and session tables, and
+        // any bounded model window reaching before the index, still start later
+        // than the daily series — without this the sheet looks like it
+        // contradicts the headline by 22亿.
+        (activeView === 'projects' && (rangeCutoff === null || rangeCutoff < indexGap.start)) ||
+        (activeView === 'models' && rangeCutoff !== null && rangeCutoff < indexGap.start)
+      ) && (
         <div className="mt-3 rounded-[var(--radius-md)] bg-[var(--color-surface-container)] px-3 py-2 text-xs text-[var(--color-text-tertiary)]">
           {t('settings.activity.indexGap', { start: formatShortDate(indexGap.start, locale), days: indexGap.days })}
         </div>

@@ -1294,7 +1294,7 @@ export const zh: Record<TranslationKey, string> = {
   'settings.activity.overview.chart': '圖表',
   'settings.activity.overview.table': '表格',
   'settings.activity.date': '日期',
-  'settings.activity.indexGap': '模型、專案、工作階段三個榜與四維趨勢來自本機索引，索引自 {start} 起，之前 {days} 天不在其中。',
+  'settings.activity.indexGap': '四維趨勢、專案榜與工作階段榜來自本機索引，索引自 {start} 起，之前 {days} 天不在其中。',
   'settings.activity.diag.indexGapTitle': '本機索引覆蓋天數少於每日明細（缺 {days} 天）',
   'settings.activity.showMore': '再顯示 {count} 筆',
   'settings.activity.autoRefresh': '自動重新整理',

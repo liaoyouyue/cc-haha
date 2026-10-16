@@ -1297,7 +1297,7 @@ export const kr: Record<TranslationKey, string> = {
   'settings.activity.overview.chart': '차트',
   'settings.activity.overview.table': '표',
   'settings.activity.date': '날짜',
-  'settings.activity.indexGap': '모델·프로젝트·세션 표와 4차원 추이는 로컬 인덱스 기준이며 {start}부터입니다. 그 이전 {days}일은 포함되지 않습니다.',
+  'settings.activity.indexGap': '4차원 추이, 프로젝트 표, 세션 표는 로컬 인덱스 기준이며 {start}부터입니다. 그 이전 {days}일은 포함되지 않습니다.',
   'settings.activity.diag.indexGapTitle': '로컬 인덱스가 일별 내역보다 적은 기간을 담당 ({days}일 부족)',
   'settings.activity.showMore': '{count}개 더 보기',
   'settings.activity.autoRefresh': '자동 새로고침',

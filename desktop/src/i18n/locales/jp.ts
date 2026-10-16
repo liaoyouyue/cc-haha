@@ -1295,7 +1295,7 @@ export const jp: Record<TranslationKey, string> = {
   'settings.activity.overview.chart': 'グラフ',
   'settings.activity.overview.table': '表',
   'settings.activity.date': '日付',
-  'settings.activity.indexGap': 'モデル・プロジェクト・セッションの各表と4次元の推移はローカルインデックス由来で、{start} 以降のみです。それ以前の {days} 日間は含まれません。',
+  'settings.activity.indexGap': '4次元の推移、プロジェクト表、セッション表はローカルインデックス由来で、{start} 以降のみです。それ以前の {days} 日間は含まれません。',
   'settings.activity.diag.indexGapTitle': 'ローカルインデックスの対象日数が日次明細より少ない（{days} 日不足）',
   'settings.activity.showMore': 'さらに {count} 件表示',
   'settings.activity.autoRefresh': '自動更新',
