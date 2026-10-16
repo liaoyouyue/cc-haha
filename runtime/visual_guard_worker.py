@@ -23,8 +23,11 @@ except Exception:  # the Python fallback may not have it; OCR still works
 # A frozen (PyInstaller) build inherits the OEM code page for stdio even when
 # PYTHONUTF8/PYTHONIOENCODING are set, which mangles Chinese window titles on
 # the wire. Pin both streams to UTF-8 instead of trusting the environment.
-sys.stdin.reconfigure(encoding="utf-8", errors="replace")
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+# A --windowed build reports None for a stream it has no console for, which is
+# why this is guarded rather than unconditional.
+for _stream in (sys.stdin, sys.stdout):
+    if _stream is not None and hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 DWMWA_CLOAKED = 14
 # Renders the window's own content into the DC, so it works whether or not the

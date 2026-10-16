@@ -12,6 +12,7 @@ if ($LASTEXITCODE -ne 0) {
   --noconfirm `
   --clean `
   --onedir `
+  --windowed `
   --name visual-guard-worker `
   --distpath $Output `
   --workpath (Join-Path $Root '.build\visual-guard-worker') `
