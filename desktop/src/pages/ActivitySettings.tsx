@@ -501,16 +501,31 @@ function TrendBars({
   )
 }
 
-function downloadCsv(filename: string, rows: Array<Array<string | number>>) {
-  const csv = rows
-    .map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(','))
-    .join('\r\n')
-  const url = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' }))
+function downloadBlob(filename: string, blob: Blob) {
+  const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url
   link.download = filename
   link.click()
   URL.revokeObjectURL(url)
+}
+
+function downloadCsv(filename: string, rows: Array<Array<string | number>>) {
+  const csv = rows
+    .map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(','))
+    .join('\r\n')
+  downloadBlob(filename, new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' }))
+}
+
+function downloadJson(filename: string, value: unknown) {
+  downloadBlob(filename, new Blob([JSON.stringify(value, null, 2)], { type: 'application/json;charset=utf-8' }))
+}
+
+function downloadDataUrl(filename: string, url: string) {
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.click()
 }
 
 function formatModelName(model: string) {
@@ -1321,11 +1336,14 @@ function getHeatmapCellDetail(day: HeatmapDay, t: ReturnType<typeof useTranslati
 export function ActivitySettings() {
   const t = useTranslation()
   const locale = useSettingsStore((state) => state.locale)
+  const dashboardRef = useRef<HTMLDivElement | null>(null)
   const heatmapMeasureRef = useRef<HTMLDivElement | null>(null)
   const avatarInputRef = useRef<HTMLInputElement | null>(null)
   const [stats, setStats] = useState<ActivityStatsResponse | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [exportError, setExportError] = useState<string | null>(null)
+  const [isExportingPng, setIsExportingPng] = useState(false)
   const [profile, setProfile] = useState<DesktopProfilePreferences>(DEFAULT_PROFILE)
   const [profileError, setProfileError] = useState<string | null>(null)
   const [profileStatus, setProfileStatus] = useState<string | null>(null)
@@ -1733,6 +1751,44 @@ export function ActivitySettings() {
     ])
   }
 
+  const exportJson = () => {
+    const data = activeView === 'overview'
+      ? trendDays
+      : activeView === 'models'
+        ? modelTableRows
+        : activeView === 'projects'
+          ? { projects: projectTableRows, sessions: sessionTableRows }
+          : activeView === 'tools'
+            ? { tools: toolRankRows, skills: stats?.skillUsage ?? {} }
+            : diagnostics
+    downloadJson(`token-intelligence-${activeView}-${rangeSlug}.json`, {
+      generatedAt: stats?.generatedAt ?? null,
+      view: activeView,
+      range: { preset: range, from: rangeSpan.start, to: rangeSpan.end },
+      filters: {
+        models: [...selectedModels],
+        search: activeView === 'projects' ? { projects: tableSearch, sessions: sessionSearch } : tableSearch,
+        top: tableLimit,
+      },
+      data,
+    })
+  }
+
+  const exportPng = async () => {
+    if (!dashboardRef.current) return
+    setIsExportingPng(true)
+    setExportError(null)
+    try {
+      const { captureToDataUrl } = await import('../preview-agent/screenshot')
+      const dataUrl = await captureToDataUrl('element', dashboardRef.current)
+      downloadDataUrl(`token-intelligence-${activeView}-${rangeSlug}.png`, dataUrl)
+    } catch {
+      setExportError(t('settings.activity.exportFailed'))
+    } finally {
+      setIsExportingPng(false)
+    }
+  }
+
   const exportSessions = () => {
     downloadCsv(`session-usage-${rangeSlug}-available.csv`, [
       ['session_id', 'project', 'started_at', 'duration_ms', 'messages', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'total_tokens', 'estimated_cost_usd', 'main_transcript_collected'],
@@ -1883,7 +1939,7 @@ export function ActivitySettings() {
   )
 
   return (
-    <div className="activity-dashboard w-full min-w-0">
+    <div ref={dashboardRef} className="activity-dashboard w-full min-w-0">
       <SettingsPageHeader
         title={t('settings.activity.title')}
         description={t('settings.activity.subtitleLoading')}
@@ -1997,6 +2053,27 @@ export function ActivitySettings() {
               {t('settings.activity.exportCsv')}
             </Button>
           )}
+          {!isLoading && (
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={<Download size={14} strokeWidth={1.75} aria-hidden="true" />}
+              onClick={exportJson}
+            >
+              {t('settings.activity.exportJson')}
+            </Button>
+          )}
+          {!isLoading && (
+            <Button
+              variant="ghost"
+              size="sm"
+              loading={isExportingPng}
+              icon={<Download size={14} strokeWidth={1.75} aria-hidden="true" />}
+              onClick={exportPng}
+            >
+              {t('settings.activity.exportPng')}
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="sm"
@@ -2016,6 +2093,10 @@ export function ActivitySettings() {
           </Button>
         </div>
       </div>
+
+      {exportError && (
+        <div role="alert" className="mt-2 text-right text-xs text-[var(--color-error)]">{exportError}</div>
+      )}
 
       {lastUpdated && (
         <div className="mt-2 text-right font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]">

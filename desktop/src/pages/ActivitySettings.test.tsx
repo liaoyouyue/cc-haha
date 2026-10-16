@@ -5,11 +5,12 @@ import '@testing-library/jest-dom'
 import { ActivitySettings } from './ActivitySettings'
 import { useSettingsStore } from '../stores/settingsStore'
 
-const { getStatsMock } = vi.hoisted(() => ({
+const { getStatsMock, captureToDataUrlMock } = vi.hoisted(() => ({
   getStatsMock: vi.fn(),
+  captureToDataUrlMock: vi.fn(),
 }))
 
-const createObjectUrlMock = vi.fn(() => 'blob:usage-csv')
+const createObjectUrlMock = vi.fn<(value: Blob) => string>(() => 'blob:usage-csv')
 const revokeObjectUrlMock = vi.fn()
 
 const {
@@ -28,6 +29,10 @@ vi.mock('../api/activityStats', () => ({
   activityStatsApi: {
     getStats: getStatsMock,
   },
+}))
+
+vi.mock('../preview-agent/screenshot', () => ({
+  captureToDataUrl: captureToDataUrlMock,
 }))
 
 vi.mock('../api/desktopUiPreferences', () => ({
@@ -143,6 +148,8 @@ describe('ActivitySettings', () => {
     vi.setSystemTime(new Date('2026-05-09T12:00:00'))
     getStatsMock.mockReset()
     getStatsMock.mockResolvedValue(activityResponse)
+    captureToDataUrlMock.mockReset()
+    captureToDataUrlMock.mockResolvedValue('data:image/png;base64,MOCK')
     createObjectUrlMock.mockClear()
     revokeObjectUrlMock.mockClear()
     Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectUrlMock })
@@ -691,6 +698,31 @@ describe('ActivitySettings', () => {
 
     expect(createObjectUrlMock).toHaveBeenCalledTimes(1)
     expect(revokeObjectUrlMock).toHaveBeenCalledWith('blob:usage-csv')
+    expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(1)
+  })
+
+  it('exports structured JSON for the current view and filters', async () => {
+    render(<ActivitySettings />)
+    await flushActivityLoad()
+    selectRange('Last 7 days')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Export JSON' }))
+
+    expect(createObjectUrlMock).toHaveBeenCalledTimes(1)
+    expect(createObjectUrlMock.mock.calls[0]![0]).toBeInstanceOf(Blob)
+    expect((createObjectUrlMock.mock.calls[0]![0] as Blob).type).toBe('application/json;charset=utf-8')
+    expect(revokeObjectUrlMock).toHaveBeenCalledWith('blob:usage-csv')
+    expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(1)
+  })
+
+  it('exports the rendered current view as PNG', async () => {
+    render(<ActivitySettings />)
+    await flushActivityLoad()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Export PNG' }))
+    await act(async () => { await Promise.resolve() })
+
+    expect(captureToDataUrlMock).toHaveBeenCalledWith('element', expect.any(HTMLDivElement))
     expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(1)
   })
 
