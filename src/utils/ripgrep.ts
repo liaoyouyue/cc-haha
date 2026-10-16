@@ -737,6 +737,9 @@ const testRipgrepOnFirstUse = memoize(async (): Promise<void> => {
         argv0: config.argv0,
         stderr: 'ignore',
         stdout: 'pipe',
+        // ripgrep is console-subsystem and the sidecar has no console, so this
+        // probe would otherwise flash a window every time it runs.
+        windowsHide: true,
       })
 
       // Bun's ReadableStream has .text() at runtime, but TS types don't reflect it
