@@ -417,7 +417,8 @@ export class DiagnosticsService {
       return
     }
     if (process.platform === 'win32') {
-      Bun.spawn(['cmd', '/c', 'start', '', dir], { stdout: 'ignore', stderr: 'ignore' })
+      // Hide the shell that opens the folder; Explorer itself still appears.
+      Bun.spawn(['cmd', '/c', 'start', '', dir], { stdout: 'ignore', stderr: 'ignore', windowsHide: true })
       return
     }
     Bun.spawn(['xdg-open', dir], { stdout: 'ignore', stderr: 'ignore' })

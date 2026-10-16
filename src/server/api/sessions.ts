@@ -1455,6 +1455,9 @@ async function runGitInfoCommand(workDir: string, args: string[]): Promise<strin
       stdin: 'ignore',
       stdout: 'pipe',
       stderr: 'ignore',
+      // git is console-subsystem and the sidecar has no console, so Windows
+      // would open a visible window for every status poll.
+      windowsHide: true,
     })
 
     const output = new Response(proc.stdout).text()
