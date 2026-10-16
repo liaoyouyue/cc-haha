@@ -1,6 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto'
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { readFile, mkdir, access, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { execFileNoThrow } from '../execFileNoThrow.js'
 import { logForDebugging } from '../debug.js'
@@ -172,8 +174,126 @@ export async function ensureBootstrapped(): Promise<void> {
   }
 }
 
+/**
+ * Resident helper process.
+ *
+ * Starting the Python helper costs ~0.3 s (interpreter + imports) while the
+ * action itself takes ~1-10 ms, so a one-shot call per action spent almost all
+ * of its time on startup. This keeps one helper alive and sends it commands as
+ * JSON lines; the one-shot path below stays as the fallback.
+ */
+type Resident = {
+  child: ChildProcessWithoutNullStreams
+  nextId: number
+  queue: Promise<unknown>
+  pending: Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>
+}
+
+let resident: Resident | null = null
+
+function stopResident(): void {
+  const current = resident
+  resident = null
+  if (!current) return
+  for (const item of current.pending.values()) {
+    clearTimeout(item.timer)
+    item.reject(new Error('computer-use helper stopped'))
+  }
+  current.pending.clear()
+  current.child.kill()
+}
+
+function startResident(): Resident | null {
+  if (resident) return resident
+  try {
+    const child = spawn(pythonBinPath(), ['-u', helperPath, 'serve'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+      env: getComputerUsePythonEnv(),
+    })
+    const created: Resident = { child, nextId: 1, queue: Promise.resolve(), pending: new Map() }
+    createInterface({ input: child.stdout }).on('line', line => {
+      let reply: { id?: number; output?: { ok?: boolean; error?: { code?: string; message?: string } } }
+      try {
+        reply = JSON.parse(line)
+      } catch {
+        return
+      }
+      const item = reply.id === undefined ? undefined : created.pending.get(reply.id)
+      if (!item) return
+      clearTimeout(item.timer)
+      created.pending.delete(reply.id!)
+      item.resolve(reply.output)
+    })
+    child.once('exit', () => {
+      if (resident === created) resident = null
+    })
+    child.once('error', () => {
+      if (resident === created) resident = null
+    })
+    resident = created
+    return created
+  } catch {
+    return null
+  }
+}
+
+/** Shared envelope handling: both transports return the helper's own JSON. */
+function finishHelperResponse<T>(output: unknown, stderr: string): T {
+  const parsed = output as { ok?: boolean; result?: T; error?: { code?: string; message?: string } } | null
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error(stderr || 'Python helper returned invalid JSON')
+  }
+  if (!parsed.ok) {
+    // Prefix the machine-readable code so callers can branch on it. The helper
+    // reports refusals such as `user_interference` and `target_window_offscreen`
+    // this way, and a bare message would flatten them into indistinguishable
+    // prose — the model would then retry an action that was deliberately
+    // refused. Mirrors how the macOS daemon surfaces `CUError.code`.
+    const code = parsed.error?.code
+    const message = parsed.error?.message || 'Python helper command failed'
+    throw new Error(code && code !== 'runtime_error' ? `${code}: ${message}` : message)
+  }
+  return parsed.result as T
+}
+
+/** One command over the resident pipe; resolves null when it cannot be used. */
+async function callResident(command: string, payload: Record<string, unknown>): Promise<unknown> {
+  const live = startResident()
+  if (!live) return null
+  const id = live.nextId++
+  return new Promise(resolve => {
+    const timer = setTimeout(() => {
+      live.pending.delete(id)
+      stopResident()
+      resolve(null)
+    }, 60_000)
+    live.pending.set(id, { resolve: value => resolve(value), reject: () => resolve(null), timer })
+    try {
+      live.child.stdin.write(`${JSON.stringify({ id, command, payload })}\n`)
+    } catch {
+      clearTimeout(timer)
+      live.pending.delete(id)
+      stopResident()
+      resolve(null)
+    }
+  })
+}
+
+/** Frees the resident helper; the next call starts a new one. */
+export function disposePythonHelper(): void {
+  stopResident()
+}
+
+// The helper must not outlive the app.
+process.once('exit', stopResident)
+
 export async function callPythonHelper<T>(command: string, payload: Record<string, unknown> = {}): Promise<T> {
   await ensureBootstrapped()
+
+  const viaResident = await callResident(command, payload)
+  if (viaResident !== null) return finishHelperResponse<T>(viaResident, '')
+
   const { code, stdout, stderr } = await execFileNoThrow(
     pythonBinPath(),
     [helperPath, command, '--payload', JSON.stringify(payload)],
@@ -184,25 +304,14 @@ export async function callPythonHelper<T>(command: string, payload: Record<strin
     throw new Error(stderr || `Python helper ${command} failed with code ${code}`)
   }
 
-  let parsed: { ok: boolean; result?: T; error?: { code?: string; message?: string } }
+  let parsed: unknown
   try {
     parsed = JSON.parse(stdout)
   } catch {
     throw new Error(stderr || stdout || `Python helper ${command} returned invalid JSON`)
   }
 
-  if (!parsed.ok) {
-    // Prefix the machine-readable code so callers can branch on it. The helper
-    // reports refusals such as `user_interference` and `target_window_offscreen`
-    // this way, and a bare message would flatten them into indistinguishable
-    // prose — the model would then retry an action that was deliberately
-    // refused. Mirrors how the macOS daemon surfaces `CUError.code`.
-    const code = parsed.error?.code
-    const message = parsed.error?.message || `Python helper ${command} failed`
-    throw new Error(code && code !== 'runtime_error' ? `${code}: ${message}` : message)
-  }
-
-  return parsed.result as T
+  return finishHelperResponse<T>(parsed, stderr)
 }
 
 export function getRuntimePaths(): { projectRoot: string; runtimeStateRoot: string; venvRoot: string } {
