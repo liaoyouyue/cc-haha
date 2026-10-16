@@ -102,8 +102,13 @@ type ModelUsageRow = {
   cacheWrite: number
   total: number
   fresh: number
+  /** List price × tokens: the server's figure where it has one, else `MARKET_RATES`. */
   costUSD: number
+  /** What the server actually recorded. 0 for everything it could not price. */
+  paidUSD: number
   unpriced: boolean
+  /** `unpriced` by the server's table, but priced here from `MARKET_RATES`. */
+  estimated: boolean
 }
 
 type ProjectUsageRow = {
@@ -309,6 +314,55 @@ function getFreshTokenTotal(usage: ActivityStatsResponse['modelUsage'][string] |
     (usage.outputTokens ?? 0) +
     (usage.cacheCreationInputTokens ?? 0)
   )
+}
+
+type ModelRate = { input: number; output: number; cacheRead: number; cacheWrite: number }
+
+/**
+ * Published list prices, USD per million tokens, for the non-Anthropic models
+ * this machine routes through the local gateway. The server prices Anthropic
+ * models only and folds the result into the index when a transcript is written,
+ * so every other model arrives as 0 and the whole column reads as a dash.
+ * Estimating from this table beats that, as long as the UI marks it as an
+ * estimate rather than a bill.
+ *
+ * ponytail: first-match-wins on the model id, not a real price feed. A model
+ * the gateway renames, or one whose provider re-prices, is wrong until this
+ * table is edited. Upgrade path: read rates from the provider, not a literal.
+ * Order matters — the free-route rule must stay last so `*-free` and `auto*`
+ * do not get priced at their paid family's rate.
+ */
+const MARKET_RATES: Array<[RegExp, ModelRate]> = [
+  [/^(pro\/)?deepseek-v4(-|\b).*pro/, { input: 0.55, output: 2.19, cacheRead: 0.055, cacheWrite: 0.55 }],
+  [/deepseek/i, { input: 0.28, output: 0.42, cacheRead: 0.028, cacheWrite: 0.28 }],
+  [/^k3$|kimi/i, { input: 0.6, output: 2.5, cacheRead: 0.15, cacheWrite: 0.6 }],
+  [/qwen/i, { input: 0.4, output: 1.2, cacheRead: 0.04, cacheWrite: 0.4 }],
+  [/seed/i, { input: 0.1, output: 0.4, cacheRead: 0.01, cacheWrite: 0.1 }],
+  [/^gpt-6/i, { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 2.5 }],
+  [/^gpt-/i, { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 1.25 }],
+  // Each of these rides a free route: the tokens are real, the bill is not.
+  [/-free$|:free$|^auto/i, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }],
+]
+
+function findModelRate(model: string): ModelRate | null {
+  for (const [pattern, rate] of MARKET_RATES) {
+    if (pattern.test(model)) return rate
+  }
+  return null
+}
+
+/** Fills in an estimated cost for a row the server could not price. */
+function withEstimatedCost(row: ModelUsageRow): ModelUsageRow {
+  if (!row.unpriced) return row
+  const rate = findModelRate(row.model)
+  if (rate === null) return row
+  const costUSD = (
+    row.input * rate.input +
+    row.output * rate.output +
+    row.cacheRead * rate.cacheRead +
+    row.cacheWrite * rate.cacheWrite
+  ) / 1_000_000
+  return { ...row, costUSD, estimated: true }
 }
 
 function formatCostUSD(cost: number, locale: Locale) {
@@ -661,9 +715,12 @@ function buildModelRows(stats: ActivityStatsResponse | null) {
       fresh: getFreshTokenTotal(usage),
       total: getModelTokenTotal(usage),
       costUSD: usage.costUSD ?? 0,
+      paidUSD: usage.costUSD ?? 0,
       unpriced: unpriced.has(model),
+      estimated: false,
     }))
     .filter((row) => row.total > 0)
+    .map(withEstimatedCost)
     .sort((a, b) => b.total - a.total || a.model.localeCompare(b.model))
 }
 
@@ -691,7 +748,9 @@ function buildAllTimeModelRows(
       total: row.total,
       fresh: row.fresh,
       costUSD: row.costUSD,
+      paidUSD: row.paidUSD,
       unpriced: row.unpriced,
+      estimated: row.estimated,
     }))
 }
 
@@ -868,13 +927,16 @@ function buildModelUsageRows(
       total: 0,
       fresh: 0,
       costUSD: 0,
+      paidUSD: 0,
       unpriced: unpriced.has(day.model),
+      estimated: false,
     }
     row.input += day.inputTokens
     row.output += day.outputTokens
     row.cacheRead += day.cacheReadInputTokens
     row.cacheWrite += day.cacheCreationInputTokens
     row.costUSD += day.costUSD
+    row.paidUSD += day.costUSD
     row.total += day.inputTokens + day.outputTokens +
       day.cacheReadInputTokens + day.cacheCreationInputTokens
     row.fresh += day.inputTokens + day.outputTokens + day.cacheCreationInputTokens
@@ -884,6 +946,7 @@ function buildModelUsageRows(
   return {
     rows: [...byModel.values()]
       .filter((row) => row.total > 0)
+      .map(withEstimatedCost)
       .sort((a, b) => b.total - a.total || a.model.localeCompare(b.model)),
     rangeApplied: true,
   }
@@ -1574,11 +1637,15 @@ export function ActivitySettings() {
     )
   }, [modelUsageWindow])
   const windowPromptTokens = windowTotals.input + windowTotals.cacheRead + windowTotals.cacheWrite
-  const unpricedInWindow = modelUsageWindow.rows.filter((row) => row.unpriced).length
+  const unpricedInWindow = modelUsageWindow.rows.filter((row) => row.unpriced && !row.estimated).length
+  const estimatedInWindow = modelUsageWindow.rows.filter((row) => row.estimated).length
   const pricedModelRows = [...modelUsageWindow.rows]
-    .filter((row) => !row.unpriced && row.costUSD > 0)
+    .filter((row) => row.costUSD > 0)
     .sort((a, b) => b.costUSD - a.costUSD || a.model.localeCompare(b.model))
   const pricedCostTotal = pricedModelRows.reduce((sum, row) => sum + row.costUSD, 0)
+  // The server only ever priced the Claude models, so this is the figure that
+  // came from a rate table rather than from an estimate of one.
+  const paidCostTotal = [...modelUsageWindow.rows].reduce((sum, row) => sum + row.paidUSD, 0)
   const indexGap = useMemo(() => buildIndexGap(stats), [stats])
   // Some of the stored history predates the local index, so an index-backed
   // sheet over a window reaching back that far has to name the days it cannot
@@ -1650,7 +1717,12 @@ export function ActivitySettings() {
             priced: formatCostUSD(windowTotals.costUSD, locale),
             count: unpricedInWindow,
           })
-        : t('settings.activity.costComplete'),
+        : estimatedInWindow > 0
+          ? t('settings.activity.costEstimated', {
+              count: estimatedInWindow,
+              paid: formatCostUSD(paidCostTotal, locale),
+            })
+          : t('settings.activity.costComplete'),
   }
   const toolSummary = {
     exploredSkills: formatInteger(exploredSkillsCount, locale),
@@ -1741,8 +1813,8 @@ export function ActivitySettings() {
     }
     if (activeView === 'models') {
       downloadCsv(`model-usage-${rangeSlug}.csv`, [
-        ['model', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'total_tokens', 'estimated_cost_usd', 'priced'],
-        ...modelTableRows.map((row) => [row.model, row.input, row.output, row.cacheRead, row.cacheWrite, row.total, row.costUSD, row.unpriced ? 'no' : 'yes']),
+        ['model', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'total_tokens', 'list_cost_usd', 'paid_cost_usd', 'price_source'],
+        ...modelTableRows.map((row) => [row.model, row.input, row.output, row.cacheRead, row.cacheWrite, row.total, row.costUSD, row.paidUSD, row.estimated ? 'estimated' : row.unpriced ? 'none' : 'server']),
       ])
       return
     }
@@ -2733,20 +2805,21 @@ export function ActivitySettings() {
               <Card surface="lowest" padding="none" role="table" className="overflow-hidden">
                 <div
                   role="row"
-                  className="grid grid-cols-[minmax(0,1.5fr)_repeat(4,minmax(0,0.7fr))_minmax(0,0.8fr)] gap-2 bg-[var(--color-surface-container)] px-4 py-2.5 text-xs font-semibold text-[var(--color-text-tertiary)]"
+                  className="grid grid-cols-[minmax(0,1.5fr)_repeat(4,minmax(0,0.7fr))_repeat(2,minmax(0,0.8fr))] gap-2 bg-[var(--color-surface-container)] px-4 py-2.5 text-xs font-semibold text-[var(--color-text-tertiary)]"
                 >
                   <SortHeader label={t('settings.agents.model')} sortKey="model" sort={modelSort} onSort={toggleModelSort} />
                   <SortHeader label={t('settings.activity.dims.input')} sortKey="input" sort={modelSort} onSort={toggleModelSort} align="right" />
                   <SortHeader label={t('settings.activity.dims.output')} sortKey="output" sort={modelSort} onSort={toggleModelSort} align="right" />
                   <SortHeader label={t('settings.activity.dims.cacheRead')} sortKey="cacheRead" sort={modelSort} onSort={toggleModelSort} align="right" />
                   <SortHeader label={t('settings.activity.dims.cacheWrite')} sortKey="cacheWrite" sort={modelSort} onSort={toggleModelSort} align="right" />
-                  <SortHeader label={t('settings.activity.estimatedCost')} sortKey="costUSD" sort={modelSort} onSort={toggleModelSort} align="right" />
+                  <SortHeader label={t('settings.activity.models.listCost')} sortKey="costUSD" sort={modelSort} onSort={toggleModelSort} align="right" />
+                  <SortHeader label={t('settings.activity.models.paidCost')} sortKey="paidUSD" sort={modelSort} onSort={toggleModelSort} align="right" />
                 </div>
                 {modelTableRows.map((row) => (
                   <div
                     key={row.model}
                     role="row"
-                    className="grid grid-cols-[minmax(0,1.5fr)_repeat(4,minmax(0,0.7fr))_minmax(0,0.8fr)] items-center gap-2 border-t border-[var(--color-border)] px-4 py-2.5 text-[13px] tabular-nums text-[var(--color-text-primary)]"
+                    className="grid grid-cols-[minmax(0,1.5fr)_repeat(4,minmax(0,0.7fr))_repeat(2,minmax(0,0.8fr))] items-center gap-2 border-t border-[var(--color-border)] px-4 py-2.5 text-[13px] tabular-nums text-[var(--color-text-primary)]"
                   >
                     <span role="cell" className="min-w-0 truncate font-mono text-xs" title={row.model}>{row.model}</span>
                     <span role="cell" className="min-w-0 truncate text-right">{formatTokens(row.input)}</span>
@@ -2754,7 +2827,19 @@ export function ActivitySettings() {
                     <span role="cell" className="min-w-0 truncate text-right">{formatTokens(row.cacheRead)}</span>
                     <span role="cell" className="min-w-0 truncate text-right">{formatTokens(row.cacheWrite)}</span>
                     <span role="cell" className="min-w-0 truncate text-right">
-                      {row.unpriced ? <span className="text-[var(--color-text-tertiary)]">—</span> : formatCostUSD(row.costUSD, locale)}
+                      {row.unpriced && !row.estimated
+                        ? <span className="text-[var(--color-text-tertiary)]">—</span>
+                        : row.estimated
+                          ? <span title={t('settings.activity.models.estimatedNote')}>~{formatCostUSD(row.costUSD, locale)}</span>
+                          : formatCostUSD(row.costUSD, locale)}
+                    </span>
+                    {/* No rate table can say what a free route actually cost, so this
+                        column reports only what the server recorded. A dash means
+                        "never priced", which is not the same as a measured $0. */}
+                    <span role="cell" className="min-w-0 truncate text-right">
+                      {row.paidUSD > 0
+                        ? formatCostUSD(row.paidUSD, locale)
+                        : <span className="text-[var(--color-text-tertiary)]">—</span>}
                     </span>
                   </div>
                 ))}
@@ -2762,11 +2847,17 @@ export function ActivitySettings() {
             )}
           </SettingsSection>
 
-          {!isLoading && modelUsageWindow.rows.some((row) => row.unpriced) && (
+          {!isLoading && estimatedInWindow > 0 && (
+            <div className="mt-4 rounded-[var(--radius-md)] bg-[var(--color-surface-container)] px-3 py-2 text-xs text-[var(--color-text-tertiary)]">
+              {t('settings.activity.models.estimatedNote')}
+            </div>
+          )}
+
+          {!isLoading && modelUsageWindow.rows.some((row) => row.unpriced && !row.estimated) && (
             <SettingsSection title={t('settings.activity.models.unpricedTitle')}>
               <Card surface="lowest" padding="none" className="overflow-hidden">
                 <ul className="divide-y divide-[var(--color-border)]">
-                  {modelUsageWindow.rows.filter((row) => row.unpriced).map((row) => (
+                  {modelUsageWindow.rows.filter((row) => row.unpriced && !row.estimated).map((row) => (
                     <li key={row.model} className="flex min-h-[44px] items-center gap-3 px-4 py-2">
                       <span className="min-w-0 flex-1 truncate font-mono text-xs text-[var(--color-text-primary)]">{row.model}</span>
                       <span className="shrink-0 text-xs tabular-nums text-[var(--color-text-tertiary)]">

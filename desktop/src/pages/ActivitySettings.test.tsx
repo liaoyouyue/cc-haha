@@ -446,7 +446,7 @@ describe('ActivitySettings', () => {
       .closest('section')!.querySelector('[role="table"]') as HTMLElement
     const modelCells = within(modelTable).getAllByRole('row').slice(1)
       .map((row) => within(row).getAllByRole('cell').map((cell) => cell.textContent))
-    expect(modelCells).toEqual([['claude-sonnet', '190万', '70万', '23万', '3万', '$12.50']])
+    expect(modelCells).toEqual([['claude-sonnet', '190万', '70万', '23万', '3万', '$12.50', '$12.50']])
     expect(within(modelTable).queryByText('236万')).not.toBeInTheDocument()
 
     openView('Projects')
@@ -799,15 +799,18 @@ describe('ActivitySettings', () => {
       'Output',
       'Cache read',
       'Cache write',
-      'Estimated cost',
+      'List price',
+      'Actual spend',
     ])
     // Sorted by total tokens, largest first, with the four buckets kept apart.
+    // glm has no rate here and no market row, so both money columns stay dashes.
     expect(within(rows[1]!).getAllByRole('cell').map((cell) => cell.textContent)).toEqual([
       'claude-sonnet',
       '190万',
       '70万',
       '23万',
       '3万',
+      '$12.50',
       '$12.50',
     ])
     expect(within(rows[2]!).getAllByRole('cell').map((cell) => cell.textContent)).toEqual([
@@ -816,6 +819,7 @@ describe('ActivitySettings', () => {
       '2000',
       '0',
       '0',
+      '—',
       '—',
     ])
 
@@ -857,12 +861,12 @@ describe('ActivitySettings', () => {
       ...activityResponse,
       modelUsage: {
         'glm-4.6': { inputTokens: 40_000, outputTokens: 2_000, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0 },
-        'deepseek-flash': { inputTokens: 5_000, outputTokens: 500, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0 },
+        'mystery-local-model': { inputTokens: 5_000, outputTokens: 500, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0 },
       },
-      unpricedModels: ['glm-4.6', 'deepseek-flash'],
+      unpricedModels: ['glm-4.6', 'mystery-local-model'],
       dailyModelUsage: [
         { date: '2026-05-09', model: 'glm-4.6', inputTokens: 40_000, outputTokens: 2_000, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0 },
-        { date: '2026-05-09', model: 'deepseek-flash', inputTokens: 5_000, outputTokens: 500, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0 },
+        { date: '2026-05-09', model: 'mystery-local-model', inputTokens: 5_000, outputTokens: 500, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0 },
       ],
     })
     render(<ActivitySettings />)
@@ -878,6 +882,28 @@ describe('ActivitySettings', () => {
     expect(screen.getByText('Priced $0.00 · 2 unpriced models excluded')).toBeInTheDocument()
   })
 
+  it('prices a model the server could not, and keeps actual spend separate', async () => {
+    getStatsMock.mockResolvedValueOnce({
+      ...activityResponse,
+      modelUsage: {
+        'deepseek-v4-pro': { inputTokens: 1_000_000, outputTokens: 1_000_000, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0 },
+      },
+      unpricedModels: ['deepseek-v4-pro'],
+      dailyModelUsage: [
+        { date: '2026-05-09', model: 'deepseek-v4-pro', inputTokens: 1_000_000, outputTokens: 1_000_000, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0 },
+      ],
+    })
+    render(<ActivitySettings />)
+    await flushActivityLoad()
+    openView('Model cost')
+
+    // 1M in at $0.55 + 1M out at $2.19 = $2.74, marked as an estimate.
+    const row = within(screen.getByRole('table')).getAllByRole('row')[1]!
+    expect(within(row).getAllByRole('cell').map((cell) => cell.textContent))
+      .toEqual(['deepseek-v4-pro', '100万', '100万', '0', '0', '~$2.74', '—'])
+    expect(screen.getByText(/List price, incl\. 1 models estimated/)).toBeInTheDocument()
+  })
+
   it('narrows the model sheet in place, without refetching on every range change', async () => {
     render(<ActivitySettings />)
 
@@ -890,13 +916,13 @@ describe('ActivitySettings', () => {
 
     // Cutting 04-20 drops 1.8M input / 660K output but keeps the newer days.
     const cells = within(screen.getByRole('table')).getAllByRole('cell').map((cell) => cell.textContent)
-    expect(cells).toEqual(['claude-sonnet', '10万', '4万', '3万', '2万', '$3.00'])
+    expect(cells).toEqual(['claude-sonnet', '10万', '4万', '3万', '2万', '$3.00', '$3.00'])
     // One load on mount, none per range switch: the window is narrowed locally.
     expect(getStatsMock).toHaveBeenCalledTimes(1)
 
     selectRange('All time')
     expect(within(screen.getByRole('table')).getAllByRole('cell').map((cell) => cell.textContent))
-      .toEqual(['claude-sonnet', '190万', '70万', '23万', '3万', '$12.50'])
+      .toEqual(['claude-sonnet', '190万', '70万', '23万', '3万', '$12.50', '$12.50'])
     expect(getStatsMock).toHaveBeenCalledTimes(1)
   })
 
@@ -918,7 +944,7 @@ describe('ActivitySettings', () => {
     // 04-20 and 05-07 are in; 05-09 sits behind the end bound and must be
     // dropped, which a lower-bound-only filter would have silently counted.
     expect(within(screen.getByRole('table')).getAllByRole('cell').map((cell) => cell.textContent))
-      .toEqual(['claude-sonnet', '184万', '68万', '20万', '1万', '$10.50'])
+      .toEqual(['claude-sonnet', '184万', '68万', '20万', '1万', '$10.50', '$10.50'])
     // Narrowed locally, like a preset range: no refetch per bound change.
     expect(getStatsMock).toHaveBeenCalledTimes(1)
   })
