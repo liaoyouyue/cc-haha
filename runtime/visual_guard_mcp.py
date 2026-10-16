@@ -10,7 +10,16 @@ import sys
 
 sys.path.insert(0, __file__.rsplit("\\", 1)[0])
 
-import visual_guard_worker as worker
+try:
+    import visual_guard_worker as worker
+except ImportError as error:  # rapidocr / uiautomation not installed for this interpreter
+    worker = None
+    IMPORT_ERROR = (
+        f"{error}. 真实之眼 需要这个解释器装有依赖："
+        "pip install -r requirements-visual-guard.txt"
+    )
+else:
+    IMPORT_ERROR = None
 
 PROTOCOL_VERSION = "2024-11-05"
 MAX_LINES = 300
@@ -86,6 +95,8 @@ def wrap(label, payload):
 
 
 def call_tool(name, args):
+    if worker is None:
+        raise RuntimeError(IMPORT_ERROR)
     if name == "eye_windows":
         return wrap("可见窗口：", worker.list_windows())
     if name == "eye_see":
