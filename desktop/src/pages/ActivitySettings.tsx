@@ -58,13 +58,36 @@ type ActivityView = 'overview' | 'models' | 'projects' | 'tools' | 'diagnostics'
  * Only the sheets with daily data can honour a range filter. Tools and
  * diagnostics are all-time aggregates, so they get no dead control.
  */
-type UsageRange = 'all' | '30d' | '7d'
+type UsageRange = 'all' | '30d' | '7d' | 'custom'
 
-const RANGE_DAY_COUNTS: Record<UsageRange, number | null> = {
+type PresetRange = Exclude<UsageRange, 'custom'>
+
+const RANGE_DAY_COUNTS: Record<PresetRange, number | null> = {
   all: null,
   '30d': 30,
   '7d': 7,
 }
+
+/**
+ * An inclusive `YYYY-MM-DD` window. A null bound is open on that side, which is
+ * what "all time" is: no lower bound, no upper bound.
+ *
+ * Every range — preset or custom — is expressed as one of these, so a single
+ * predicate decides what is in the window. Comparing date keys as strings is
+ * safe because they are zero-padded ISO days, and it keeps every filter on the
+ * same calendar the server aggregates with instead of introducing a second,
+ * local-timezone definition of "day".
+ */
+type DateSpan = { start: string | null; end: string | null }
+
+const ALL_TIME_SPAN: DateSpan = { start: null, end: null }
+
+/**
+ * Largest window the trend is willing to zero-fill. The stored history is weeks
+ * long, so this only ever bites on a typo (a 1900 start), where filling would
+ * otherwise build tens of thousands of empty buckets.
+ */
+const MAX_FILLED_DAYS = 400
 
 /** Sheets whose data carries a date grain, so the range filter actually bites. */
 const RANGE_AWARE_VIEWS: ReadonlySet<ActivityView> = new Set<ActivityView>(['overview', 'models', 'projects'])
@@ -563,14 +586,13 @@ function getDailyTokenMap(stats: ActivityStatsResponse | null) {
 
 function buildDailyTrend(
   stats: ActivityStatsResponse | null,
-  cutoff: string | null,
-  range: UsageRange,
+  span: DateSpan,
   selectedModels: ReadonlySet<string>,
 ) {
   const byDay = new Map<string, { date: string; input: number; output: number; cacheRead: number; cacheWrite: number; total: number }>()
   if (stats?.dailyModelUsage) {
     for (const row of stats.dailyModelUsage) {
-      if (!selectedModels.has(row.model) || !isDateInSelectedRange(row.date, cutoff)) continue
+      if (!selectedModels.has(row.model) || !isDateInSpan(row.date, span)) continue
       const day = byDay.get(row.date) ?? { date: row.date, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
       day.input += row.inputTokens
       day.output += row.outputTokens
@@ -581,18 +603,20 @@ function buildDailyTrend(
     }
   } else {
     for (const day of stats?.dailyModelTokens ?? []) {
-      if (!isDateInSelectedRange(day.date, cutoff)) continue
+      if (!isDateInSpan(day.date, span)) continue
       const total = Object.entries(day.tokensByModel)
         .filter(([model]) => selectedModels.has(model))
         .reduce((sum, [, tokens]) => sum + tokens, 0)
       byDay.set(day.date, { date: day.date, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total })
     }
   }
-  if (range !== 'all') {
-    const today = new Date()
-    today.setHours(0, 0, 0, 0)
-    for (let index = 0; index < RANGE_DAY_COUNTS[range]!; index += 1) {
-      const date = localDateKey(addDays(today, -index))
+  // A bounded window charts every day in it, including the quiet ones: a gap in
+  // the bars otherwise reads as missing data rather than a day off.
+  const fillDays = spanDayCount(span)
+  if (fillDays !== null && fillDays <= MAX_FILLED_DAYS) {
+    const last = span.end !== null ? parseLocalDate(span.end) : startOfToday()
+    for (let index = 0; index < fillDays; index += 1) {
+      const date = localDateKey(addDays(last, -index))
       if (!byDay.has(date)) byDay.set(date, { date, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 })
     }
   }
@@ -645,18 +669,41 @@ function buildAllTimeModelRows(
     }))
 }
 
-/**
- * Inclusive lower bound of a range as a `YYYY-MM-DD` key, or null for "all".
- * Comparing date keys as strings is safe because they are zero-padded ISO days,
- * and it keeps every range filter on the same calendar the server aggregates
- * with instead of introducing a second, local-timezone definition of "day".
- */
-function getRangeCutoff(range: UsageRange): string | null {
-  const days = RANGE_DAY_COUNTS[range]
-  if (days === null) return null
+function startOfToday() {
   const today = new Date()
   today.setHours(0, 0, 0, 0)
-  return localDateKey(addDays(today, -(days - 1)))
+  return today
+}
+
+/**
+ * The window a range selects: a preset counted back from today, or the two
+ * dates the user typed. A reversed custom pair is swapped rather than rejected,
+ * so the control can never leave the sheets in an empty state the user did not
+ * ask for.
+ */
+function getRangeSpan(range: UsageRange, from: string, to: string): DateSpan {
+  if (range === 'custom') {
+    if (from && to && from > to) return { start: to, end: from }
+    return { start: from || null, end: to || null }
+  }
+  const days = RANGE_DAY_COUNTS[range]
+  if (days === null) return ALL_TIME_SPAN
+  return { start: localDateKey(addDays(startOfToday(), -(days - 1))), end: null }
+}
+
+/** Inclusive day count of a window, or null when it has no lower bound. */
+function spanDayCount(span: DateSpan): number | null {
+  if (span.start === null) return null
+  const end = span.end !== null ? parseLocalDate(span.end) : startOfToday()
+  const days = Math.round((end.getTime() - parseLocalDate(span.start).getTime()) / 86_400_000) + 1
+  return days > 0 ? days : null
+}
+
+function isDateInSpan(dateKey: string, span: DateSpan) {
+  const day = dateKey.slice(0, 10)
+  if (span.start !== null && day < span.start) return false
+  if (span.end !== null && day > span.end) return false
+  return true
 }
 
 /**
@@ -664,31 +711,65 @@ function getRangeCutoff(range: UsageRange): string | null {
  * pasted URL reopens the same slice. The app has no router, and these keys are
  * namespaced (`ti.`) so nothing else reads them.
  */
-const URL_KEYS = { view: 'ti.view', range: 'ti.range', models: 'ti.models' } as const
+const URL_KEYS = { view: 'ti.view', range: 'ti.range', models: 'ti.models', from: 'ti.from', to: 'ti.to' } as const
 
-function readUsageUrlState(): { view?: ActivityView; range?: UsageRange; excluded?: string[] } {
+const USAGE_RANGES: readonly UsageRange[] = ['all', '30d', '7d', 'custom']
+
+const DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/
+
+function readUsageUrlState(): {
+  view?: ActivityView
+  range?: UsageRange
+  excluded?: string[]
+  from?: string
+  to?: string
+} {
   if (typeof window === 'undefined') return {}
   const params = new URLSearchParams(window.location.search)
   const view = params.get(URL_KEYS.view)
   const range = params.get(URL_KEYS.range)
   const models = params.get(URL_KEYS.models)
+  // A hand-edited bound is dropped rather than passed on: `getRangeSpan` and the
+  // date inputs both assume a well-formed `YYYY-MM-DD`, and an arbitrary string
+  // would quietly widen or empty the window instead of failing loudly.
+  const bound = (key: string) => {
+    const value = params.get(key)
+    return value && DATE_KEY_PATTERN.test(value) ? value : undefined
+  }
   return {
     view: view && ['overview', 'models', 'projects', 'tools', 'diagnostics'].includes(view)
       ? view as ActivityView
       : undefined,
-    range: range && ['all', '30d', '7d'].includes(range) ? range as UsageRange : undefined,
+    range: range && USAGE_RANGES.includes(range as UsageRange) ? range as UsageRange : undefined,
     // The exclusions are listed in the URL, not the inclusions: a model that
     // appears later should be counted by default rather than silently missing.
     excluded: models === null ? undefined : models.split(',').filter(Boolean),
+    from: bound(URL_KEYS.from),
+    to: bound(URL_KEYS.to),
   }
 }
 
-function writeUsageUrlState(view: ActivityView, range: UsageRange, excluded: string[]) {
+function writeUsageUrlState(
+  view: ActivityView,
+  range: UsageRange,
+  excluded: string[],
+  customFrom: string,
+  customTo: string,
+) {
   if (typeof window === 'undefined') return
   const params = new URLSearchParams(window.location.search)
   params.set(URL_KEYS.view, view)
   params.set(URL_KEYS.range, range)
   params.set(URL_KEYS.models, excluded.join(','))
+  // Only the custom range has bounds worth carrying; leaving stale ones behind
+  // would reopen a pasted link on a window the control no longer shows.
+  if (range === 'custom') {
+    params.set(URL_KEYS.from, customFrom)
+    params.set(URL_KEYS.to, customTo)
+  } else {
+    params.delete(URL_KEYS.from)
+    params.delete(URL_KEYS.to)
+  }
   window.history.replaceState(null, '', `${window.location.pathname}?${params}`)
 }
 
@@ -712,11 +793,6 @@ function useStickyDetails(key: string) {
   }
 }
 
-function isDateInSelectedRange(dateKey: string, cutoff: string | null) {
-  if (cutoff === null) return true
-  return dateKey.slice(0, 10) >= cutoff
-}
-
 /**
  * Per-model rows for the selected range.
  *
@@ -730,13 +806,13 @@ function isDateInSelectedRange(dateKey: string, cutoff: string | null) {
  */
 function buildModelUsageRows(
   stats: ActivityStatsResponse | null,
-  cutoff: string | null,
+  span: DateSpan,
   selectedModels: ReadonlySet<string>,
 ): { rows: ModelUsageRow[]; rangeApplied: boolean } {
   const unpriced = new Set(stats?.unpricedModels ?? [])
   const daily = stats?.dailyModelUsage
 
-  if (cutoff === null) {
+  if (span.start === null && span.end === null) {
     return { rows: buildAllTimeModelRows(stats, selectedModels), rangeApplied: true }
   }
 
@@ -746,7 +822,7 @@ function buildModelUsageRows(
 
   const byModel = new Map<string, ModelUsageRow>()
   for (const day of daily) {
-    if (!selectedModels.has(day.model) || !isDateInSelectedRange(day.date, cutoff)) continue
+    if (!selectedModels.has(day.model) || !isDateInSpan(day.date, span)) continue
     const row = byModel.get(day.model) ?? {
       model: day.model,
       input: 0,
@@ -779,11 +855,11 @@ function buildModelUsageRows(
 
 function buildProjectUsageRows(
   stats: ActivityStatsResponse | null,
-  cutoff: string | null,
+  span: DateSpan,
 ): ProjectUsageRow[] {
   const byProject = new Map<string, ProjectUsageRow>()
   for (const day of stats?.projectUsage ?? []) {
-    if (!isDateInSelectedRange(day.date, cutoff)) continue
+    if (!isDateInSpan(day.date, span)) continue
     const row = byProject.get(day.projectPath) ?? {
       projectPath: day.projectPath,
       projectName: day.projectName,
@@ -820,14 +896,14 @@ function buildProjectUsageRows(
 
 function buildSessionUsageRows(
   stats: ActivityStatsResponse | null,
-  cutoff: string | null,
+  span: DateSpan,
   limit: number,
 ): { rows: SessionUsageRow[]; total: number; subagentOnly: number } {
   const inWindow = (stats?.sessionUsage ?? [])
     // A session with no recorded start time is kept rather than filtered out:
     // its spend is already counted in the totals, and dropping it here would
     // make the ranking quietly disagree with them.
-    .filter((session) => !session.startedAt || isDateInSelectedRange(session.startedAt, cutoff))
+    .filter((session) => !session.startedAt || isDateInSpan(session.startedAt, span))
     .map<SessionUsageRow>((session) => ({
       sessionId: session.sessionId,
       projectName: session.projectName,
@@ -898,11 +974,11 @@ function buildIndexGap(stats: ActivityStatsResponse | null): { start: string; da
  */
 function sumDailyTokensInWindow(
   stats: ActivityStatsResponse | null,
-  cutoff: string | null,
+  span: DateSpan,
   selectedModels: ReadonlySet<string>,
 ) {
   return (stats?.dailyModelTokens ?? []).reduce((sum, day) => {
-    if (!isDateInSelectedRange(day.date, cutoff)) return sum
+    if (!isDateInSpan(day.date, span)) return sum
     return sum + Object.entries(day.tokensByModel)
       .filter(([model]) => selectedModels.has(model))
       .reduce((daySum, [, tokens]) => daySum + tokens, 0)
@@ -1245,6 +1321,12 @@ export function ActivitySettings() {
   const urlState = useMemo(readUsageUrlState, [])
   const [activeView, setActiveView] = useState<ActivityView>(urlState.view ?? 'overview')
   const [range, setRange] = useState<UsageRange>(urlState.range ?? 'all')
+  // Seeded to the last 30 days so switching to Custom starts from the window the
+  // user was already looking at instead of an empty range.
+  const [customFrom, setCustomFrom] = useState(
+    () => urlState.from ?? localDateKey(addDays(startOfToday(), -29)),
+  )
+  const [customTo, setCustomTo] = useState(() => urlState.to ?? localDateKey(startOfToday()))
   const [overviewMode, setOverviewMode] = useState<OverviewMode>('chart')
   const [splitAxis, setSplitAxis] = useState(false)
   const [autoRefresh, setAutoRefresh] = useState(false)
@@ -1257,8 +1339,8 @@ export function ActivitySettings() {
   const modelFilterDetails = useStickyDetails('modelFilter')
 
   useEffect(() => {
-    writeUsageUrlState(activeView, range, excludedModels)
-  }, [activeView, excludedModels, range])
+    writeUsageUrlState(activeView, range, excludedModels, customFrom, customTo)
+  }, [activeView, excludedModels, range, customFrom, customTo])
 
   useEffect(() => {
     if (!autoRefresh) return
@@ -1386,25 +1468,28 @@ export function ActivitySettings() {
     const excluded = new Set(excludedModels)
     return new Set(availableModels.filter((model) => !excluded.has(model)))
   }, [availableModels, excludedModels])
-  const rangeCutoff = useMemo(() => getRangeCutoff(range), [range])
+  const rangeSpan = useMemo(
+    () => getRangeSpan(range, customFrom, customTo),
+    [range, customFrom, customTo],
+  )
   const trendDays = useMemo(
-    () => buildDailyTrend(stats, rangeCutoff, range, selectedModels),
-    [stats, rangeCutoff, range, selectedModels],
+    () => buildDailyTrend(stats, rangeSpan, selectedModels),
+    [stats, rangeSpan, selectedModels],
   )
   const modelUsageWindow = useMemo(
-    () => buildModelUsageRows(stats, rangeCutoff, selectedModels),
-    [rangeCutoff, selectedModels, stats],
+    () => buildModelUsageRows(stats, rangeSpan, selectedModels),
+    [rangeSpan, selectedModels, stats],
   )
   const topModel = modelUsageWindow.rows[0]
     ? { model: modelUsageWindow.rows[0].model, tokens: modelUsageWindow.rows[0].total }
     : null
   const projectRows = useMemo(
-    () => buildProjectUsageRows(stats, rangeCutoff),
-    [rangeCutoff, stats],
+    () => buildProjectUsageRows(stats, rangeSpan),
+    [rangeSpan, stats],
   )
   const sessionWindow = useMemo(
-    () => buildSessionUsageRows(stats, rangeCutoff, sessionLimit),
-    [rangeCutoff, sessionLimit, stats],
+    () => buildSessionUsageRows(stats, rangeSpan, sessionLimit),
+    [rangeSpan, sessionLimit, stats],
   )
   const sessionRows = sessionWindow.rows
   const toolRankRows = useMemo(() => buildToolRankRows(stats, TOOL_ROW_LIMIT), [stats])
@@ -1429,9 +1514,14 @@ export function ActivitySettings() {
   const windowPromptTokens = windowTotals.input + windowTotals.cacheRead + windowTotals.cacheWrite
   const unpricedInWindow = modelUsageWindow.rows.filter((row) => row.unpriced).length
   const indexGap = useMemo(() => buildIndexGap(stats), [stats])
+  // Some of the stored history predates the local index, so an index-backed
+  // sheet over a window reaching back that far has to name the days it cannot
+  // speak for. "All time" is excluded where the sheet is built from the cached
+  // aggregate instead, which does cover the whole history.
+  const windowReachesBeforeIndex = indexGap !== null && rangeSpan.start !== null && rangeSpan.start < indexGap.start
   const windowTokenTotal = useMemo(
-    () => sumDailyTokensInWindow(stats, rangeCutoff, selectedModels),
-    [rangeCutoff, selectedModels, stats],
+    () => sumDailyTokensInWindow(stats, rangeSpan, selectedModels),
+    [rangeSpan, selectedModels, stats],
   )
   const metrics: SummaryMetric[] = [
     {
@@ -1460,20 +1550,26 @@ export function ActivitySettings() {
       detail: formatSessionCount(last30Usage.sessions, t),
     },
   ]
+  // The window reaches back past what the index priced, and the fold came back
+  // with nothing at all: the zero is absence, not a measurement. A `$0.00` next
+  // to a headline of billions would read as "that period was free".
+  const costIsAbsentOutsideIndex = windowReachesBeforeIndex && windowTotals.total === 0
   const costCard = {
     label: t('settings.activity.estimatedCost'),
     // A `$0.00` headline reads as "the whole bill is free", which is exactly
     // wrong when the zero comes from unpriced models. Show a dash there and
     // move the priced figure into the detail, where it cannot be misread.
-    value: unpricedInWindow > 0 && windowTotals.costUSD === 0
+    value: costIsAbsentOutsideIndex || (unpricedInWindow > 0 && windowTotals.costUSD === 0)
       ? '—'
       : formatCostUSD(windowTotals.costUSD, locale),
-    detail: unpricedInWindow > 0
-      ? t('settings.activity.costBreakdown', {
-          priced: formatCostUSD(windowTotals.costUSD, locale),
-          count: unpricedInWindow,
-        })
-      : t('settings.activity.costComplete'),
+    detail: costIsAbsentOutsideIndex
+      ? t('settings.activity.overview.costUnavailable')
+      : unpricedInWindow > 0
+        ? t('settings.activity.costBreakdown', {
+            priced: formatCostUSD(windowTotals.costUSD, locale),
+            count: unpricedInWindow,
+          })
+        : t('settings.activity.costComplete'),
   }
   const toolSummary = {
     exploredSkills: formatInteger(exploredSkillsCount, locale),
@@ -1502,7 +1598,15 @@ export function ActivitySettings() {
     { range: 'all', label: t('settings.activity.range.all') },
     { range: '30d', label: t('settings.activity.range.30d') },
     { range: '7d', label: t('settings.activity.range.7d') },
+    { range: 'custom', label: t('settings.activity.range.custom') },
   ]
+  // The custom window names its own bounds, so the headline says which days it
+  // covers instead of a preset name that would be a lie. A cleared input drops
+  // out rather than rendering "Invalid Date".
+  const rangeLabel = range === 'custom'
+    ? [customFrom, customTo].filter(Boolean).map((key) => formatShortDate(key, locale)).join(' – ')
+    : rangeOptions.find((item) => item.range === range)?.label ?? ''
+  const rangeSlug = range === 'custom' ? `${customFrom}_${customTo}` : range
   const insights: Array<{ label: string; value: string; detail?: string }> = [
     {
       label: t('settings.activity.activeRate'),
@@ -1548,27 +1652,27 @@ export function ActivitySettings() {
 
   const exportCurrentView = () => {
     if (activeView === 'overview') {
-      downloadCsv(`token-usage-${range}.csv`, [
+      downloadCsv(`token-usage-${rangeSlug}.csv`, [
         ['date', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'total_tokens'],
         ...trendDays.map((day) => [day.date, day.input, day.output, day.cacheRead, day.cacheWrite, day.total]),
       ])
       return
     }
     if (activeView === 'models') {
-      downloadCsv(`model-usage-${range}.csv`, [
+      downloadCsv(`model-usage-${rangeSlug}.csv`, [
         ['model', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'total_tokens', 'estimated_cost_usd', 'priced'],
         ...modelUsageWindow.rows.map((row) => [row.model, row.input, row.output, row.cacheRead, row.cacheWrite, row.total, row.costUSD, row.unpriced ? 'no' : 'yes']),
       ])
       return
     }
-    downloadCsv(`project-usage-${range}.csv`, [
+    downloadCsv(`project-usage-${rangeSlug}.csv`, [
       ['project', 'session_days', 'messages', 'tool_calls', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'total_tokens', 'estimated_cost_usd'],
       ...projectRows.map((row) => [row.projectName, row.sessionCount, row.messageCount, row.toolCallCount, row.input, row.output, row.cacheRead, row.cacheWrite, row.total, row.costUSD]),
     ])
   }
 
   const exportSessions = () => {
-    downloadCsv(`session-usage-${range}-available.csv`, [
+    downloadCsv(`session-usage-${rangeSlug}-available.csv`, [
       ['session_id', 'project', 'started_at', 'duration_ms', 'messages', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'total_tokens', 'estimated_cost_usd', 'main_transcript_collected'],
       ...sessionRows.map((row) => [row.sessionId, row.projectName, row.startedAt, row.activeDurationMs, row.messageCount, row.input, row.output, row.cacheRead, row.cacheWrite, row.total, row.costUSD, row.hasMainSession ? 'yes' : 'no']),
     ])
@@ -1746,17 +1850,43 @@ export function ActivitySettings() {
         />
         <div className="flex flex-wrap items-center justify-end gap-2">
           {RANGE_AWARE_VIEWS.has(activeView) && (
-            <SegmentedControl
-              size="sm"
-              appearance="chip"
-              label={t('settings.activity.range.label')}
-              value={range}
-              onChange={(nextRange) => {
-                setRange(nextRange)
-                setSessionLimit(SESSION_ROW_LIMIT)
-              }}
-              items={rangeOptions.map((option) => ({ value: option.range, label: option.label }))}
-            />
+            <>
+              <SegmentedControl
+                size="sm"
+                appearance="chip"
+                label={t('settings.activity.range.label')}
+                value={range}
+                onChange={(nextRange) => {
+                  setRange(nextRange)
+                  setSessionLimit(SESSION_ROW_LIMIT)
+                }}
+                items={rangeOptions.map((option) => ({ value: option.range, label: option.label }))}
+              />
+              {range === 'custom' && (
+                // Native date inputs: the platform picker, keyboard entry and
+                // the `min`/`max` guards all come for free, and the bounds are
+                // the only state worth keeping.
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <input
+                    type="date"
+                    aria-label={t('settings.activity.range.from')}
+                    value={customFrom}
+                    max={customTo || undefined}
+                    onChange={(event) => setCustomFrom(event.target.value)}
+                    className="h-7 rounded-full border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 text-xs text-[var(--color-text-primary)]"
+                  />
+                  <span aria-hidden="true" className="text-xs text-[var(--color-text-tertiary)]">–</span>
+                  <input
+                    type="date"
+                    aria-label={t('settings.activity.range.to')}
+                    value={customTo}
+                    min={customFrom || undefined}
+                    onChange={(event) => setCustomTo(event.target.value)}
+                    className="h-7 rounded-full border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 text-xs text-[var(--color-text-primary)]"
+                  />
+                </div>
+              )}
+            </>
           )}
           {(activeView === 'overview' || activeView === 'models' || activeView === 'projects') && !isLoading && (
             <Button
@@ -1840,9 +1970,12 @@ export function ActivitySettings() {
         // the headline and needs no warning. The project and session tables, and
         // any bounded model window reaching before the index, still start later
         // than the daily series — without this the sheet looks like it
-        // contradicts the headline by 22亿.
-        (activeView === 'projects' && (rangeCutoff === null || rangeCutoff < indexGap.start)) ||
-        (activeView === 'models' && rangeCutoff !== null && rangeCutoff < indexGap.start)
+        // contradicts the headline by 22亿. The Overview's four-dimension trend
+        // is index-backed too, which a custom window reaching back far enough
+        // makes easy to hit.
+        (activeView === 'projects' && (rangeSpan.start === null || rangeSpan.start < indexGap.start)) ||
+        (activeView === 'models' && windowReachesBeforeIndex) ||
+        (activeView === 'overview' && windowReachesBeforeIndex)
       ) && (
         <div className="mt-3 rounded-[var(--radius-md)] bg-[var(--color-surface-container)] px-3 py-2 text-xs text-[var(--color-text-tertiary)]">
           {t('settings.activity.indexGap', { start: formatShortDate(indexGap.start, locale), days: indexGap.days })}
@@ -1877,7 +2010,7 @@ export function ActivitySettings() {
               // part of the history and folding it under-reported all-time by 42%.
               value: isLoading ? '—' : formatTokens(windowTokenTotal || trendTotalTokens),
               detail: [
-                rangeOptions.find((item) => item.range === range)?.label,
+                rangeLabel,
                 indexGap && range === 'all'
                   ? t('settings.activity.indexGap', { start: formatShortDate(indexGap.start, locale), days: indexGap.days })
                   : null,

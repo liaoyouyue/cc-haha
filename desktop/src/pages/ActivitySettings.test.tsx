@@ -795,6 +795,77 @@ describe('ActivitySettings', () => {
     expect(getStatsMock).toHaveBeenCalledTimes(1)
   })
 
+  it('narrows every sheet to a custom window, end bound included', async () => {
+    render(<ActivitySettings />)
+
+    await flushActivityLoad()
+    openView('Model cost')
+    selectRange('Custom')
+
+    // Seeded to the last 30 days, so switching to Custom is never an empty
+    // window the user has to dig themselves out of.
+    expect(screen.getByLabelText('Range start')).toHaveValue('2026-04-10')
+    expect(screen.getByLabelText('Range end')).toHaveValue('2026-05-09')
+
+    fireEvent.change(screen.getByLabelText('Range start'), { target: { value: '2026-04-01' } })
+    fireEvent.change(screen.getByLabelText('Range end'), { target: { value: '2026-05-07' } })
+
+    // 04-20 and 05-07 are in; 05-09 sits behind the end bound and must be
+    // dropped, which a lower-bound-only filter would have silently counted.
+    expect(within(screen.getByRole('table')).getAllByRole('cell').map((cell) => cell.textContent))
+      .toEqual(['claude-sonnet', '184万', '68万', '20万', '1万', '$10.50'])
+    // Narrowed locally, like a preset range: no refetch per bound change.
+    expect(getStatsMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('carries the custom bounds in the URL and clears them for a preset range', async () => {
+    render(<ActivitySettings />)
+    await flushActivityLoad()
+
+    selectRange('Custom')
+    fireEvent.change(screen.getByLabelText('Range start'), { target: { value: '2026-04-01' } })
+    fireEvent.change(screen.getByLabelText('Range end'), { target: { value: '2026-05-07' } })
+
+    let params = new URLSearchParams(window.location.search)
+    expect(params.get('ti.range')).toBe('custom')
+    expect(params.get('ti.from')).toBe('2026-04-01')
+    expect(params.get('ti.to')).toBe('2026-05-07')
+
+    // A stale bound left behind would reopen a later bookmarked URL on a window
+    // the control no longer shows.
+    selectRange('Last 7 days')
+    params = new URLSearchParams(window.location.search)
+    expect(params.get('ti.range')).toBe('7d')
+    expect(params.get('ti.from')).toBeNull()
+    expect(params.get('ti.to')).toBeNull()
+  })
+
+  it('names the index gap and declines to price a custom window that predates it', async () => {
+    getStatsMock.mockResolvedValue({
+      ...activityResponse,
+      // The cached daily series reaches back further than the local index does,
+      // which is the machine's real situation: 45 days against 22.
+      dailyModelTokens: [
+        { date: '2026-04-01', tokensByModel: { 'claude-sonnet': 5_000_000 } },
+        ...activityResponse.dailyModelTokens,
+      ],
+    })
+    render(<ActivitySettings />)
+    await flushActivityLoad()
+
+    selectRange('Custom')
+    fireEvent.change(screen.getByLabelText('Range start'), { target: { value: '2026-04-01' } })
+    fireEvent.change(screen.getByLabelText('Range end'), { target: { value: '2026-04-10' } })
+
+    // The headline reads the full series, so it reports the 5M the index never saw.
+    expect(screen.getAllByText('500万').length).toBeGreaterThan(0)
+    // The cost is folded from the index, which has nothing for these days. A
+    // `$0.00` beside that headline would read as "that period was free".
+    expect(screen.getByText('Cost for this range needs the local index.')).toBeInTheDocument()
+    // And the days the index cannot speak for are named rather than dropped.
+    expect(screen.getByText(/the local index, which starts/)).toBeInTheDocument()
+  })
+
   it('ranks projects and sessions, and drops out-of-window sessions on a narrower range', async () => {
     render(<ActivitySettings />)
 
