@@ -402,6 +402,40 @@ describe('ActivitySettings', () => {
     expect(getStatsMock).toHaveBeenCalledTimes(1)
   })
 
+  it('keeps the headline on the full daily series instead of the shorter index subset', async () => {
+    // The index starts on 04-15 here while the daily series reaches back to
+    // 04-20-with-earlier-data. Folding the index reads to answer "all time" made
+    // the headline read 30亿 against a real 52亿 on a live machine.
+    getStatsMock.mockResolvedValueOnce({
+      ...activityResponse,
+      dailyModelTokens: [
+        { date: '2026-04-15', tokensByModel: { 'claude-sonnet': 500_000 } },
+        { date: '2026-04-20', tokensByModel: { 'claude-sonnet': 2_172_000 } },
+        { date: '2026-05-07', tokensByModel: { 'claude-sonnet': 64_000 } },
+        { date: '2026-05-09', tokensByModel: { 'claude-sonnet': 128_000 } },
+      ],
+      dailyModelUsage: activityResponse.dailyModelUsage.filter((row) => row.date !== '2026-04-20'),
+      projectUsage: activityResponse.projectUsage.filter((row) => row.date !== '2026-04-20'),
+      sessionUsage: activityResponse.sessionUsage.filter((row) => !row.startedAt.startsWith('2026-04-20')),
+    })
+    render(<ActivitySettings />)
+    await flushActivityLoad()
+
+    const headline = screen.getByText('Total tokens').closest('section')!
+    // 286万 = every day. The index-only fold would have been 236万.
+    expect(within(headline).getByText('286万')).toBeInTheDocument()
+    expect(within(headline).getByText(/which starts/)).toBeInTheDocument()
+
+    openView('Projects')
+    const note = screen.getByText(/which starts/)
+    // The index starts on 05-07 here, so 04-15 and 04-20 are outside it.
+    expect(note).toHaveTextContent('which starts 5/7')
+    expect(note).toHaveTextContent('earlier 2 days are missing')
+
+    openView('Diagnostics')
+    expect(screen.getByText(/Local index covers fewer days/)).toBeInTheDocument()
+  })
+
   it('shows session starts per local hour and marks the peak', async () => {
     render(<ActivitySettings />)
     await flushActivityLoad()

@@ -849,6 +849,43 @@ function buildToolRankRows(stats: ActivityStatsResponse | null, limit: number): 
  * completeness strip and the Diagnostics sheet, so "we do not measure that"
  * reads as a stated gap rather than a zero that looks like real data.
  */
+/**
+ * The section of the window the local index cannot speak for.
+ *
+ * `dailyModelUsage`/`projectUsage`/`sessionUsage` come from the index, which on
+ * this machine starts 2026-09-25, while `dailyModelTokens` goes back to
+ * 2026-09-01. Folding the index reads to answer "all time" therefore reports
+ * 30.03亿 against a real 52.26亿 — the headline must come from the full series,
+ * and every index-backed sheet has to say which days it leaves out.
+ */
+function buildIndexGap(stats: ActivityStatsResponse | null): { start: string; days: number } | null {
+  const indexed = stats?.dailyModelUsage
+  if (!indexed || indexed.length === 0) return null
+  const indexStart = indexed.reduce((earliest, row) => (row.date < earliest ? row.date : earliest), indexed[0]!.date)
+  const outside = (stats?.dailyModelTokens ?? []).filter((day) => day.date < indexStart)
+  if (outside.length === 0) return null
+  return { start: indexStart, days: outside.length }
+}
+
+/**
+ * Window token total from the full per-day series rather than the index fold,
+ * so the headline never shrinks to the indexed subset — the index can start
+ * weeks later than the daily series. It still honours the model filter, because
+ * `tokensByModel` carries the same grain the index does, over the whole history.
+ */
+function sumDailyTokensInWindow(
+  stats: ActivityStatsResponse | null,
+  cutoff: string | null,
+  selectedModels: ReadonlySet<string>,
+) {
+  return (stats?.dailyModelTokens ?? []).reduce((sum, day) => {
+    if (!isDateInSelectedRange(day.date, cutoff)) return sum
+    return sum + Object.entries(day.tokensByModel)
+      .filter(([model]) => selectedModels.has(model))
+      .reduce((daySum, [, tokens]) => daySum + tokens, 0)
+  }, 0)
+}
+
 function buildCoverageItems(stats: ActivityStatsResponse | null) {
   // Truthiness, not `!== null`: a sidecar old enough to omit the key reports the
   // same thing as one that could not answer, and neither is a zero.
@@ -904,6 +941,22 @@ function buildDiagnostics(
       level: 'warn',
       title: t('settings.activity.diag.zeroCostTitle', { count: suspicious.length }),
       detail: suspicious.join(', '),
+    })
+  }
+
+  // The index starts later than the daily series on this machine, so every
+  // index-backed sheet (model, project, session) covers fewer days than the
+  // headline. Stated here as a measurement gap, not as a mismatch to fix.
+  const gap = buildIndexGap(stats)
+  if (gap) {
+    items.push({
+      id: 'indexGap',
+      level: 'info',
+      title: t('settings.activity.diag.indexGapTitle', { days: gap.days }),
+      detail: t('settings.activity.indexGap', {
+        start: gap.start,
+        days: gap.days,
+      }),
     })
   }
 
@@ -1352,6 +1405,11 @@ export function ActivitySettings() {
   }, [modelUsageWindow])
   const windowPromptTokens = windowTotals.input + windowTotals.cacheRead + windowTotals.cacheWrite
   const unpricedInWindow = modelUsageWindow.rows.filter((row) => row.unpriced).length
+  const indexGap = useMemo(() => buildIndexGap(stats), [stats])
+  const windowTokenTotal = useMemo(
+    () => sumDailyTokensInWindow(stats, rangeCutoff, selectedModels),
+    [rangeCutoff, selectedModels, stats],
+  )
   const metrics: SummaryMetric[] = [
     {
       label: t('settings.activity.totalTokens'),
@@ -1754,6 +1812,15 @@ export function ActivitySettings() {
         </div>
       )}
 
+      {indexGap && !isLoading && (activeView === 'models' || activeView === 'projects') && (
+        // The model, project and session numbers come from the index, which
+        // starts later than the daily series. Without this the sheet looks like
+        // it contradicts the headline by 22亿.
+        <div className="mt-3 rounded-[var(--radius-md)] bg-[var(--color-surface-container)] px-3 py-2 text-xs text-[var(--color-text-tertiary)]">
+          {t('settings.activity.indexGap', { start: formatShortDate(indexGap.start, locale), days: indexGap.days })}
+        </div>
+      )}
+
       {activeView === 'overview' && !isLoading && !error && hasUsage && (
         // Plain anchors, so jumping needs no scroll JS. The long overview is the
         // only view where hunting for a block is a real cost.
@@ -1778,8 +1845,15 @@ export function ActivitySettings() {
           {[
             {
               label: t('settings.activity.totalTokens'),
-              value: isLoading ? '—' : formatTokens(stats?.dailyModelUsage ? windowTotals.total : trendTotalTokens),
-              detail: rangeOptions.find((item) => item.range === range)?.label,
+              // The full per-day series, not the index fold: the index only holds
+              // part of the history and folding it under-reported all-time by 42%.
+              value: isLoading ? '—' : formatTokens(windowTokenTotal || trendTotalTokens),
+              detail: [
+                rangeOptions.find((item) => item.range === range)?.label,
+                indexGap && range === 'all'
+                  ? t('settings.activity.indexGap', { start: formatShortDate(indexGap.start, locale), days: indexGap.days })
+                  : null,
+              ].filter(Boolean).join(' · '),
             },
             {
               ...costCard,

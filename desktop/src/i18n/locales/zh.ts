@@ -1293,6 +1293,8 @@ export const zh: Record<TranslationKey, string> = {
   'settings.activity.overview.chart': '图表',
   'settings.activity.overview.table': '表格',
   'settings.activity.date': '日期',
+  'settings.activity.indexGap': '模型、项目、会话三个榜和四维趋势来自本地索引，索引自 {start} 起，之前 {days} 天不在其中。',
+  'settings.activity.diag.indexGapTitle': '本地索引覆盖天数少于每日明细（缺 {days} 天）',
   'settings.activity.showMore': '再显示 {count} 条',
   'settings.activity.autoRefresh': '自动刷新',
   'settings.activity.autoRefreshOn': '自动刷新中',
