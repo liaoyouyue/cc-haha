@@ -237,10 +237,15 @@ function formatShortDate(dateKey: string, locale: Locale) {
   })
 }
 
-export function formatTokens(tokens: number) {
-  if (tokens >= 1e8) return `${(tokens / 1e8).toFixed(2)}亿`
-  if (tokens >= 1e4) return `${Math.round(tokens / 1e4)}万`
-  return `${tokens}`
+// Private fork: Chinese units instead of the shared lib's k/M/B. Upstream
+// folded this page's second formatter into lib/formatTokenCount (#1465); the
+// fork keeps its own so the activity page reads 万 / 亿 while the shared lib
+// stays on upstream's notation for the chat and trace surfaces.
+export function formatTokens(tokens?: number) {
+  if (typeof tokens !== 'number' || !Number.isFinite(tokens) || tokens < 0) return '--'
+  if (tokens < 1e4) return String(Math.round(tokens))
+  if (tokens < 1e8) return `${Math.round(tokens / 1e4)}万`
+  return `${(tokens / 1e8).toFixed(2)}亿`
 }
 
 function formatInteger(value: number, locale: Locale) {

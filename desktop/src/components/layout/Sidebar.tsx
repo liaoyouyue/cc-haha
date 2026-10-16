@@ -53,12 +53,14 @@ import {
   hasSidebarProjectPreferences,
   normalizeSidebarProjectPreferences,
   readCachedSidebarProjectPreferences,
+  readStoredProjectCollapsed,
   readStoredProjectHidden,
   readStoredProjectOrder,
   readStoredProjectOrganization,
   readStoredProjectPins,
   readStoredProjectSortBy,
   writeCachedSidebarProjectPreferences,
+  writeStoredProjectCollapsed,
   type SidebarProjectOrganization,
   type SidebarProjectSortBy,
 } from './sidebarProjectPreferenceStorage'
@@ -178,7 +180,7 @@ export function Sidebar({
   const [renameValue, setRenameValue] = useState('')
   const [lastSelectedSessionId, setLastSelectedSessionId] = useState<string | null>(null)
   const [expandedProjectKeys, setExpandedProjectKeys] = useState<Set<string>>(new Set())
-  const [collapsedProjectKeys, setCollapsedProjectKeys] = useState<Set<string>>(new Set())
+  const [collapsedProjectKeys, setCollapsedProjectKeys] = useState<Set<string>>(() => readStoredProjectCollapsed())
   const [projectOrder, setProjectOrder] = useState<string[]>(() => readStoredProjectOrder())
   const [pinnedProjectKeys, setPinnedProjectKeys] = useState<Set<string>>(() => readStoredProjectPins())
   const [hiddenProjectKeys, setHiddenProjectKeys] = useState<Set<string>>(() => readStoredProjectHidden())
@@ -509,6 +511,23 @@ export function Sidebar({
       })
     }
   }, [addToast, restoreHiddenProjectForWorkDir, t])
+
+  // "New session" and its Cmd+N shortcut: a session in the project of the
+  // chat on screen.
+  const createSessionInCurrentProject = useCallback(() => {
+    const currentTabId = useTabStore.getState().activeTabId
+    const currentSession = currentTabId
+      ? useSessionStore.getState().sessions.find((s) => s.id === currentTabId)
+      : null
+    void createSessionForWorkDir(getSessionSeedWorkDir(currentSession))
+  }, [createSessionForWorkDir])
+  const newSessionRequest = useUIStore((s) => s.newSessionRequest)
+  const handledNewSessionRequest = useRef(newSessionRequest)
+  useEffect(() => {
+    if (newSessionRequest === handledNewSessionRequest.current) return
+    handledNewSessionRequest.current = newSessionRequest
+    createSessionInCurrentProject()
+  }, [createSessionInCurrentProject, newSessionRequest])
 
   const openProjectHeaderMenu = useCallback((event: React.MouseEvent, type: SidebarHeaderMenuType) => {
     event.stopPropagation()
@@ -906,6 +925,7 @@ export function Sidebar({
       } else {
         next.add(projectKey)
       }
+      writeStoredProjectCollapsed(next)
       return next
     })
   }, [])
@@ -1045,13 +1065,7 @@ export function Sidebar({
           active={false}
           collapsed={!expanded}
           label={t('sidebar.newSession')}
-          onClick={() => {
-            const currentTabId = useTabStore.getState().activeTabId
-            const currentSession = currentTabId
-              ? useSessionStore.getState().sessions.find((s) => s.id === currentTabId)
-              : null
-            void createSessionForWorkDir(getSessionSeedWorkDir(currentSession))
-          }}
+          onClick={createSessionInCurrentProject}
           icon={<Plus size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />}
           shortcut={`${MOD_KEY}N`}
         >

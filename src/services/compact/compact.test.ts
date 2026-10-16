@@ -1,6 +1,17 @@
-import { describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
 
-import { buildPostCompactMessages, stripImagesFromMessages, truncateHeadForPTLRetry, type CompactionResult } from './compact.js'
+import {
+  buildPostCompactMessages,
+  createCompactApiAttemptBudget,
+  getCompactForkMaxOutputTokens,
+  streamCompactSummary,
+  stripImagesFromMessages,
+  truncateHeadForPTLRetry,
+  type CompactionResult,
+} from './compact.js'
+import * as forkedAgent from '../../utils/forkedAgent.js'
+import { COMPACT_MAX_OUTPUT_TOKENS } from '../../utils/context.js'
+import { createAssistantMessage, createUserMessage } from '../../utils/messages.js'
 import { getCurrentUsage } from '../../utils/tokens.js'
 import type { AssistantMessage, Message } from '../../types/message.js'
 
@@ -238,5 +249,95 @@ describe('stripImagesFromMessages', () => {
 
     expect(result[0]).toBe(plain)
     expect(result[1]).toBe(assistant)
+  })
+})
+
+describe('compaction fork output allowance near the context window', () => {
+  const ENV_KEYS = ['CLAUDE_CODE_MAX_OUTPUT_TOKENS', 'CLAUDE_CODE_MODEL_CONTEXT_WINDOWS'] as const
+  const saved: Record<string, string | undefined> = {}
+  beforeEach(() => {
+    for (const key of ENV_KEYS) {
+      saved[key] = process.env[key]
+      delete process.env[key]
+    }
+  })
+  afterEach(() => {
+    for (const key of ENV_KEYS) {
+      if (saved[key] === undefined) delete process.env[key]
+      else process.env[key] = saved[key]
+    }
+  })
+
+  // claude-opus-4-8: 1M window, 64K default output allowance.
+  test('leaves the fork identical to the main thread while the default allowance fits', () => {
+    expect(getCompactForkMaxOutputTokens(900_000, 'claude-opus-4-8')).toBeUndefined()
+    // 930K + 5K overhead + 64K = exactly the window.
+    expect(getCompactForkMaxOutputTokens(931_000, 'claude-opus-4-8')).toBeUndefined()
+  })
+
+  test('caps the fork to the 20K summary reserve once the default allowance would not fit', () => {
+    // The auto-compact threshold for a 1M window is 967K.
+    expect(getCompactForkMaxOutputTokens(967_000, 'claude-opus-4-8')).toBe(COMPACT_MAX_OUTPUT_TOKENS)
+    expect(getCompactForkMaxOutputTokens(931_001, 'claude-opus-4-8')).toBe(COMPACT_MAX_OUTPUT_TOKENS)
+  })
+
+  test('follows the configured window, so a 200K model is capped at its own threshold', () => {
+    // claude-sonnet-4-6: 200K window, 32K default; its threshold is 167K.
+    expect(getCompactForkMaxOutputTokens(120_000, 'claude-sonnet-4-6')).toBeUndefined()
+    expect(getCompactForkMaxOutputTokens(167_000, 'claude-sonnet-4-6')).toBe(COMPACT_MAX_OUTPUT_TOKENS)
+    process.env.CLAUDE_CODE_MODEL_CONTEXT_WINDOWS = JSON.stringify({ 'claude-opus-4-8': 500_000 })
+    expect(getCompactForkMaxOutputTokens(450_000, 'claude-opus-4-8')).toBe(COMPACT_MAX_OUTPUT_TOKENS)
+  })
+
+  test('does not touch a fork whose allowance is already within the summary reserve', () => {
+    process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = '8000'
+    expect(getCompactForkMaxOutputTokens(990_000, 'claude-opus-4-8')).toBeUndefined()
+  })
+
+  describe('as sent by the cache-sharing fork', () => {
+    let forkSpy: ReturnType<typeof spyOn>
+    let captured: forkedAgent.ForkedAgentParams | undefined
+    beforeEach(() => {
+      captured = undefined
+      forkSpy = spyOn(forkedAgent, 'runForkedAgent').mockImplementation(async params => {
+        captured = params
+        return {
+          messages: [createAssistantMessage({ content: '<summary>ok</summary>' })],
+          totalUsage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        } as never
+      })
+    })
+    afterEach(() => forkSpy.mockRestore())
+
+    async function summarize(preCompactTokenCount: number) {
+      const abortController = new AbortController()
+      const context = {
+        abortController,
+        options: { mainLoopModel: 'claude-opus-4-8' },
+        setResponseLength: () => {},
+        setSDKStatus: () => {},
+      }
+      return streamCompactSummary({
+        messages: [],
+        summaryRequest: createUserMessage({ content: 'summarize' }),
+        appState: {} as never,
+        context: context as never,
+        preCompactTokenCount,
+        cacheSafeParams: { systemPrompt: ['s'], userContext: {}, systemContext: {}, toolUseContext: context, forkContextMessages: [] } as never,
+        apiAttemptBudget: createCompactApiAttemptBudget(),
+      })
+    }
+
+    test('keeps the main thread allowance with room to spare, preserving the cache key', async () => {
+      await summarize(600_000)
+      expect(captured).toBeDefined()
+      expect(captured?.maxOutputTokens).toBeUndefined()
+      expect(captured?.querySource).toBe('compact')
+    })
+
+    test('requests only the summary reserve at the threshold instead of a size-rejected default', async () => {
+      await summarize(967_000)
+      expect(captured?.maxOutputTokens).toBe(COMPACT_MAX_OUTPUT_TOKENS)
+    })
   })
 })

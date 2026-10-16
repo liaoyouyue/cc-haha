@@ -9,7 +9,7 @@ const sessionTranscriptModule = feature('KAIROS')
 
 import { APIUserAbortError } from '@anthropic-ai/sdk'
 import { markPostCompaction } from 'src/bootstrap/state.js'
-import { getInvokedSkillsForAgent } from '../../bootstrap/state.js'
+import { getInvokedSkillsForAgent, getSdkBetas } from '../../bootstrap/state.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { Tool, ToolUseContext } from '../../Tool.js'
@@ -40,7 +40,10 @@ import {
   getMcpInstructionsDeltaAttachment,
 } from '../../utils/attachments.js'
 import { getMemoryPath } from '../../utils/config.js'
-import { COMPACT_MAX_OUTPUT_TOKENS } from '../../utils/context.js'
+import {
+  COMPACT_MAX_OUTPUT_TOKENS,
+  getContextWindowForModel,
+} from '../../utils/context.js'
 import {
   analyzeContext,
   tokenStatsToStatsigMetrics,
@@ -151,6 +154,37 @@ export function createCompactApiAttemptBudget(): ApiAttemptBudget {
   return {
     remaining: (Number.isFinite(retries) && retries >= 0 ? retries : 10) + 1,
   }
+}
+
+// What the summary instruction and its framing add on top of the conversation.
+const COMPACT_REQUEST_OVERHEAD_TOKENS = 5_000
+
+/**
+ * The cache-sharing fork inherits the main thread's max_tokens (32K/64K/128K by
+ * model) so the thinking config, and with it the prompt cache key, stays
+ * identical. The auto-compact threshold only leaves room for a 20K summary, so a
+ * conversation near the window plus that default allowance can be rejected by
+ * the provider; the failed attempt is then retried on the streaming fallback,
+ * which has its own system prompt and re-sends the whole context uncached.
+ *
+ * Returns the cap to apply to the fork only when the default allowance would not
+ * fit; otherwise undefined, leaving the request identical to the main thread's.
+ */
+export function getCompactForkMaxOutputTokens(
+  preCompactTokenCount: number,
+  model: string,
+): number | undefined {
+  const defaultMaxTokens = getMaxOutputTokensForModel(model)
+  if (defaultMaxTokens <= COMPACT_MAX_OUTPUT_TOKENS) {
+    return undefined
+  }
+  const contextWindow = getContextWindowForModel(model, getSdkBetas())
+  const fits =
+    preCompactTokenCount +
+      COMPACT_REQUEST_OVERHEAD_TOKENS +
+      defaultMaxTokens <=
+    contextWindow
+  return fits ? undefined : COMPACT_MAX_OUTPUT_TOKENS
 }
 
 /** Minimum gap between live 'compacting' progress statuses. */
@@ -1192,7 +1226,7 @@ export function createCompactProgressReporter(
   }
 }
 
-async function streamCompactSummary({
+export async function streamCompactSummary({
   messages,
   summaryRequest,
   appState,
@@ -1240,19 +1274,24 @@ async function streamCompactSummary({
   try {
     if (promptCacheSharingEnabled) {
       try {
-        // DO NOT set maxOutputTokens here. The fork piggybacks on the main thread's
-        // prompt cache by sending identical cache-key params (system, tools, model,
-        // messages prefix, thinking config). Setting maxOutputTokens would clamp
-        // budget_tokens via Math.min(budget, maxOutputTokens-1) in claude.ts,
-        // creating a thinking config mismatch that invalidates the cache.
-        // The streaming fallback path (below) can safely set maxOutputTokensOverride
-        // since it doesn't share cache with the main thread.
+        // Leave maxOutputTokens unset unless the default allowance cannot fit.
+        // The fork piggybacks on the main thread's prompt cache by sending
+        // identical cache-key params (system, tools, model, messages prefix,
+        // thinking config), and setting maxOutputTokens would clamp budget_tokens
+        // via Math.min(budget, maxOutputTokens-1) in claude.ts, creating a
+        // thinking config mismatch that invalidates the cache. When the request
+        // would be rejected for size, a clamped fork still beats the fallback,
+        // which re-sends the whole context uncached under its own system prompt.
         const result = await runForkedAgent({
           promptMessages: [summaryRequest],
           cacheSafeParams,
           canUseTool: createCompactCanUseTool(),
           querySource: 'compact',
           forkLabel: 'compact',
+          maxOutputTokens: getCompactForkMaxOutputTokens(
+            preCompactTokenCount,
+            context.options.mainLoopModel,
+          ),
           maxTurns: 1,
           skipCacheWrite: true,
           onStreamEvent: reportProgress,
