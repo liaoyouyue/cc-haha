@@ -51,6 +51,13 @@ TOOLS = [
                         "同时给出 changed，表示相比上一次读取界面有没有变化"
                     ),
                 },
+                "accurate": {
+                    "type": "boolean",
+                    "description": (
+                        "默认用 Windows 自带 OCR（约 0.4 秒，中文偶尔认错字）；"
+                        "要更准的文字时置 true，改用 RapidOCR（约 4 秒）"
+                    ),
+                },
             },
             "additionalProperties": False,
         },
@@ -65,6 +72,26 @@ TOOLS = [
                 "target": {"type": "string", "description": "窗口标题的一部分；省略则用前台窗口"},
             },
             "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "eye_wait",
+        "description": (
+            "轮询窗口内容，直到 until_text 出现（子串匹配，不区分大小写）或超时。"
+            "用于等界面反应（如按钮变可用、提示弹出）。"
+            "timeout_seconds 默认 10，上限 60；poll_seconds 默认 0.5，上限 5。"
+            "返回 matched / waited_ms / text。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "窗口标题的一部分；省略则用前台窗口"},
+                "until_text": {"type": "string", "description": "要等的文字"},
+                "timeout_seconds": {"type": "number", "default": 10, "description": "超时秒数"},
+                "poll_seconds": {"type": "number", "default": 0.5, "description": "轮询间隔秒数"},
+            },
+            "required": ["until_text"],
             "additionalProperties": False,
         },
     },
@@ -100,7 +127,10 @@ def call_tool(name, args):
     if name == "eye_windows":
         return wrap("可见窗口：", worker.list_windows())
     if name == "eye_see":
-        sight = worker.see(resolve_target(args.get("target")), args.get("region"), 0, bool(args.get("mark")))
+        sight = worker.see(
+            resolve_target(args.get("target")), args.get("region"), 0,
+            bool(args.get("mark")), bool(args.get("accurate")),
+        )
         sight["lines"] = sight["lines"][:MAX_LINES]
         png = sight.pop("image_png_base64", None)
         content = wrap("窗口内容与坐标：", sight)["content"]
@@ -108,8 +138,20 @@ def call_tool(name, args):
             content.append({"type": "image", "data": png, "mimeType": "image/png"})
         return {"content": content}
     if name == "eye_find":
-        found = worker.find(resolve_target(args.get("target")), args.get("query"), None, 0)
+        found = worker.find(
+            resolve_target(args.get("target")), args.get("query"), None, 0,
+            bool(args.get("accurate")),
+        )
         return wrap("定位结果：", found)
+    if name == "eye_wait":
+        result = worker.wait_for_text(
+            resolve_target(args.get("target")),
+            args.get("region"),
+            args.get("until_text") or "",
+            min(60.0, max(0.0, float(args.get("timeout_seconds") or 10))),
+            min(5.0, max(0.1, float(args.get("poll_seconds") or 0.5))),
+        )
+        return wrap("等待结果：", result)
     raise RuntimeError(f"未知工具：{name}")
 
 

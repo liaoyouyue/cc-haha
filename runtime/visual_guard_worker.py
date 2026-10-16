@@ -1,4 +1,5 @@
 import ctypes
+import hashlib
 import json
 import os
 import queue
@@ -19,6 +20,21 @@ try:
     import uiautomation
 except Exception:  # the Python fallback may not have it; OCR still works
     uiautomation = None
+
+try:  # Windows' own OCR engine, reached through WinRT
+    import winsdk.windows.graphics.imaging as _win_imaging
+    import winsdk.windows.storage.streams as _win_streams
+
+    class _WinSdk:
+        InMemoryRandomAccessStream = _win_streams.InMemoryRandomAccessStream
+        DataWriter = _win_streams.DataWriter
+        BitmapDecoder = _win_imaging.BitmapDecoder
+
+    winsdk = _WinSdk()
+except Exception:
+    winsdk = None
+
+_win_engine = None
 
 # A frozen (PyInstaller) build inherits the OEM code page for stdio even when
 # PYTHONUTF8/PYTHONIOENCODING are set, which mangles Chinese window titles on
@@ -99,6 +115,8 @@ ocr_engine = None
 # Last marked read per (window, region), so a caller can ask whether the
 # interface reacted instead of diffing two full dumps itself.
 snapshots = {}
+# Last OCR result per (window, region), keyed by a hash of the captured frame.
+ocr_cache = {}
 
 
 def encode_png(image):
@@ -314,8 +332,35 @@ CLICKABLE_ROLES = {
 }
 
 
+def control_state(control):
+    """读 UIA 的 enabled / offscreen / value，失败时安全回退，不打断整棵树遍历。"""
+    state = {}
+    try:
+        state["enabled"] = bool(control.IsEnabled)
+    except Exception:
+        state["enabled"] = True
+    try:
+        state["offscreen"] = bool(control.IsOffscreen)
+    except Exception:
+        state["offscreen"] = False
+    try:
+        pattern = control.GetValuePattern()
+    except Exception:
+        pattern = None
+    if pattern is not None:
+        try:
+            value = (pattern.Value or "").strip()
+        except Exception:
+            value = ""
+        if value:
+            state["value"] = value[:200]
+    return state
+
+
 def read_controls(hwnd, budget=400):
-    """The window's control tree: role, accessible name, screen rectangle.
+    """The window's control tree: role, accessible name, screen rectangle, plus
+    enabled / offscreen / value so a caller can tell a disabled button from an
+    active one without guessing from pixels.
 
     This is the authoritative read when an app exposes one — it names controls
     that carry no visible text and says which of them can be acted on. Some
@@ -351,6 +396,7 @@ def read_controls(hwnd, budget=400):
                         "center": [int((rect.left + rect.right) / 2), int((rect.top + rect.bottom) / 2)],
                         "source": "uia",
                         "depth": depth,
+                        **control_state(child),
                     })
             walk(child, depth + 1)
 
@@ -362,36 +408,129 @@ def read_controls(hwnd, budget=400):
     return rows
 
 
-def read_text(hwnd, region, wait_seconds):
+def join_words(words):
+    """Windows OCR returns one word per CJK character and joins them with
+    spaces, so '报价' arrives as '报 价' and a substring search would miss it."""
+    text = ""
+    for word in words:
+        if text and not (text[-1].isascii() and word[:1].isascii()):
+            text += word          # CJK run: no separator
+        elif text:
+            text += " " + word    # latin run: keep word boundaries
+        else:
+            text = word
+    return text.strip()
+
+
+def win_ocr_engine():
+    """The engine built into Windows, created once per process."""
+    global _win_engine
+    if _win_engine is False:
+        return None
+    if _win_engine is None:
+        try:
+            from winsdk.windows.globalization import Language
+            from winsdk.windows.media.ocr import OcrEngine
+
+            _win_engine = (
+                OcrEngine.try_create_from_language(Language("zh-Hans-CN"))
+                or OcrEngine.try_create_from_user_profile_languages()
+                or False
+            )
+        except Exception:
+            _win_engine = False
+    return _win_engine or None
+
+
+def ocr_fast(image):
+    """Windows OCR: ~0.15 s and no model to load, but it reads Chinese slightly
+    worse than RapidOCR (询问 → 词问). That trade is why the caller gets a
+    choice; None here means "fall back"."""
+    engine = win_ocr_engine()
+    if engine is None or winsdk is None:
+        return None
+    try:
+        import asyncio
+        import io
+
+        async def run():
+            stream = winsdk.InMemoryRandomAccessStream()
+            writer = winsdk.DataWriter(stream)
+            buffer = io.BytesIO()
+            image.save(buffer, format="PNG")
+            writer.write_bytes(buffer.getvalue())
+            await writer.store_async()
+            await writer.flush_async()
+            stream.seek(0)
+            decoder = await winsdk.BitmapDecoder.create_async(stream)
+            bitmap = await decoder.get_software_bitmap_async()
+            return await engine.recognize_async(bitmap)
+
+        result = asyncio.new_event_loop().run_until_complete(run())
+    except Exception:
+        return None
+    if result is None:
+        return None
+    rows = []
+    for line in result.lines:
+        words = list(line.words)
+        if not words:
+            continue
+        left = int(min(w.bounding_rect.x for w in words))
+        top = int(min(w.bounding_rect.y for w in words))
+        right = int(max(w.bounding_rect.x + w.bounding_rect.width for w in words))
+        bottom = int(max(w.bounding_rect.y + w.bounding_rect.height for w in words))
+        rows.append(([left, top, right - left, bottom - top], join_words([w.text for w in words]), 0.9))
+    return rows or None
+
+
+def read_text(hwnd, region, wait_seconds, accurate=False):
     """OCR pass: positioned text for apps that expose no control tree, and for
-    text drawn inside a single control the tree cannot break apart."""
+    text drawn inside a single control the tree cannot break apart.
+
+    Default is the fast system engine; accurate=True pays ~3 s for RapidOCR,
+    which reads Chinese more reliably."""
     global ocr_engine
-    if ocr_engine is None:
-        ocr_engine = RapidOCR()
     origin_left, origin_top, _, _ = capture_rect(hwnd, region)
     image = capture_when_ready(hwnd, region, wait_seconds)
-    result, _ = ocr_engine(np.asarray(image))
+    # OCR is the expensive half; a window that has not repainted cannot have
+    # new text. Comparing the frame first makes repeat reads nearly free.
+    digest = hashlib.sha1(image.tobytes()).hexdigest()
+    cache_key = (hwnd, tuple(region) if region else None, accurate)
+    cached = ocr_cache.get(cache_key)
+    if cached and cached[0] == digest:
+        return image, [dict(line) for line in cached[1]]
+
+    rows = None
+    if not accurate:
+        rows = ocr_fast(image)
+    if rows is None:
+        if ocr_engine is None:
+            ocr_engine = RapidOCR()
+        result, _ = ocr_engine(np.asarray(image))
+        rows = []
+        for box, text, score in result or []:
+            text = text.strip()
+            if score >= 0.45 and text:
+                xs = [point[0] for point in box]
+                ys = [point[1] for point in box]
+                rows.append(([min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys)], text, float(score)))
+
     lines = []
-    for box, text, score in result or []:
-        text = text.strip()
-        if score < 0.45 or not text:
-            continue
-        xs = [point[0] for point in box]
-        ys = [point[1] for point in box]
+    for box, text, score in rows:
+        bx, by, bw, bh = (int(v) for v in box)
         lines.append({
             "text": text,
             "score": round(float(score), 3),
-            "box": [
-                int(origin_left + min(xs)), int(origin_top + min(ys)),
-                int(max(xs) - min(xs)), int(max(ys) - min(ys)),
-            ],
-            "center": [int(origin_left + sum(xs) / len(xs)), int(origin_top + sum(ys) / len(ys))],
+            "box": [origin_left + bx, origin_top + by, bw, bh],
+            "center": [origin_left + bx + bw // 2, origin_top + by + bh // 2],
             "source": "ocr",
-            "_top": min(ys),
+            "_top": by,
         })
     lines.sort(key=lambda item: (item["_top"], item["box"][0]))
     for item in lines:
         item.pop("_top")
+    ocr_cache[cache_key] = (digest, [dict(line) for line in lines])
     return image, lines
 
 
@@ -415,7 +554,7 @@ def annotate(image, items):
     return marked
 
 
-def see(hwnd, region=None, wait_seconds=0, mark=False):
+def see(hwnd, region=None, wait_seconds=0, mark=False, accurate=False):
     """Read the window as positioned text, in screen coordinates.
 
     Two independent reads, returned side by side rather than merged: the
@@ -427,7 +566,7 @@ def see(hwnd, region=None, wait_seconds=0, mark=False):
     that can look at a picture can name a target instead of doing arithmetic.
     """
     elements = read_controls(hwnd)
-    image, lines = read_text(hwnd, region, wait_seconds)
+    image, lines = read_text(hwnd, region, wait_seconds, accurate)
     readable = [item["name"] for item in elements if item["name"]]
     result = {
         "window": window_info(hwnd),
@@ -452,26 +591,62 @@ def see(hwnd, region=None, wait_seconds=0, mark=False):
     return result
 
 
-def find(hwnd, query, region=None, wait_seconds=0):
+def find(hwnd, query, region=None, wait_seconds=0, accurate=False):
     """Locate something on screen and return where to act on it.
 
-    Control names are searched first: a match there is an actionable element
-    with an exact rectangle, which beats a text box the OCR happened to
-    recognize."""
+    Control names are searched first, and when one matches the OCR pass is
+    skipped entirely: the control tree already gave an exact rectangle, and
+    OCR is the expensive half. Text that no control carries still needs it.
+    """
     query = (query or "").strip()
     if not query:
         raise RuntimeError("请提供要查找的文字")
-    seen = see(hwnd, region, wait_seconds)
     needle = query.casefold()
-    controls = [item for item in seen["elements"] if needle in item["name"].casefold()]
-    lines = [item for item in seen["lines"] if needle in item["text"].casefold()]
+    controls = read_controls(hwnd)
+    matched = [item for item in controls if needle in item["name"].casefold()]
+    if matched:
+        return {
+            "query": query,
+            "window": window_info(hwnd),
+            "elements": matched,
+            "lines": [],
+            "best": matched[0],
+            "skipped_ocr": True,
+        }
+    _, lines = read_text(hwnd, region, wait_seconds, accurate)
+    text_hits = [line for line in lines if needle in squash(line["text"])]
     return {
         "query": query,
-        "window": seen["window"],
-        "elements": controls,
-        "lines": lines,
-        "best": controls[0] if controls else (lines[0] if lines else None),
+        "window": window_info(hwnd),
+        "elements": [],
+        "lines": text_hits,
+        "best": text_hits[0] if text_hits else None,
+        "skipped_ocr": False,
     }
+
+
+def squash(text):
+    """Compare text ignoring spaces: the fast engine separates every CJK
+    character, so '报价' arrives as '报 价' and would never match otherwise."""
+    return text.replace(" ", "").casefold()
+
+
+def wait_for_text(hwnd, region, until_text, timeout_seconds, poll_seconds):
+    """轮询 see()，直到 until_text 出现在窗口文字里（子串匹配，不区分大小写）
+    或达到硬上限。返回 matched / waited_ms / text，不会让调用方无限等待。"""
+    needle = squash(until_text or "")
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+    start = time.monotonic()
+    while True:
+        result = see(hwnd, region, 0, False)
+        text = result.get("text", "")
+        waited = int((time.monotonic() - start) * 1000)
+        if needle and needle in squash(text):
+            return {"matched": True, "waited_ms": waited, "text": text}
+        if time.monotonic() >= deadline:
+            return {"matched": False, "waited_ms": waited, "text": text}
+        if watch_stop.wait(float(poll_seconds)):
+            raise CaptureBlocked("已取消等待。")
 
 
 def select_region(hwnd):
@@ -539,11 +714,24 @@ def handle(command):
     if action == "windows":
         return list_windows()
     if action == "see":
-        return see(int(args["hwnd"]), args.get("region"), wait, bool(args.get("mark")))
+        return see(
+            int(args["hwnd"]), args.get("region"), wait,
+            bool(args.get("mark")), bool(args.get("accurate")),
+        )
     if action == "find":
-        return find(int(args["hwnd"]), args.get("query"), args.get("region"), wait)
+        return find(
+            int(args["hwnd"]), args.get("query"), args.get("region"), wait,
+            bool(args.get("accurate")),
+        )
     if action == "select_region":
         return {"region": select_region(int(args["hwnd"]))}
+    if action == "wait":
+        timeout = min(60.0, max(0.0, float(args.get("timeout_seconds") or 10)))
+        poll = min(5.0, max(0.1, float(args.get("poll_seconds") or 0.5)))
+        return wait_for_text(
+            int(args["hwnd"]), args.get("region"), args.get("until_text") or "",
+            timeout, poll,
+        )
     if action == "shutdown":
         watch_stop.set()
         return {"state": "shutdown"}
@@ -577,6 +765,19 @@ def selftest():
     print("PASS: foreground window is capturable")
     print("PASS: closed / cloaked / hidden / minimized / background / occluded are all refused")
     print("PASS: a covered window is still readable when it renders itself")
+
+    # Element state fields: shape only, no live UIA needed.
+    sample = control_state(type("C", (), {"IsEnabled": True, "IsOffscreen": False,
+                                          "GetValuePattern": lambda self: None})())
+    assert set(sample) == {"enabled", "offscreen"}, sample
+    assert sample["enabled"] is True and sample["offscreen"] is False
+    sample = control_state(type("C", (), {"IsEnabled": False, "IsOffscreen": True,
+                                          "GetValuePattern": lambda self: None})())
+    assert sample["enabled"] is False and sample["offscreen"] is True
+    print("PASS: control_state emits enabled/offscreen, omits value when absent")
+    # 只读：不提供任何点击/输入动作
+    assert "click_at" not in globals() and "scroll_at" not in globals()
+    print("PASS: read-only — no click or scroll action exists")
     return 0
 
 
