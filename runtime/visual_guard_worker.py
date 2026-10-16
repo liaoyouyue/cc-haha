@@ -533,19 +533,25 @@ def selftest():
     return 0
 
 
-if "--selftest" in sys.argv:
-    raise SystemExit(selftest())
+def main():
+    for raw in sys.stdin:
+        request = None
+        try:
+            request = json.loads(raw)
+            result = handle(request)
+            send({"id": request.get("id"), "ok": True, "result": result})
+            if request.get("action") == "shutdown":
+                break
+        except Exception as error:
+            detail = str(error)
+            if os.environ.get("CC_HAHA_VISUAL_GUARD_DEBUG"):
+                detail += "\n" + traceback.format_exc()
+            send({"id": request.get("id") if request else None, "ok": False, "error": detail})
 
-for raw in sys.stdin:
-    request = None
-    try:
-        request = json.loads(raw)
-        result = handle(request)
-        send({"id": request.get("id"), "ok": True, "result": result})
-        if request.get("action") == "shutdown":
-            break
-    except Exception as error:
-        detail = str(error)
-        if os.environ.get("CC_HAHA_VISUAL_GUARD_DEBUG"):
-            detail += "\n" + traceback.format_exc()
-        send({"id": request.get("id") if request else None, "ok": False, "error": detail})
+
+# Importing this module must not start the worker loop: the MCP server imports
+# it to reuse the reads and speaks a different protocol on the same streams.
+if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        raise SystemExit(selftest())
+    main()
