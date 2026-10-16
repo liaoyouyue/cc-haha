@@ -5,6 +5,7 @@ import path from 'node:path'
 import { createInterface } from 'node:readline'
 import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
 import WORKER_SOURCE from '../../../runtime/visual_guard_worker.py' with { type: 'text' }
+import MCP_SOURCE from '../../../runtime/visual_guard_mcp.py' with { type: 'text' }
 import VISUAL_GUARD_REQUIREMENTS from '../../../runtime/requirements-visual-guard.txt' with { type: 'text' }
 
 export type VisualGuardConfig = {
@@ -18,6 +19,9 @@ type Pending = { resolve: (value: unknown) => void; reject: (error: Error) => vo
 const configRoot = path.join(getClaudeConfigHomeDir(), '.runtime')
 const configPath = path.join(configRoot, 'visual-guard.json')
 const workerPath = path.join(configRoot, 'visual_guard_worker.py')
+// The MCP server imports the worker module from this directory, so both files
+// live here and stay in step with the running build.
+const mcpPath = path.join(configRoot, 'visual_guard_mcp.py')
 const pythonPath = process.env.CC_HAHA_VISUAL_GUARD_PYTHON || path.join(configRoot, 'venv', 'Scripts', 'python.exe')
 // Built with PyInstaller --onedir next to the server executable: a onefile
 // build re-unpacks to %TEMP% on every start (~10s) and runs as a bootloader
@@ -68,6 +72,7 @@ export class VisualGuardService {
 
   async init(): Promise<void> {
     await mkdir(configRoot, { recursive: true })
+    await writeFile(mcpPath, MCP_SOURCE, 'utf8')
     try {
       this.config = JSON.parse(await readFile(configPath, 'utf8')) as VisualGuardConfig
     } catch {}
