@@ -85,6 +85,7 @@ function Main() {
   const [sessions, setSessions] = useState([]);
   const [selected, setSelected] = useState(null);
   const [history, setHistory] = useState([]);
+  const [historyReady, setHistoryReady] = useState(false);
   const [cursor, setCursor] = useState(null);
   const [draft, setDraft] = useState('');
   const [socketState, setSocketState] = useState('未连接');
@@ -205,11 +206,18 @@ function Main() {
           const seen = new Set(prev.map(m => m.id));
           return [...loaded.filter(m => !seen.has(m.id)), ...prev];
         }
-        const pending = prev.filter(m => m.pending && !loaded.some(
-          x => x.role === 'user' && x.text === m.text
-        ));
+        const confirmed = new Set();
+        const pending = prev.filter(m => {
+          if(!m.pending) return false;
+          const match = loaded.find(x => x.role === 'user' && x.text === m.text &&
+            !m.knownUserIds.includes(x.id) && !confirmed.has(x.id));
+          if(!match) return true;
+          confirmed.add(match.id);
+          return false;
+        });
         return [...loaded, ...pending];
       });
+      if(!older) setHistoryReady(true);
       setCursor(payload.page?.nextCursor || null);
     } catch(e) { setError(e.message || '读取消息失败'); }
   }
@@ -217,7 +225,7 @@ function Main() {
   useEffect(() => {
     if(!config || !selected) return;
     let cancelled = false, tries = 0, handshake = null, previousAppState = AppState.currentState;
-    setHistory([]); setCursor(null); setApprovals([]); setStream('');
+    setHistory([]); setHistoryReady(false); setCursor(null); setApprovals([]); setStream('');
     setTurnBusy(false); sendLock.current = true; setDraft('');
     setSocketState('连接中'); loadHistory(selected);
     function clearConn() {
@@ -309,10 +317,11 @@ function Main() {
   }
   function send() {
     const content=draft.trim();
-    if(!content || sendLock.current) return;
+    if(!content || !historyReady || sendLock.current) return;
     if(!sendPacket({type:'user_message',content})) return;
     sendLock.current=true; setTurnBusy(true); setDraft('');
-    setHistory(prev => [...prev, {id:'local-'+Date.now(),role:'user',text:content,timestamp:new Date().toISOString(),pending:true}]);
+    const knownUserIds=history.filter(m=>m.role==='user' && !m.pending && m.text===content).map(m=>m.id);
+    setHistory(prev => [...prev, {id:'local-'+Date.now(),role:'user',text:content,timestamp:new Date().toISOString(),pending:true,knownUserIds}]);
   }
   function decision(request, allowed) {
     if(sendPacket({type:'permission_response',requestId:request.requestId,allowed})) {
@@ -398,7 +407,7 @@ function Main() {
       <View style={styles.composer}>
         <TextInput multiline style={styles.composeInput} placeholder="给家里的 CCHH 发送任务" placeholderTextColor={C.muted}
           value={draft} onChangeText={setDraft} />
-        <Btn label={turnBusy?'执行中':'发送'} disabled={turnBusy||!draft.trim()||socketState!=='已连接'} onPress={send} />
+        <Btn label={turnBusy?'执行中':'发送'} disabled={turnBusy||!historyReady||!draft.trim()||socketState!=='已连接'} onPress={send} />
         {turnBusy&& <Btn label="停止" danger outline disabled={socketState!=='已连接'} onPress={()=>sendPacket({type:'stop_generation'})} />}
       </View>
     </KeyboardAvoidingView>

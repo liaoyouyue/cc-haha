@@ -35,7 +35,7 @@ test('foreground recovery replaces the socket, syncs state and never resends a t
     wsRef,reconnectRef,pingRef,sendLock,
     useEffect(callback){cleanup=callback();},
     loadHistory(session){history.push(session.id);},
-    setHistory(){},setCursor(){},setDraft(){},setApprovals(value){approvals=typeof value==='function'?value(approvals):value;},
+    setHistory(){},setHistoryReady(){},setCursor(){},setDraft(){},setApprovals(value){approvals=typeof value==='function'?value(approvals):value;},
     setStream(value){stream=typeof value==='function'?value(stream):value;},
     setTurnBusy(value){turnBusy=value;},setSocketState(value){socketState=value;},setError(){},
     setTimeout(callback,delay){const id=++timerId;timers.set(id,{callback,delay});return id;},
@@ -99,4 +99,25 @@ test('foreground recovery replaces the socket, syncs state and never resends a t
     assert.deepEqual(recovered.sent,['sync_state']);
     assert.ok(sockets.every(s=>!s.sent.includes('user_message')));
   } finally {cleanup?.();}
+});
+
+test('old identical user text does not acknowledge a pending repeat',()=>{
+  const source=readFileSync(new URL('../App.js',import.meta.url),'utf8').replace(/\r\n/g,'\n');
+  const start=source.indexOf('      setHistory(prev => {',source.indexOf('  async function loadHistory('));
+  const end=source.indexOf('\n      });',start)+1;
+  assert.ok(start>=0 && end>start,'history reconciliation must be present');
+  const update=source.slice(start,end+'      });'.length);
+  const previous=[{id:'old-user',role:'user',text:'same'},
+    {id:'local-1',role:'user',text:'same',pending:true,knownUserIds:['old-user']}];
+  const run=(prev,loaded)=>{
+    let result;
+    vm.runInNewContext(update,{older:false,loaded,setHistory(fn){result=fn(prev);}});
+    return Array.from(result,m=>m.id);
+  };
+  const old=[{id:'old-user',role:'user',text:'same'}];
+  assert.deepEqual(run(previous,old),['old-user','local-1']);
+  const accepted=[...old,{id:'new-user',role:'user',text:'same'}];
+  assert.deepEqual(run(previous,accepted),['old-user','new-user']);
+  const twoPending=[...previous,{id:'local-2',role:'user',text:'same',pending:true,knownUserIds:['old-user']}];
+  assert.deepEqual(run(twoPending,accepted),['old-user','new-user','local-2']);
 });
