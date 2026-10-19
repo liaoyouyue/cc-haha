@@ -10,8 +10,11 @@ export function parsePairingText(input) {
   if (!value) throw new Error('请输入电脑生成的一次性配对密钥');
   if (value.startsWith('https://')) {
     const url = new URL(value);
+    // Only CCHH v0.7.4 official /remote#pair=... URLs are accepted.
+    // Never confuse the separate LAN H5 token link with a public pairing code.
+    if (url.pathname !== '/remote' || url.search) throw new Error('请扫描 CCHH 公网配对二维码，不是局域网 H5 二维码');
     const fragment = new URLSearchParams(url.hash.replace(/^#/,''));
-    const secret = fragment.get('pair') || ['pair','secret','pairing','code','token'].map(x => url.searchParams.get(x)).find(Boolean);
+    const secret = fragment.get('pair');
     if (!secret) throw new Error('二维码链接未包含可识别配对参数，请复制一次性密钥');
     return {baseUrl: publicBaseUrl(url.origin), secret};
   }
