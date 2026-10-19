@@ -226,7 +226,7 @@ function Main() {
 
   useEffect(() => {
     if(!config || !selected) return;
-    let cancelled = false, tries = 0, handshake = null, previousAppState = AppState.currentState;
+    let cancelled = false, tries = 0, handshake = null, previousAppState = AppState.currentState, lastSeen = 0;
     setHistory([]); setHistoryReady(false); setCursor(null); setApprovals([]); setStream(''); keepScroll.current=false;
     setTurnBusy(false); sendLock.current = true; setDraft('');
     setSocketState('连接中'); loadHistory(selected);
@@ -250,16 +250,20 @@ function Main() {
       handshake = setTimeout(() => { try { ws.close(); } catch{} }, 15000);
       ws.onopen = () => {
         if(wsRef.current !== ws) return;
-        clearTimeout(handshake); tries=0; setSocketState('同步中');
+        clearTimeout(handshake); tries=0; lastSeen=Date.now(); setSocketState('同步中');
         ws.send(JSON.stringify({type:'sync_state'}));
         pingRef.current = setInterval(() => {
-          if(ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:'ping'}));
+          if(ws.readyState !== WebSocket.OPEN) return;
+          // A half-open socket never fires onclose; probe and replace it.
+          if(Date.now() - lastSeen > 90000) { try { ws.close(); } catch{} return; }
+          ws.send(JSON.stringify({type:'ping'}));
         }, 30000);
         loadHistory(selected);
       };
       ws.onmessage = ev => {
         if(wsRef.current !== ws) return;
         let msg; try { msg=JSON.parse(ev.data); } catch { return; }
+        lastSeen=Date.now();
         if(msg.type === 'content_delta' && typeof msg.text === 'string')
           setStream(prev => prev + msg.text);
         else if(msg.type === 'content_start' && msg.blockType === 'text') setStream('');

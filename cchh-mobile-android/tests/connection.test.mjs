@@ -28,8 +28,9 @@ test('foreground recovery replaces the socket, syncs state and never resends a t
     return {remove(){delete subscriptions.change;}};
   }};
   let cleanup;
+  let now=1_000_000;
   const sandbox={
-    URL,WebSocket:FakeSocket,AppState:appState,
+    URL,WebSocket:FakeSocket,AppState:appState,Date:{now:()=>now},
     config:{mode:'private',baseUrl:'http://127.0.0.1:3456',token:'fixture'},
     selected:{id:'fixture-session',title:'Fixture'},
     wsRef,reconnectRef,pingRef,sendLock,keepScroll:{current:false},
@@ -89,7 +90,14 @@ test('foreground recovery replaces the socket, syncs state and never resends a t
     assert.equal(sendLock.current,false);
     resumed.onmessage({data:JSON.stringify({type:'permission_requests_snapshot',toolRequestIds:[]})});
     assert.equal(approvals.length,0);
-    resumed.close();
+    const tick=[...timers.values()].find(t=>t.delay===30000);
+    tick.callback();
+    assert.ok(resumed.sent.includes('ping'));
+    resumed.onmessage({data:JSON.stringify({type:'pong'})});
+    assert.equal(resumed.readyState,FakeSocket.OPEN);
+    now+=100000;
+    tick.callback();
+    assert.equal(resumed.readyState,3);
     assert.equal(socketState,'正在重连');
     const retry=[...timers.values()].find(t=>t.delay===2000);
     assert.ok(retry);
