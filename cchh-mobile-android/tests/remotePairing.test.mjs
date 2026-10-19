@@ -9,7 +9,7 @@ test('only HTTPS origin is accepted',()=>{
 test('pair secret and QR links parse',()=>{
   const secret='a'.repeat(40);
   assert.equal(parsePairingText(secret).secret,secret);
-  assert.deepEqual(parsePairingText(base+'/?pair='+secret),{baseUrl:base,secret});
+  assert.throws(()=>parsePairingText(base+'/?token='+secret));
   assert.deepEqual(parsePairingText(base+'/remote#pair='+secret),{baseUrl:base,secret});
   assert.throws(()=>parsePairingText('short'));
 });
