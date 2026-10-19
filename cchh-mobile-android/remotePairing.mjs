@@ -10,7 +10,8 @@ export function parsePairingText(input) {
   if (!value) throw new Error('请输入电脑生成的一次性配对密钥');
   if (value.startsWith('https://')) {
     const url = new URL(value);
-    const secret = ['pair','secret','pairing','code','token'].map(x => url.searchParams.get(x)).find(Boolean);
+    const fragment = new URLSearchParams(url.hash.replace(/^#/,''));
+    const secret = fragment.get('pair') || ['pair','secret','pairing','code','token'].map(x => url.searchParams.get(x)).find(Boolean);
     if (!secret) throw new Error('二维码链接未包含可识别配对参数，请复制一次性密钥');
     return {baseUrl: publicBaseUrl(url.origin), secret};
   }
