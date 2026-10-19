@@ -182,9 +182,9 @@ def mode_resume() -> None:
     save(root, "cchh-mobile-resume-ui.xml", "cchh-mobile-resume.png")
 
 
-def mode_chat(base_url: str, token: str) -> None:
+def mode_chat(base_url: str, token: str, info_path: str) -> None:
     try:
-        chat_flow(base_url, token)
+        chat_flow(base_url, token, info_path)
     except BaseException:
         # Keep the failing screen and log for artifact review.
         try:
@@ -196,7 +196,7 @@ def mode_chat(base_url: str, token: str) -> None:
         raise
 
 
-def chat_flow(base_url: str, token: str) -> None:
+def chat_flow(base_url: str, token: str, info_path: str) -> None:
     launch()
     root = wait_for(on_connect_screen, "connection screen")
     inputs = [node for node in root.iter("node") if node.get("class") == "android.widget.EditText"]
@@ -248,9 +248,11 @@ def chat_flow(base_url: str, token: str) -> None:
         'write': {'path': approval_path, 'content': 'approved'},
         'reply': 'APPROVED_E2E',
     }, separators=(',', ':'))
-    type_exact(payload, "approval composer")
-    send = wait_for(lambda value: value if find(value, "发送") is not None else None, "approval send button")
-    tap_node(find(send, "发送"))
+    # adb input cannot type braces/quotes, so the host sends this turn.
+    sender = subprocess.Popen(
+        ['node', 'cchh-mobile-android/tests/sendTurn.mjs', info_path, payload],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
     approve = wait_for(lambda value: value if find(value, "本次批准") is not None else None, "approval prompt", timeout=60)
     tap_node(find(approve, "本次批准"))
     deadline = time.time() + 45
@@ -262,6 +264,8 @@ def chat_flow(base_url: str, token: str) -> None:
         time.sleep(1)
     else:
         raise SystemExit("approved tool did not run on the desktop")
+    if sender.wait(timeout=90) != 0:
+        raise SystemExit("host turn sender failed")
 
     # Real foreground round-trip: leave the app, come back, and confirm the
     # transcript still loads over a freshly authenticated connection.
@@ -286,12 +290,12 @@ def main() -> None:
     elif mode == "resume":
         mode_resume()
     elif mode == "chat":
-        mode_chat(sys.argv[2], sys.argv[3])
+        mode_chat(sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else "cchh-e2e-info.json")
     elif mode == "chat-info":
         import json
         with open(sys.argv[2], encoding="utf-8") as handle:
             info = json.load(handle)
-        mode_chat(f"http://10.0.2.2:{info['port']}", info["token"])
+        mode_chat(f"http://10.0.2.2:{info['port']}", info["token"], sys.argv[2])
     else:
         raise SystemExit(f"unknown mode: {mode}")
 
