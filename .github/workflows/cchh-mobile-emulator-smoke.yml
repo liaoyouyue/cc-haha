@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - feat/cchh-mobile-android-build-20261019
+      - feat/cchh-mobile-community-pairing-20261019
     paths:
       - '.github/workflows/cchh-mobile-emulator-smoke.yml'
   workflow_dispatch:
@@ -63,6 +64,9 @@ jobs:
             timeout 90s adb shell uiautomator dump /data/local/tmp/cchh-mobile-ui.xml
             adb exec-out cat /data/local/tmp/cchh-mobile-ui.xml > cchh-mobile-ui.xml
             grep -q 'CCHH Mobile' cchh-mobile-ui.xml
+            if [[ "$GITHUB_REF_NAME" == "feat/cchh-mobile-community-pairing-20261019" ]]; then
+              grep -q '连接我自己的 CCHH' cchh-mobile-ui.xml
+            fi
             adb shell pidof com.cchh.mobile.client
             # Background and resume through the Android lifecycle, then confirm
             # the same activity still renders instead of crashing or clearing.
