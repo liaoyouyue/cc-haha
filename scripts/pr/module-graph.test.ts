@@ -87,6 +87,21 @@ describe('specifier resolution', () => {
   rmSync(root, { recursive: true, force: true })
 })
 
+describe('standalone Android dependency graph', () => {
+  test('resolves a server fixture import into a top-level .mjs Android module', () => {
+    const root = fixtureRepo({
+      'src/server/__fixtures__/publicAccessSmoke.ts': "import { pair } from '../../../cchh-mobile-android/remotePairing.mjs'",
+      'cchh-mobile-android/remotePairing.mjs': 'export const pair = true',
+      'cchh-mobile-android/privatePairing.mjs': 'export const scan = true',
+    })
+    const graph = buildModuleGraph(root, ['src', 'cchh-mobile-android'])
+    expect(graph.unresolved).toEqual([])
+    expect(dependentsOf(['cchh-mobile-android/remotePairing.mjs'], graph))
+      .toContain('src/server/__fixtures__/publicAccessSmoke.ts')
+    rmSync(root, { recursive: true, force: true })
+  })
+})
+
 describe('reverse dependency closure', () => {
   test('walks transitively, excludes the seeds, and terminates on cycles', () => {
     const root = fixtureRepo({
