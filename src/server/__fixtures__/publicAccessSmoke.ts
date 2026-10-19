@@ -4,6 +4,7 @@ import path from 'node:path'
 import { startServer, stopServerRuntimeForShutdown } from '../index.js'
 import { conversationService } from '../services/conversationService.js'
 import { sessionService } from '../services/sessionService.js'
+import { createPublicPairing, claimPublicPairing, publicSessionActive } from '../../../cchh-mobile-android/remotePairing.mjs'
 
 const origin = 'https://fixture.ngrok-free.app'
 const requestFetch = globalThis.fetch
@@ -28,11 +29,21 @@ try {
   const enabled = await (await control('/enable', { publicUrl: origin })).json()
   let remote = `http://127.0.0.1:${enabled.port}`
   const code = await (await control('/pairing', {})).json()
-  const post = (route: string, body: unknown) => fetch(`${remote}/api/public-access/${route}`, { method: 'POST', headers: { Origin: origin }, body: JSON.stringify(body) })
-  const pending = await (await post('pair', { secret: code.secret, name: 'Smoke phone' })).json()
+  let cookie = ''
+  const mobileFetch = async (url: string, init: RequestInit) => {
+    const target = new URL(url)
+    if (target.origin !== origin) throw new Error('Mobile client requested a foreign origin')
+    const headers = new Headers(init.headers)
+    if (cookie) headers.set('Cookie', cookie)
+    const response = await fetch(`${remote}${target.pathname}`, { ...init, headers, redirect: 'manual' })
+    const issued = response.headers.get('set-cookie')
+    if (issued) cookie = issued.split(';')[0]!
+    return response
+  }
+  const pending = await createPublicPairing(origin, `${origin}/remote#pair=${code.secret}`, 'Smoke phone', mobileFetch)
+  if ((await claimPublicPairing(origin, pending, mobileFetch)).status !== 'pending') throw new Error('Mobile pairing skipped desktop approval')
   await control('/approve', { id: pending.id })
-  const claim = await post('claim', pending)
-  const cookie = claim.headers.get('set-cookie')!.split(';')[0]!
+  if ((await claimPublicPairing(origin, pending, mobileFetch)).status !== 'approved' || !cookie || !await publicSessionActive(origin, mobileFetch)) throw new Error('Mobile pairing did not establish a session')
   for (const route of ['/health', '/api/models', '/api/models/current', '/api/effort', '/api/permissions/mode', '/api/settings/user', '/api/providers/auth-status', '/api/sessions']) {
     const response = await fetch(`${remote}${route}`, { headers: { Origin: origin, Cookie: cookie } })
     const body = await response.text()
@@ -107,6 +118,7 @@ try {
   const revoked = new Promise<void>(resolve => { ws.onclose = () => resolve() })
   await control('/revoke', { id: pending.id })
   await revoked
+  if (await publicSessionActive(origin, mobileFetch)) throw new Error('Revoked mobile session stayed active')
   if ((await fetch(`${remote}/api/sessions`, { headers: { Cookie: cookie } })).status !== 401) throw new Error('Revoked device retained API access')
   await control('/disable', {})
   if ((await (await control('')).json()).enabled !== false) throw new Error('Disable did not clear status')
