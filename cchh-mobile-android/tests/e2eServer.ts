@@ -15,7 +15,7 @@ await writeFile(path.join(configDir, 'settings.json'),
 await writeFile(path.join(configDir, 'cc-haha', 'settings.json'),
   JSON.stringify({ h5Access: { enabled: true, token: TOKEN } }))
 process.env.CLAUDE_CLI_PATH = path.resolve(import.meta.dir, '../../src/server/__tests__/fixtures/mock-sdk-cli.ts')
-process.env.CLAUDE_CODE_EAGER_FLUSH = '1'
+process.env.CCHH_E2E_PERSIST_TURNS = '1'
 
 const h5 = new H5AccessService()
 const enabled = await h5.enable()

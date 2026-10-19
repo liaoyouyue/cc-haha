@@ -616,7 +616,7 @@ ws.addEventListener('message', (event) => {
           event: { type: 'content_block_stop', index: 0 },
           session_id: sessionId,
         })
-        if (process.env.CLAUDE_CODE_EAGER_FLUSH === '1') await appendNormalTurn(text, `Echo: ${text}`)
+        if (process.env.CCHH_E2E_PERSIST_TURNS === '1') await appendNormalTurn(text, `Echo: ${text}`)
         emit(ws, {
           type: 'result',
           subtype: 'success',
