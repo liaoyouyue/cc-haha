@@ -183,6 +183,11 @@ def main() -> None:
         mode_resume()
     elif mode == "chat":
         mode_chat(sys.argv[2], sys.argv[3])
+    elif mode == "chat-info":
+        import json
+        with open(sys.argv[2], encoding="utf-8") as handle:
+            info = json.load(handle)
+        mode_chat(f"http://10.0.2.2:{info['port']}", info["token"])
     else:
         raise SystemExit(f"unknown mode: {mode}")
 

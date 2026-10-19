@@ -87,10 +87,9 @@ jobs:
             grep -q 'CCHH Mobile' cchh-mobile-resume-ui.xml
             # Connect to the isolated host server, send one task over the real
             # WebSocket, and confirm the reply survives a foreground resume.
-            info=cchh-e2e-info.json
-            port=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["port"])' "$info")
-            token=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["token"])' "$info")
-            python3 cchh-mobile-android/tests/emulatorSmoke.py chat "http://10.0.2.2:$port" "$token"
+            # Each emulator-runner line is its own shell, so the script reads
+            # the port and token directly from the workspace file.
+            python3 cchh-mobile-android/tests/emulatorSmoke.py chat-info cchh-e2e-info.json
             adb logcat -d -v time > cchh-mobile-logcat.txt
       - name: Show isolated server log
         if: always()
