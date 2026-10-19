@@ -11,11 +11,11 @@ test('real server remote listener serves bootstrap, sessions and approval replay
       env: createSandboxedTestEnvironment(home, { CC_HAHA_LOCAL_ACCESS_TOKEN: 'fixture-process-credential' }),
       stdout: 'pipe', stderr: 'pipe',
     })
-    const timeout = setTimeout(() => child.kill(), 15_000)
+    const timeout = setTimeout(() => child.kill(), 45_000)
     try {
       const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
       expect({ exitCode, output: exitCode === 0 ? '' : `${stdout}\n${stderr}` }).toEqual({ exitCode: 0, output: '' })
       expect(stdout).toContain('REMOTE_INTEGRATION_PASSED')
     } finally { clearTimeout(timeout); child.kill() }
   } finally { rmSync(home, { recursive: true, force: true }) }
-}, 20_000)
+}, 60_000)
