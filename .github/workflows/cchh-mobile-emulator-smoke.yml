@@ -1,0 +1,54 @@
+name: CCHH Mobile - Android Emulator Smoke
+on:
+  push:
+    branches:
+      - feat/cchh-mobile-android-build-20261019
+    paths:
+      - '.github/workflows/cchh-mobile-emulator-smoke.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  emulator-launch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: CCHH-Mobile-v0.1.5-Android-APK
+          run-id: 39196822855
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: apk
+      - name: Verify downloaded APK SHA-256
+        run: cd apk && sed 's|artifacts/||' SHA256SUMS.txt | sha256sum -c
+      - name: Enable KVM
+        run: |
+          sudo sh -c 'echo KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node" > /etc/udev/rules.d/99-kvm4all.rules'
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install APK and launch on Android emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          disable-animations: true
+          emulator-boot-timeout: 600
+          script: |
+            adb install -r apk/CCHH-Mobile-v0.1.5.apk
+            adb shell am start -n com.cchh.mobile.client/.MainActivity
+            sleep 20
+            adb shell pidof com.cchh.mobile.client
+            adb shell screencap -p /sdcard/cchh-mobile-smoke.png
+            adb pull /sdcard/cchh-mobile-smoke.png cchh-mobile-smoke.png
+      - name: Upload emulator screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: CCHH-Mobile-v0.1.5-Emulator-Smoke
+          path: cchh-mobile-smoke.png
+          if-no-files-found: warn
+          retention-days: 7
