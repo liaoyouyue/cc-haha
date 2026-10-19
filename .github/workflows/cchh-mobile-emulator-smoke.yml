@@ -97,6 +97,20 @@ jobs:
           if [ -f cchh-e2e-server.log ]; then
             tail -n 120 cchh-e2e-server.log
           fi
+      - name: Dump isolated session transcript
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json, urllib.request
+          try:
+              info = json.load(open('cchh-e2e-info.json'))
+              request = urllib.request.Request(
+                  f"http://127.0.0.1:{info['port']}/api/sessions/{info['sessionId']}/messages",
+                  headers={'Authorization': f"Bearer {info['token']}"})
+              print(urllib.request.urlopen(request, timeout=10).read().decode()[:6000])
+          except Exception as exc:
+              print('transcript dump unavailable:', exc)
+          PY
       - name: Upload emulator screenshot
         if: always()
         uses: actions/upload-artifact@v4
@@ -108,6 +122,9 @@ jobs:
             cchh-mobile-logcat.txt
             cchh-mobile-resume.png
             cchh-mobile-resume-ui.xml
+            cchh-mobile-chat-failure.png
+            cchh-mobile-chat-failure.xml
+            cchh-chat-logcat.txt
             cchh-e2e-server.log
           if-no-files-found: warn
           retention-days: 7

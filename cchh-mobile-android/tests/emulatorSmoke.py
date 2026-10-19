@@ -128,6 +128,20 @@ def mode_resume() -> None:
 
 
 def mode_chat(base_url: str, token: str) -> None:
+    try:
+        chat_flow(base_url, token)
+    except BaseException:
+        # Keep the failing screen and log for artifact review.
+        try:
+            save(dump(), "cchh-mobile-chat-failure.xml", "cchh-mobile-chat-failure.png")
+            with open("cchh-chat-logcat.txt", "w", encoding="utf-8") as handle:
+                handle.write(sh("logcat", "-d", "-v", "time"))
+        except Exception:
+            pass
+        raise
+
+
+def chat_flow(base_url: str, token: str) -> None:
     launch()
     root = wait_for(on_connect_screen, "connection screen")
     inputs = [node for node in root.iter("node") if node.get("class") == "android.widget.EditText"]
@@ -151,6 +165,8 @@ def mode_chat(base_url: str, token: str) -> None:
     sessions = wait_for(lambda value: value if find(value, "Untitled Session") is not None else None, "session list")
     tap_node(find(sessions, "Untitled Session"))
     wait_for(lambda value: value if find(value, "给家里的 CCHH 发送任务") is not None else None, "chat composer")
+    # The send button stays disabled until sync_state and history complete.
+    wait_for(lambda value: value if find(value, "已连接") is not None else None, "connected session state")
 
     composer = wait_for(lambda value: find_class(value, "android.widget.EditText"), "message input")
     tap_node(composer)
