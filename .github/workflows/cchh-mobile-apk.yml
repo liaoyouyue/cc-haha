@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - feat/cchh-mobile-android-build-20261019
+      - feat/cchh-mobile-community-pairing-20261019
     paths:
       - 'cchh-mobile-android/**'
       - '.github/workflows/cchh-mobile-apk.yml'
