@@ -216,9 +216,9 @@ function Main() {
 
   useEffect(() => {
     if(!config || !selected) return;
-    let cancelled = false, tries = 0, handshake = null;
+    let cancelled = false, tries = 0, handshake = null, previousAppState = AppState.currentState;
     setHistory([]); setCursor(null); setApprovals([]); setStream('');
-    setTurnBusy(true); sendLock.current = true; setDraft('');
+    setTurnBusy(false); sendLock.current = true; setDraft('');
     setSocketState('连接中'); loadHistory(selected);
     function clearConn() {
       clearTimeout(reconnectRef.current); clearTimeout(handshake); clearInterval(pingRef.current);
@@ -226,6 +226,7 @@ function Main() {
     }
     function open() {
       if(cancelled) return;
+      sendLock.current=true;
       const u = new URL(config.baseUrl);
       u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
       u.pathname = '/ws/' + encodeURIComponent(selected.id);
@@ -238,7 +239,8 @@ function Main() {
       wsRef.current = ws; setSocketState(tries ? '重连中' : '连接中');
       handshake = setTimeout(() => { try { ws.close(); } catch{} }, 15000);
       ws.onopen = () => {
-        clearTimeout(handshake); tries=0; setSocketState('已连接');
+        if(wsRef.current !== ws) return;
+        clearTimeout(handshake); tries=0; setSocketState('同步中');
         ws.send(JSON.stringify({type:'sync_state'}));
         pingRef.current = setInterval(() => {
           if(ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:'ping'}));
@@ -246,6 +248,7 @@ function Main() {
         loadHistory(selected);
       };
       ws.onmessage = ev => {
+        if(wsRef.current !== ws) return;
         let msg; try { msg=JSON.parse(ev.data); } catch { return; }
         if(msg.type === 'content_delta' && typeof msg.text === 'string')
           setStream(prev => prev + msg.text);
@@ -254,7 +257,7 @@ function Main() {
           setTurnBusy(false); sendLock.current=false; setStream(''); loadHistory(selected);
         } else if(msg.type === 'session_state') {
           const busy = msg.turnState === 'running';
-          setTurnBusy(busy); sendLock.current=busy;
+          setTurnBusy(busy); sendLock.current=busy; setSocketState('已连接');
         } else if(msg.type === 'permission_request') {
           if(!msg.requestId) return;
           setApprovals(prev => prev.some(p => p.requestId === msg.requestId)
@@ -269,8 +272,9 @@ function Main() {
       };
       ws.onerror = () => { try { ws.close(); } catch{} };
       ws.onclose = () => {
+        if(wsRef.current !== ws) return;
         clearTimeout(handshake); clearInterval(pingRef.current);
-        if(wsRef.current === ws) wsRef.current=null;
+        wsRef.current=null;
         if(!cancelled) schedule();
       };
     }
@@ -280,15 +284,14 @@ function Main() {
       tries++; reconnectRef.current=setTimeout(open, Math.min(30000, 1000 * 2**Math.min(tries,5)));
     }
     open();
-    return () => {cancelled=true; clearConn();};
-  }, [config,selected?.id]);
-
-  useEffect(() => {
-    const sub = AppState.addEventListener('change', state => {
-      if(state === 'active' && selected) loadHistory(selected);
+    const foreground = AppState.addEventListener('change', state => {
+      if(previousAppState !== 'active' && state === 'active') {
+        clearConn(); tries=0; open(); loadHistory(selected);
+      }
+      previousAppState=state;
     });
-    return () => sub.remove();
-  }, [config,selected?.id,cursor]);
+    return () => {cancelled=true; foreground.remove(); clearConn();};
+  }, [config,selected?.id]);
 
   useEffect(() => {
     const handler=BackHandler.addEventListener('hardwareBackPress', () => {
@@ -396,7 +399,7 @@ function Main() {
         <TextInput multiline style={styles.composeInput} placeholder="给家里的 CCHH 发送任务" placeholderTextColor={C.muted}
           value={draft} onChangeText={setDraft} />
         <Btn label={turnBusy?'执行中':'发送'} disabled={turnBusy||!draft.trim()||socketState!=='已连接'} onPress={send} />
-        {turnBusy&& <Btn label="停止" danger outline onPress={()=>sendPacket({type:'stop_generation'})} />}
+        {turnBusy&& <Btn label="停止" danger outline disabled={socketState!=='已连接'} onPress={()=>sendPacket({type:'stop_generation'})} />}
       </View>
     </KeyboardAvoidingView>
   </SafeAreaView>;

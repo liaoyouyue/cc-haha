@@ -1,0 +1,102 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import vm from 'node:vm';
+
+test('foreground recovery replaces the socket, syncs state and never resends a task',()=>{
+  const source=readFileSync(new URL('../App.js',import.meta.url),'utf8').replace(/\r\n/g,'\n');
+  const start=source.indexOf('  useEffect(() => {\n    if(!config || !selected) return;');
+  const end=source.indexOf('  }, [config,selected?.id]);',start);
+  assert.ok(start>=0 && end>start,'connection effect must be present');
+  const effect=source.slice(start,end+'  }, [config,selected?.id]);'.length);
+  let socketState='',turnBusy=false,stream='',approvals=[];
+  let timerId=0;
+  const timers=new Map(),sockets=[],history=[];
+  const refs=()=>({current:null});
+  const wsRef=refs(),reconnectRef=refs(),pingRef=refs(),sendLock=refs();
+  const subscriptions={};
+  class FakeSocket {
+    static OPEN=1;
+    readyState=0;
+    sent=[];
+    constructor(url){this.url=url;sockets.push(this);}
+    send(message){this.sent.push(JSON.parse(message).type);}
+    close(){this.readyState=3;this.onclose?.();}
+  }
+  const appState={currentState:'active',addEventListener(_event,handler){
+    subscriptions.change=handler;
+    return {remove(){delete subscriptions.change;}};
+  }};
+  let cleanup;
+  const sandbox={
+    URL,WebSocket:FakeSocket,AppState:appState,
+    config:{mode:'private',baseUrl:'http://127.0.0.1:3456',token:'fixture'},
+    selected:{id:'fixture-session',title:'Fixture'},
+    wsRef,reconnectRef,pingRef,sendLock,
+    useEffect(callback){cleanup=callback();},
+    loadHistory(session){history.push(session.id);},
+    setHistory(){},setCursor(){},setDraft(){},setApprovals(value){approvals=typeof value==='function'?value(approvals):value;},
+    setStream(value){stream=typeof value==='function'?value(stream):value;},
+    setTurnBusy(value){turnBusy=value;},setSocketState(value){socketState=value;},setError(){},
+    setTimeout(callback,delay){const id=++timerId;timers.set(id,{callback,delay});return id;},
+    clearTimeout(id){timers.delete(id);},
+    setInterval(callback,delay){const id=++timerId;timers.set(id,{callback,delay});return id;},
+    clearInterval(id){timers.delete(id);},
+  };
+  vm.runInNewContext(effect,sandbox);
+  try {
+    assert.equal(sockets.length,1);
+    const first=sockets[0];
+    first.readyState=FakeSocket.OPEN;
+    first.onopen();
+    assert.deepEqual(first.sent,['sync_state']);
+    assert.equal(socketState,'同步中');
+    assert.equal(turnBusy,false);
+    assert.equal(sendLock.current,true);
+    first.onmessage({data:JSON.stringify({type:'permission_request',requestId:'approval-1',toolName:'Write'})});
+    assert.equal(approvals.length,1);
+    subscriptions.change('active');
+    assert.equal(sockets.length,1);
+    appState.currentState='background';subscriptions.change('background');
+    appState.currentState='active';subscriptions.change('active');
+    assert.equal(sockets.length,2);
+    subscriptions.change('active');
+    assert.equal(sockets.length,2);
+    assert.equal(first.readyState,3);
+    assert.equal(history.length,3); // initial load, socket open, foreground refresh
+    first.onclose();
+    first.onopen();
+    first.onmessage({data:JSON.stringify({type:'content_delta',text:'late'})});
+    assert.equal(stream,'');
+    assert.equal([...timers.values()].filter(t=>t.delay!==15000).length,0);
+    const resumed=sockets[1];
+    resumed.readyState=FakeSocket.OPEN;
+    resumed.onopen();
+    assert.deepEqual(resumed.sent,['sync_state']);
+    assert.equal(socketState,'同步中');
+    assert.equal(turnBusy,false);
+    assert.equal(sendLock.current,true);
+    resumed.onmessage({data:JSON.stringify({type:'session_state',turnState:'running'})});
+    assert.equal(turnBusy,true);
+    assert.equal(sendLock.current,true);
+    resumed.onmessage({data:JSON.stringify({type:'session_state',turnState:'idle'})});
+    assert.equal(socketState,'已连接');
+    assert.equal(turnBusy,false);
+    assert.equal(sendLock.current,false);
+    resumed.onmessage({data:JSON.stringify({type:'permission_requests_snapshot',toolRequestIds:[]})});
+    assert.equal(approvals.length,0);
+    resumed.close();
+    assert.equal(socketState,'正在重连');
+    const retry=[...timers.values()].find(t=>t.delay===2000);
+    assert.ok(retry);
+    retry.callback();
+    assert.equal(sockets.length,3);
+    assert.equal(turnBusy,false);
+    assert.equal(sendLock.current,true);
+    const recovered=sockets[2];
+    recovered.readyState=FakeSocket.OPEN;
+    recovered.onopen();
+    assert.deepEqual(recovered.sent,['sync_state']);
+    assert.ok(sockets.every(s=>!s.sent.includes('user_message')));
+  } finally {cleanup?.();}
+});
