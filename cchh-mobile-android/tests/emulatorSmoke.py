@@ -106,10 +106,28 @@ def swipe_up() -> None:
 
 
 def type_text(value: str) -> None:
-    sh("shell", "input", "text", value)
+    # Inject in small chunks and let the field settle; one long injection can
+    # lose trailing characters when the IME is still starting up.
+    for index in range(0, len(value), 12):
+        sh("shell", "input", "text", value[index:index + 12])
+        time.sleep(0.25)
+    time.sleep(0.8)
     # Escape dismisses the IME without exercising the app's BackHandler.
     sh("shell", "input", "keyevent", "111")
-    time.sleep(1)
+    time.sleep(0.8)
+
+
+def secret_length(root: ET.Element) -> int:
+    for node in root.iter("node"):
+        if node.get("class") == "android.widget.EditText" and node.get("password") == "true":
+            return len(node.get("text") or "")
+    return -1
+
+
+def clear_field(node) -> None:
+    tap_node(node)
+    sh("shell", "input", "keyevent", *(["67"] * 80))
+    time.sleep(0.5)
 
 
 def mode_connect() -> None:
@@ -159,6 +177,13 @@ def chat_flow(base_url: str, token: str) -> None:
     root = wait_for(lambda value: value if find_class(value, "android.widget.EditText", 1) is not None else None, "token input")
     tap_node(find_class(root, "android.widget.EditText", 1))
     type_text(token)
+    root = dump()
+    if secret_length(root) != len(token):
+        clear_field(find_class(root, "android.widget.EditText", 1))
+        type_text(token)
+        root = dump()
+        if secret_length(root) != len(token):
+            raise SystemExit(f"token entry incomplete ({secret_length(root)}/{len(token)})")
     connect = wait_for(lambda value: value if find(value, "连接到 CCHH") is not None else None, "connect button")
     tap_node(find(connect, "连接到 CCHH"))
 
