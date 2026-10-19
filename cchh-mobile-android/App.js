@@ -266,6 +266,8 @@ function Main() {
         } else if(msg.type === 'session_state') {
           const busy = msg.turnState === 'running';
           setTurnBusy(busy); sendLock.current=busy; setSocketState('已连接');
+        } else if(msg.type === 'status' && msg.state === 'idle') {
+          setTurnBusy(false); sendLock.current=false; setStream('');
         } else if(msg.type === 'permission_request') {
           if(!msg.requestId) return;
           setApprovals(prev => prev.some(p => p.requestId === msg.requestId)

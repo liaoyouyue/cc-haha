@@ -83,6 +83,10 @@ test('foreground recovery replaces the socket, syncs state and never resends a t
     assert.equal(socketState,'已连接');
     assert.equal(turnBusy,false);
     assert.equal(sendLock.current,false);
+    resumed.onmessage({data:JSON.stringify({type:'session_state',turnState:'running'})});
+    resumed.onmessage({data:JSON.stringify({type:'status',state:'idle'})});
+    assert.equal(turnBusy,false);
+    assert.equal(sendLock.current,false);
     resumed.onmessage({data:JSON.stringify({type:'permission_requests_snapshot',toolRequestIds:[]})});
     assert.equal(approvals.length,0);
     resumed.close();
