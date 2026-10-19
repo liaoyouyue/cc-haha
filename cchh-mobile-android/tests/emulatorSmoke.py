@@ -29,8 +29,19 @@ def sh(*args: str) -> str:
 
 
 def dump() -> ET.Element:
-    sh("shell", "uiautomator", "dump", "/data/local/tmp/cchh-smoke.xml")
-    return ET.fromstring(sh("exec-out", "cat", "/data/local/tmp/cchh-smoke.xml"))
+    # uiautomator occasionally returns an empty or stale file while the system
+    # UI is busy; retry rather than aborting the whole smoke.
+    for _ in range(5):
+        sh("shell", "uiautomator", "dump", "/data/local/tmp/cchh-smoke.xml")
+        raw = sh("exec-out", "cat", "/data/local/tmp/cchh-smoke.xml")
+        start = raw.find("<")
+        if start > -1:
+            try:
+                return ET.fromstring(raw[start:])
+            except ET.ParseError:
+                pass
+        time.sleep(1.5)
+    raise SystemExit("uiautomator dump did not return XML")
 
 
 def texts(root: ET.Element):
