@@ -45,16 +45,14 @@ jobs:
           set -euo pipefail
           isolated=$(mktemp -d)
           mkdir -p "$isolated/home" "$isolated/config"
-          echo "CCHH_E2E_INFO=$isolated/info.json" >> "$GITHUB_ENV"
-          echo "CCHH_E2E_LOG=$isolated/server.log" >> "$GITHUB_ENV"
           HOME="$isolated/home" CLAUDE_CONFIG_DIR="$isolated/config" \
-            CCHH_E2E_INFO="$isolated/info.json" \
-            nohup bun run cchh-mobile-android/tests/e2eServer.ts > "$isolated/server.log" 2>&1 &
+            CCHH_E2E_INFO="$GITHUB_WORKSPACE/cchh-e2e-info.json" \
+            nohup bun run cchh-mobile-android/tests/e2eServer.ts > "$GITHUB_WORKSPACE/cchh-e2e-server.log" 2>&1 &
           for _ in $(seq 1 90); do
-            test -s "$isolated/info.json" && exit 0
+            test -s "$GITHUB_WORKSPACE/cchh-e2e-info.json" && exit 0
             sleep 2
           done
-          cat "$isolated/server.log"
+          cat "$GITHUB_WORKSPACE/cchh-e2e-server.log"
           exit 1
       - name: Enable KVM
         run: |
@@ -89,7 +87,7 @@ jobs:
             grep -q 'CCHH Mobile' cchh-mobile-resume-ui.xml
             # Connect to the isolated host server, send one task over the real
             # WebSocket, and confirm the reply survives a foreground resume.
-            info="$CCHH_E2E_INFO"
+            info=cchh-e2e-info.json
             port=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["port"])' "$info")
             token=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["token"])' "$info")
             python3 cchh-mobile-android/tests/emulatorSmoke.py chat "http://10.0.2.2:$port" "$token"
@@ -97,8 +95,8 @@ jobs:
       - name: Show isolated server log
         if: always()
         run: |
-          if [ -n "${CCHH_E2E_LOG:-}" ] && [ -f "$CCHH_E2E_LOG" ]; then
-            tail -n 120 "$CCHH_E2E_LOG"
+          if [ -f cchh-e2e-server.log ]; then
+            tail -n 120 cchh-e2e-server.log
           fi
       - name: Upload emulator screenshot
         if: always()
@@ -111,5 +109,6 @@ jobs:
             cchh-mobile-logcat.txt
             cchh-mobile-resume.png
             cchh-mobile-resume-ui.xml
+            cchh-e2e-server.log
           if-no-files-found: warn
           retention-days: 7
