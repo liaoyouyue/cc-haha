@@ -97,7 +97,7 @@ def launch() -> None:
 
 
 def on_connect_screen(root: ET.Element):
-    return root if any(find(root, title) for title in TITLES) else None
+    return root if any(find(root, title) is not None for title in TITLES) else None
 
 
 def swipe_up() -> None:
@@ -142,22 +142,22 @@ def mode_chat(base_url: str, token: str) -> None:
 
     tap_node(inputs[0])
     type_text(base_url)
-    root = wait_for(lambda value: value if find_class(value, "android.widget.EditText", 1) else None, "token input")
+    root = wait_for(lambda value: value if find_class(value, "android.widget.EditText", 1) is not None else None, "token input")
     tap_node(find_class(root, "android.widget.EditText", 1))
     type_text(token)
-    connect = wait_for(lambda value: value if find(value, "连接到 CCHH") else None, "connect button")
+    connect = wait_for(lambda value: value if find(value, "连接到 CCHH") is not None else None, "connect button")
     tap_node(find(connect, "连接到 CCHH"))
 
-    sessions = wait_for(lambda value: value if find(value, "Untitled Session") else None, "session list")
+    sessions = wait_for(lambda value: value if find(value, "Untitled Session") is not None else None, "session list")
     tap_node(find(sessions, "Untitled Session"))
-    wait_for(lambda value: value if find(value, "给家里的 CCHH 发送任务") else None, "chat composer")
+    wait_for(lambda value: value if find(value, "给家里的 CCHH 发送任务") is not None else None, "chat composer")
 
     composer = wait_for(lambda value: find_class(value, "android.widget.EditText"), "message input")
     tap_node(composer)
     type_text("helloE2E")
-    send = wait_for(lambda value: value if find(value, "发送") else None, "send button")
+    send = wait_for(lambda value: value if find(value, "发送") is not None else None, "send button")
     tap_node(find(send, "发送"))
-    wait_for(lambda value: value if find(value, "Echo: helloE2E") else None, "assistant reply", timeout=60)
+    wait_for(lambda value: value if find(value, "Echo: helloE2E") is not None else None, "assistant reply", timeout=60)
 
     # Real foreground round-trip: leave the app, come back, and confirm the
     # transcript still loads over a freshly authenticated connection.
@@ -166,12 +166,12 @@ def mode_chat(base_url: str, token: str) -> None:
     sh("shell", "am", "start", "-n", f"{PACKAGE}/.MainActivity")
     time.sleep(4)
     resumed = wait_for(
-        lambda value: value if find(value, "Echo: helloE2E") or find(value, "Untitled Session") else None,
+        lambda value: value if find(value, "Echo: helloE2E") is not None or find(value, "Untitled Session") is not None else None,
         "resumed transcript",
     )
     if find(resumed, "Echo: helloE2E") is None:
         tap_node(find(resumed, "Untitled Session"))
-        wait_for(lambda value: value if find(value, "Echo: helloE2E") else None, "reply after resume", timeout=60)
+        wait_for(lambda value: value if find(value, "Echo: helloE2E") is not None else None, "reply after resume", timeout=60)
     print("EMULATOR_CHAT_SMOKE_PASSED")
 
 
