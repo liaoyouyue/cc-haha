@@ -99,6 +99,7 @@ function Main() {
   const sendLock = useRef(false);
   const selectedId = useRef(null);
   const chatList = useRef(null);
+  const keepScroll = useRef(false);
   selectedId.current = selected?.id || null;
 
   useEffect(() => {
@@ -195,6 +196,7 @@ function Main() {
   }
   async function loadHistory(session, older = false) {
     if(!config || !session) return;
+    if(older) keepScroll.current = true;
     try {
       const path = '/api/sessions/' + encodeURIComponent(session.id) + '/messages' +
         (older && cursor ? '?cursor=' + encodeURIComponent(cursor) : '');
@@ -219,13 +221,13 @@ function Main() {
       });
       if(!older) setHistoryReady(true);
       setCursor(payload.page?.nextCursor || null);
-    } catch(e) { setError(e.message || '读取消息失败'); }
+    } catch(e) { if(older) keepScroll.current = false; setError(e.message || '读取消息失败'); }
   }
 
   useEffect(() => {
     if(!config || !selected) return;
     let cancelled = false, tries = 0, handshake = null, previousAppState = AppState.currentState;
-    setHistory([]); setHistoryReady(false); setCursor(null); setApprovals([]); setStream('');
+    setHistory([]); setHistoryReady(false); setCursor(null); setApprovals([]); setStream(''); keepScroll.current=false;
     setTurnBusy(false); sendLock.current = true; setDraft('');
     setSocketState('连接中'); loadHistory(selected);
     function clearConn() {
@@ -399,7 +401,10 @@ function Main() {
     </View>}
     <FlatList ref={chatList} data={history} keyExtractor={x=>x.id}
       contentContainerStyle={styles.messages}
-      onContentSizeChange={()=>chatList.current?.scrollToEnd({animated:false})}
+      onContentSizeChange={()=>{
+        if(keepScroll.current) {keepScroll.current=false;return;}
+        chatList.current?.scrollToEnd({animated:false});
+      }}
       ListHeaderComponent={cursor?<Pressable onPress={()=>loadHistory(selected,true)}><Text style={styles.actionLink}>加载更早记录</Text></Pressable>:null}
       renderItem={({item})=><View style={[styles.bubble,item.role==='user'?styles.mine:styles.theirs]}>
         <Text style={styles.bubbleWho}>{item.pending?'你 · 待服务端确认':item.role==='user'?'你':'CCHH'}</Text>

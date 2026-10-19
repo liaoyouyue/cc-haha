@@ -32,7 +32,7 @@ test('foreground recovery replaces the socket, syncs state and never resends a t
     URL,WebSocket:FakeSocket,AppState:appState,
     config:{mode:'private',baseUrl:'http://127.0.0.1:3456',token:'fixture'},
     selected:{id:'fixture-session',title:'Fixture'},
-    wsRef,reconnectRef,pingRef,sendLock,
+    wsRef,reconnectRef,pingRef,sendLock,keepScroll:{current:false},
     useEffect(callback){cleanup=callback();},
     loadHistory(session){history.push(session.id);},
     setHistory(){},setHistoryReady(){},setCursor(){},setDraft(){},setApprovals(value){approvals=typeof value==='function'?value(approvals):value;},
@@ -103,6 +103,24 @@ test('foreground recovery replaces the socket, syncs state and never resends a t
     assert.deepEqual(recovered.sent,['sync_state']);
     assert.ok(sockets.every(s=>!s.sent.includes('user_message')));
   } finally {cleanup?.();}
+});
+
+test('loading older history does not jump the chat back to the bottom',()=>{
+  const source=readFileSync(new URL('../App.js',import.meta.url),'utf8').replace(/\r\n/g,'\n');
+  const match=source.match(/onContentSizeChange=\{\(\)=>\{([\s\S]*?)\n      \}\}/);
+  assert.ok(match,'auto-scroll handler must be present');
+  const keepScroll={current:false};
+  let scrolls=0;
+  const sandbox={keepScroll,chatList:{current:{scrollToEnd(){scrolls++;}}}};
+  vm.runInNewContext(`globalThis.handler=()=>{${match[1]}}`,sandbox);
+  sandbox.handler();
+  assert.equal(scrolls,1);
+  keepScroll.current=true;
+  sandbox.handler();
+  assert.equal(scrolls,1);
+  assert.equal(keepScroll.current,false);
+  sandbox.handler();
+  assert.equal(scrolls,2);
 });
 
 test('old identical user text does not acknowledge a pending repeat',()=>{
