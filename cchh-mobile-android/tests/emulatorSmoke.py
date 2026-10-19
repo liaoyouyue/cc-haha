@@ -153,11 +153,23 @@ def input_value(root: ET.Element) -> str:
     return (node.get("text") or "") if node is not None else ""
 
 
+def wait_focused() -> None:
+    deadline = time.time() + 6
+    while time.time() < deadline:
+        root = dump()
+        if any(node.get("class") == "android.widget.EditText" and node.get("focused") == "true" for node in root.iter("node")):
+            return
+        time.sleep(0.5)
+    # uiautomator sometimes omits focus; give the IME a fixed settle window.
+    time.sleep(1)
+
+
 def type_exact(value: str, label: str) -> None:
     # Injected keys occasionally arrive out of order; verify and retry.
     for _ in range(3):
         composer = wait_for(lambda root: find_class(root, "android.widget.EditText"), label)
         tap_node(composer)
+        wait_focused()
         type_text(value)
         if input_value(dump()) == value:
             return
@@ -210,9 +222,11 @@ def chat_flow(base_url: str, token: str, info_path: str) -> None:
         raise SystemExit("connect screen must expose address and token inputs")
 
     tap_node(inputs[0])
+    wait_focused()
     type_text(base_url)
     root = wait_for(lambda value: value if find_class(value, "android.widget.EditText", 1) is not None else None, "token input")
     tap_node(find_class(root, "android.widget.EditText", 1))
+    wait_focused()
     type_text(token)
     root = dump()
     if secret_length(root) != len(token):
