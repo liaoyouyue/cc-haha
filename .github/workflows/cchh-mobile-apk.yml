@@ -32,6 +32,8 @@ jobs:
           ls "$ANDROID_HOME/platforms"
       - name: Install app dependencies
         run: npm install --no-audit --no-fund
+      - name: Run native remote pairing protocol tests
+        run: npm test
       - name: Validate Expo dependencies
         run: npx expo install --check
       - name: Generate isolated Android native project
@@ -46,18 +48,18 @@ jobs:
           test -s "$APK"
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
           if "$APKSIGNER" verify "$APK" >/dev/null 2>&1; then
-            cp "$APK" artifacts/CCHH-Mobile-v0.1.3.apk
+            cp "$APK" artifacts/CCHH-Mobile-v0.1.4.apk
           else
             keytool -genkeypair -keystore /tmp/cchh-test.jks -alias cchh -storepass changeit -keypass changeit -dname "CN=CCHH Mobile Test" -keyalg RSA -keysize 3072 -validity 3650 -noprompt
-            "$APKSIGNER" sign --ks /tmp/cchh-test.jks --ks-key-alias cchh --ks-pass pass:changeit --key-pass pass:changeit --out artifacts/CCHH-Mobile-v0.1.3.apk "$APK"
+            "$APKSIGNER" sign --ks /tmp/cchh-test.jks --ks-key-alias cchh --ks-pass pass:changeit --key-pass pass:changeit --out artifacts/CCHH-Mobile-v0.1.4.apk "$APK"
             rm -f /tmp/cchh-test.jks
           fi
-          "$APKSIGNER" verify artifacts/CCHH-Mobile-v0.1.3.apk
-          sha256sum artifacts/CCHH-Mobile-v0.1.3.apk > artifacts/SHA256SUMS.txt
+          "$APKSIGNER" verify artifacts/CCHH-Mobile-v0.1.4.apk
+          sha256sum artifacts/CCHH-Mobile-v0.1.4.apk > artifacts/SHA256SUMS.txt
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
-          name: CCHH-Mobile-v0.1.3-Android-APK
+          name: CCHH-Mobile-v0.1.4-Android-APK
           path: |
             cchh-mobile-android/artifacts/*.apk
             cchh-mobile-android/artifacts/SHA256SUMS.txt
