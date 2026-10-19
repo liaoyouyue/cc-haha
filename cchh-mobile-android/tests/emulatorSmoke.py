@@ -294,6 +294,23 @@ def chat_flow(base_url: str, token: str, info_path: str) -> None:
     if find(resumed, "Echo: helloE2E") is None:
         tap_node(find(resumed, "Untitled Session"))
         wait_for(lambda value: value if find(value, "Echo: helloE2E") is not None else None, "reply after resume", timeout=60)
+
+    # Airplane mode drops the transport; the app must reconnect without
+    # replaying the task, and a new turn must work over the restored socket.
+    sh("shell", "cmd", "connectivity", "airplane-mode", "enable")
+    wait_for(lambda value: value if find(value, "正在重连") is not None else None, "reconnect state", timeout=150)
+    sh("shell", "cmd", "connectivity", "airplane-mode", "disable")
+    recovered = wait_for(lambda value: value if find(value, "已连接") is not None else None, "reconnected state", timeout=90)
+    copies = sum(1 for node in recovered.iter("node") if node.get("text") == "helloE2E")
+    if copies != 1:
+        raise SystemExit(f"task was replayed after reconnect ({copies} copies)")
+    sender = subprocess.Popen(
+        ['node', 'cchh-mobile-android/tests/sendTurn.mjs', info_path, 'afterReconnect'],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    wait_for(lambda value: value if find(value, "Echo: afterReconnect") is not None else None, "reply after reconnect", timeout=60)
+    if sender.wait(timeout=90) != 0:
+        raise SystemExit("post-reconnect turn sender failed")
     print("EMULATOR_CHAT_SMOKE_PASSED")
 
 
