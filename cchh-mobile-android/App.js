@@ -8,6 +8,7 @@ import * as SecureStore from 'expo-secure-store';
 import CookieManager from '@preeternal/react-native-cookie-manager';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { createPublicPairing, claimPublicPairing, publicSessionActive, parsePairingText } from './remotePairing.mjs';
+import { isForegroundResume, reconnectDelayMs } from './mobileRecovery.mjs';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 
@@ -95,6 +96,7 @@ function Main() {
   const wsRef = useRef(null);
   const reconnectRef = useRef(null);
   const pingRef = useRef(null);
+  const pongRef = useRef(null);
   const sendLock = useRef(false);
   const selectedId = useRef(null);
   const chatList = useRef(null);
@@ -217,11 +219,12 @@ function Main() {
   useEffect(() => {
     if(!config || !selected) return;
     let cancelled = false, tries = 0, handshake = null;
+    let previousAppState = AppState.currentState;
     setHistory([]); setCursor(null); setApprovals([]); setStream('');
     setTurnBusy(true); sendLock.current = true; setDraft('');
     setSocketState('连接中'); loadHistory(selected);
     function clearConn() {
-      clearTimeout(reconnectRef.current); clearTimeout(handshake); clearInterval(pingRef.current);
+      clearTimeout(reconnectRef.current); clearTimeout(handshake); clearInterval(pingRef.current); clearTimeout(pongRef.current);
       if(wsRef.current) { const s=wsRef.current; wsRef.current=null; try { s.close(); } catch{} }
     }
     function open() {
@@ -238,15 +241,27 @@ function Main() {
       wsRef.current = ws; setSocketState(tries ? '重连中' : '连接中');
       handshake = setTimeout(() => { try { ws.close(); } catch{} }, 15000);
       ws.onopen = () => {
+        if(cancelled || wsRef.current !== ws) return;
         clearTimeout(handshake); tries=0; setSocketState('已连接');
         ws.send(JSON.stringify({type:'sync_state'}));
         pingRef.current = setInterval(() => {
-          if(ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:'ping'}));
+          if(cancelled || wsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return;
+          try {
+            ws.send(JSON.stringify({type:'ping'}));
+            clearTimeout(pongRef.current);
+            pongRef.current = setTimeout(() => {
+              if(!cancelled && wsRef.current === ws && ws.readyState === WebSocket.OPEN) {
+                try { ws.close(); } catch {}
+              }
+            }, 12000);
+          } catch { try { ws.close(); } catch {} }
         }, 30000);
         loadHistory(selected);
       };
       ws.onmessage = ev => {
+        if(cancelled || wsRef.current !== ws) return;
         let msg; try { msg=JSON.parse(ev.data); } catch { return; }
+        if(msg.type === 'pong') { clearTimeout(pongRef.current); return; }
         if(msg.type === 'content_delta' && typeof msg.text === 'string')
           setStream(prev => prev + msg.text);
         else if(msg.type === 'content_start' && msg.blockType === 'text') setStream('');
@@ -267,28 +282,35 @@ function Main() {
           setError(msg.message || 'CCHH 返回错误'); setTurnBusy(false); sendLock.current=false;
         }
       };
-      ws.onerror = () => { try { ws.close(); } catch{} };
+      ws.onerror = () => { if(wsRef.current === ws) { try { ws.close(); } catch{} } };
       ws.onclose = () => {
-        clearTimeout(handshake); clearInterval(pingRef.current);
-        if(wsRef.current === ws) wsRef.current=null;
+        // A previous socket must never reconnect over a newer foreground socket.
+        if(wsRef.current !== ws) return;
+        clearTimeout(handshake); clearInterval(pingRef.current); clearTimeout(pongRef.current);
+        wsRef.current=null;
         if(!cancelled) schedule();
       };
     }
     function schedule() {
       if(cancelled) return;
+      clearTimeout(reconnectRef.current);
       setSocketState('正在重连');
-      tries++; reconnectRef.current=setTimeout(open, Math.min(30000, 1000 * 2**Math.min(tries,5)));
+      tries++; reconnectRef.current=setTimeout(open, reconnectDelayMs(tries));
     }
     open();
-    return () => {cancelled=true; clearConn();};
-  }, [config,selected?.id]);
-
-  useEffect(() => {
-    const sub = AppState.addEventListener('change', state => {
-      if(state === 'active' && selected) loadHistory(selected);
+    const appStateSubscription = AppState.addEventListener('change', nextState => {
+      const resumed = isForegroundResume(previousAppState, nextState);
+      previousAppState = nextState;
+      if(!resumed || cancelled) return;
+      // Android may keep a half-open socket after lock-screen/network changes.
+      // Replace it, then rely on sync_state and history; NEVER replay a user turn.
+      clearConn();
+      tries = 0;
+      setSocketState('正在重连');
+      open();
     });
-    return () => sub.remove();
-  }, [config,selected?.id,cursor]);
+    return () => {cancelled=true; appStateSubscription.remove(); clearConn();};
+  }, [config,selected?.id]);
 
   useEffect(() => {
     const handler=BackHandler.addEventListener('hardwareBackPress', () => {
