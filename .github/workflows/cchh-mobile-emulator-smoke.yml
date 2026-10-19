@@ -42,8 +42,11 @@ jobs:
             adb shell am start -n com.cchh.mobile.client/.MainActivity
             sleep 20
             adb shell pidof com.cchh.mobile.client
-            adb shell screencap -p /sdcard/cchh-mobile-smoke.png
-            adb pull /sdcard/cchh-mobile-smoke.png cchh-mobile-smoke.png
+            # Capture directly to the CI filesystem: /sdcard is not writable in some emulators.
+            adb exec-out screencap -p > cchh-mobile-smoke.png
+            test -s cchh-mobile-smoke.png
+            file cchh-mobile-smoke.png | grep -q 'PNG image data'
+            adb shell pidof com.cchh.mobile.client
       - name: Upload emulator screenshot
         if: always()
         uses: actions/upload-artifact@v4
