@@ -10,6 +10,7 @@ test('pair secret and QR links parse',()=>{
   const secret='a'.repeat(40);
   assert.equal(parsePairingText(secret).secret,secret);
   assert.deepEqual(parsePairingText(base+'/?pair='+secret),{baseUrl:base,secret});
+  assert.deepEqual(parsePairingText(base+'/remote#pair='+secret),{baseUrl:base,secret});
   assert.throws(()=>parsePairingText('short'));
 });
 test('post pairs with exact Origin and cookies, not bearer',async()=>{
