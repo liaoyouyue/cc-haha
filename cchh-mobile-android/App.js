@@ -5,6 +5,8 @@ import {
   StyleSheet, Text, TextInput, View
 } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
+import CookieManager from '@react-native-cookies/cookies';
+import { createPublicPairing, claimPublicPairing, publicSessionActive, parsePairingText } from './remotePairing.mjs';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 
@@ -36,7 +38,8 @@ async function getJson(config, path) {
   const timer = setTimeout(() => ctl.abort(), 15000);
   try {
     const res = await fetch(config.baseUrl + path, {
-      headers: { Authorization: 'Bearer ' + config.token },
+      headers: config.mode === 'public' ? {Origin:config.baseUrl,Accept:'application/json'} : {Authorization:'Bearer ' + config.token},
+      credentials: config.mode === 'public' ? 'include' : 'omit',
       signal: ctl.signal
     });
     if (!res.ok) throw new Error(res.status === 401 || res.status === 403
@@ -70,6 +73,10 @@ function Main() {
   const [restoring, setRestoring] = useState(true);
   const [url, setUrl] = useState('');
   const [token, setToken] = useState('');
+  const [mode, setMode] = useState('private');
+  const [pairSecret, setPairSecret] = useState('');
+  const [pairing, setPairing] = useState(null);
+  const [pairNotice, setPairNotice] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [sessions, setSessions] = useState([]);
@@ -94,7 +101,7 @@ function Main() {
     let alive = true;
     SecureStore.getItemAsync(STORE_KEY).then(v => {
       if (v && alive) {
-        try { const saved = JSON.parse(v); if(saved.baseUrl && saved.token) setConfig(saved); }
+        try { const saved = JSON.parse(v); if(saved.baseUrl && (saved.token || saved.mode === 'public')) setConfig(saved); }
         catch {}
       }
     }).catch(() => {}).finally(() => { if(alive) setRestoring(false); });
@@ -114,20 +121,53 @@ function Main() {
 
   const connect = async () => {
     if(loading) return;
-    setLoading(true); setError('');
+    setLoading(true); setError(''); setPairNotice('');
     try {
-      const next = {baseUrl:endpoint(url), token:token.trim()};
-      if(!next.token) throw new Error('请输入 CCHH 的 H5 访问令牌');
-      await getJson(next, '/api/sessions?limit=1');
-      await SecureStore.setItemAsync(STORE_KEY, JSON.stringify(next));
-      setToken(''); setConfig(next);
-    } catch(e) { setError(e.message || '连接失败'); }
-    finally { setLoading(false); }
+      if(mode === 'public') {
+        let rawUrl=url.trim(), code=pairSecret.trim();
+        if(code.startsWith('https://')) {
+          const parsed=parsePairingText(code);
+          code=parsed.secret;
+          if(!rawUrl) {rawUrl=parsed.baseUrl;setUrl(rawUrl);}
+        }
+        const baseUrl=endpoint(rawUrl);
+        if(!baseUrl.startsWith('https://')) throw new Error('公网配对只支持 HTTPS 地址');
+        const next={mode:'public',baseUrl,token:''};
+        if(!pairing || pairing.baseUrl!==baseUrl) {
+          const request=await createPublicPairing(baseUrl,code,'CCHH Mobile Android');
+          setPairing({...request,baseUrl});
+          setPairNotice('配对请求已提交。请在电脑 CCHH 的公网访问设置中批准手机，然后点击“检查审批并连接”。二维码约 5 分钟有效。');
+          return;
+        }
+        const result=await claimPublicPairing(baseUrl,pairing);
+        if(result.status==='pending') {
+          setPairNotice('电脑还没有批准当前配对请求。批准之后再点一次。');
+          return;
+        }
+        if(result.status==='rejected') {setPairing(null);throw new Error('电脑端拒绝了配对，请重新生成配对码');}
+        if(result.status!=='approved'||!await publicSessionActive(baseUrl)) throw new Error('手机尚未取得有效公网 Cookie，请重新配对');
+        await SecureStore.setItemAsync(STORE_KEY,JSON.stringify(next));
+        setPairing(null);setPairSecret('');setConfig(next);
+      } else {
+        const next={mode:'private',baseUrl:endpoint(url),token:token.trim()};
+        if(!next.token)throw new Error('请输入 CCHH 的 H5 访问令牌');
+        await getJson(next,'/api/sessions?limit=1');
+        await SecureStore.setItemAsync(STORE_KEY,JSON.stringify(next));
+        setToken('');setConfig(next);
+      }
+    } catch(e) {setError(e.message||'连接失败');}
+    finally {setLoading(false);}
   };
   async function logout() {
-    setSelected(null); setConfig(null); setSessions([]);
-    setHistory([]); setApprovals([]); setStream('');
-    await SecureStore.deleteItemAsync(STORE_KEY).catch(() => {});
+    try {
+      if(config?.mode === 'public') await CookieManager.clearByName(config.baseUrl,'__Host-haha-remote');
+      await SecureStore.deleteItemAsync(STORE_KEY);
+      setSelected(null);setConfig(null);setSessions([]);
+      setHistory([]);setApprovals([]);setStream('');
+      setError('');
+    } catch {
+      Alert.alert('无法解除配对','请重试，并在电脑端撤销旧设备授权。');
+    }
   }
   async function loadHistory(session, older = false) {
     if(!config || !session) return;
@@ -155,7 +195,7 @@ function Main() {
     if(!config || !selected) return;
     let cancelled = false, tries = 0, handshake = null;
     setHistory([]); setCursor(null); setApprovals([]); setStream('');
-    setTurnBusy(false); sendLock.current = false; setDraft('');
+    setTurnBusy(true); sendLock.current = true; setDraft('');
     setSocketState('连接中'); loadHistory(selected);
     function clearConn() {
       clearTimeout(reconnectRef.current); clearTimeout(handshake); clearInterval(pingRef.current);
@@ -166,9 +206,11 @@ function Main() {
       const u = new URL(config.baseUrl);
       u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
       u.pathname = '/ws/' + encodeURIComponent(selected.id);
-      u.searchParams.set('token', config.token);
+      if(config.mode!=='public') u.searchParams.set('token', config.token);
       let ws;
-      try { ws = new WebSocket(u.toString()); }
+      try { ws = config.mode==='public'
+        ? new WebSocket(u.toString(),undefined,{headers:{Origin:config.baseUrl}})
+        : new WebSocket(u.toString()); }
       catch { schedule(); return; }
       wsRef.current = ws; setSocketState(tries ? '重连中' : '连接中');
       handshake = setTimeout(() => { try { ws.close(); } catch{} }, 15000);
@@ -258,17 +300,29 @@ function Main() {
       <View style={styles.logo}><Text style={styles.logoText}>C</Text></View>
       <Text style={styles.h1}>CCHH Mobile</Text>
       <Text style={styles.muted}>把家里的 AI 工作台带在身边。</Text>
-      <Text style={styles.label}>CCHH 服务器地址</Text>
+      <View style={{flexDirection:'row',gap:8,marginTop:24}}>
+        <View style={{flex:1}}><Btn label="私有网络" outline={mode!=='private'} onPress={()=>{setMode('private');setPairing(null);setError('')}} /></View>
+        <View style={{flex:1}}><Btn label="公网 ngrok" outline={mode!=='public'} onPress={()=>{setMode('public');setPairing(null);setError('')}} /></View>
+      </View>
+      <Text style={styles.label}>{mode==='public'?'ngrok HTTPS 公网地址':'CCHH 服务器地址'}</Text>
       <TextInput style={styles.input} value={url} onChangeText={setUrl}
         autoCapitalize="none" autoCorrect={false} keyboardType="url" placeholderTextColor={C.muted}
-        placeholder="http://100.101.102.103:3456" />
-      <Text style={styles.label}>H5 访问令牌</Text>
-      <TextInput style={styles.input} value={token} onChangeText={setToken}
-        autoCapitalize="none" secureTextEntry placeholderTextColor={C.muted}
-        placeholder="粘贴 CCHH H5 访问令牌" />
+        placeholder={mode==='public'?'https://your-subdomain.ngrok-free.app':'http://100.101.102.103:3456'} />
+      {mode==='public' ? <>
+        <Text style={styles.label}>一次性配对密钥（或完整二维码链接）</Text>
+        <TextInput style={styles.input} value={pairSecret} onChangeText={value=>{setPairSecret(value);setPairing(null);}}
+          autoCapitalize="none" autoCorrect={false} placeholderTextColor={C.muted}
+          placeholder="电脑生成的公网配对密钥" />
+      </> : <>
+        <Text style={styles.label}>H5 访问令牌</Text>
+        <TextInput style={styles.input} value={token} onChangeText={setToken}
+          autoCapitalize="none" secureTextEntry placeholderTextColor={C.muted}
+          placeholder="粘贴 CCHH H5 访问令牌" />
+      </>}
       {!!error && <Text style={styles.err}>{error}</Text>}
-      <Btn label={loading?'连接中…':'连接到 CCHH'} onPress={connect} disabled={loading} />
-      <Text style={styles.hint}>建议使用 Tailscale 私有网络。当前为 H5 令牌版，不支持 ngrok 公网 Cookie 配对；不要将家用服务直接暴露公网。</Text>
+      {!!pairNotice && <Text style={{color:C.green,marginVertical:12,lineHeight:21}}>{pairNotice}</Text>}
+      <Btn label={loading?'检查连接中…':mode==='public'?(pairing?'检查审批并连接':'申请公网手机配对'):'连接到 CCHH'} onPress={connect} disabled={loading} />
+      <Text style={styles.hint}>局域网优先 Tailscale；公网使用 CCHH 官方 ngrok 配对，不把 H5 令牌暴露公网。公网审批需在电脑端完成。此版本仍需安卓实机验证。</Text>
       <Text style={styles.credit}>非官方客户端 · Based on cc-haha © 2026 cc-haha</Text>
     </ScrollView>
   </SafeAreaView>;
