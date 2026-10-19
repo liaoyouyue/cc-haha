@@ -8,6 +8,7 @@ import * as SecureStore from 'expo-secure-store';
 import CookieManager from '@preeternal/react-native-cookie-manager';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { createPublicPairing, claimPublicPairing, publicSessionActive, parsePairingText } from './remotePairing.mjs';
+import { parsePrivatePairingQr } from './privatePairing.mjs';
 import { splitFences } from './messageText.mjs';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -80,6 +81,9 @@ function Main() {
   const [url, setUrl] = useState('');
   const [token, setToken] = useState('');
   const [mode, setMode] = useState('private');
+  const [networkType, setNetworkType] = useState('lan');
+  const [scanKind, setScanKind] = useState('public');
+  const [showGuide, setShowGuide] = useState(true);
   const [pairSecret, setPairSecret] = useState('');
   const [pairing, setPairing] = useState(null);
   const [pairNotice, setPairNotice] = useState('');
@@ -168,7 +172,15 @@ function Main() {
     } catch(e) {setError(e.message||'连接失败');}
     finally {setLoading(false);}
   };
-  async function startQrScan() {
+  function chooseConnection(next) {
+    setMode(next === 'public' ? 'public' : 'private');
+    setNetworkType(next);
+    // Do not carry credentials or pending pairing state across connection choices.
+    setUrl(''); setToken(''); setPairSecret(''); setPairing(null);
+    setPairNotice(''); setScanning(false); setError('');
+  }
+  async function startQrScan(kind) {
+    setScanKind(kind);
     setError('');
     try {
       if(!cameraPermission?.granted) {
@@ -182,10 +194,22 @@ function Main() {
     if(!scanning) return;
     setScanning(false);
     try {
-      const parsed=parsePairingText(data?.data||'');
-      if(!parsed.baseUrl) throw new Error('扫描到的不是公网配对链接');
-      setMode('public');setUrl(parsed.baseUrl);setPairSecret(data.data);
-      setPairing(null);setPairNotice('二维码识别成功，点击“申请公网手机配对”开始。');setError('');
+      if(scanKind === 'private') {
+        const parsed = parsePrivatePairingQr(data?.data||'');
+        setMode('private'); setUrl(parsed.baseUrl); setToken(parsed.token);
+        setPairing(null); setPairSecret(''); setError('');
+        const isLanQr = parsed.baseUrl.startsWith('http://192.168.') ||
+          parsed.baseUrl.startsWith('http://10.') ||
+          parsed.baseUrl.startsWith('http://172.');
+        setPairNotice(networkType === 'tailscale' && isLanQr
+          ? '已识别电脑 H5 令牌，但地址仍是局域网地址。请改为同一台电脑的 Tailscale 100.x 地址。'
+          : '已识别 H5 二维码。请核对电脑地址后点击连接；扫码不会自动发送任务。');
+      } else {
+        const parsed=parsePairingText(data?.data||'');
+        if(!parsed.baseUrl) throw new Error('扫描到的不是公网配对链接');
+        setMode('public');setUrl(parsed.baseUrl);setPairSecret(data.data);
+        setPairing(null);setPairNotice('二维码识别成功，点击“申请公网手机配对”开始。');setError('');
+      }
     } catch(e) {setError(e.message||'二维码无法识别');}
   }
   async function logout() {
@@ -194,7 +218,9 @@ function Main() {
       await SecureStore.deleteItemAsync(STORE_KEY);
       setSelected(null);setConfig(null);setSessions([]);
       setHistory([]);setApprovals([]);setStream('');
-      setError('');
+      setUrl('');setToken('');setPairSecret('');setPairing(null);
+      setPairNotice('');setMode('private');setNetworkType('lan');
+      setScanning(false);setError('');
     } catch {
       Alert.alert('无法解除配对','请重试，并在电脑端撤销旧设备授权。');
     }
@@ -346,23 +372,41 @@ function Main() {
   if(!config) return <SafeAreaView style={styles.flex}><StatusBar style="light" />
     <ScrollView contentContainerStyle={styles.connect}>
       <View style={styles.logo}><Text style={styles.logoText}>C</Text></View>
-      <Text style={styles.h1}>CCHH Mobile</Text>
-      <Text style={styles.muted}>把家里的 AI 工作台带在身边。</Text>
-      <View style={{flexDirection:'row',gap:8,marginTop:24}}>
-        <View style={{flex:1}}><Btn label="私有网络" outline={mode!=='private'} onPress={()=>{setMode('private');setPairing(null);setError('')}} /></View>
-        <View style={{flex:1}}><Btn label="公网 ngrok" outline={mode!=='public'} onPress={()=>{setMode('public');setPairing(null);setError('')}} /></View>
+      <Text style={styles.h1}>连接我自己的 CCHH</Text>
+      <Text style={styles.muted}>同一个免费 APP，每个人独立连接自己的电脑。不共享 CCHH 账号或 API Key。</Text>
+      <View style={styles.guideCard}>
+        <Pressable accessibilityRole="button" onPress={()=>setShowGuide(v=>!v)}>
+          <Text style={styles.guideTitle}>{showGuide?'▼':'▶'} 首次连接指引</Text>
+        </Pressable>
+        {showGuide && <>
+          <Text style={styles.guideStep}>① 在自己的电脑打开 CCHH 0.7.4 → 设置 → H5 访问，启用访问。</Text>
+          <Text style={styles.guideStep}>② 选择免费连接方式，扫描这台电脑对应的二维码。</Text>
+          <Text style={styles.guideStep}>③ 核对地址并连接。公网模式还需在电脑端批准手机。</Text>
+          <Text style={styles.guideWarning}>不要把带令牌的二维码发给群友，手机只能配对自己授权的电脑。</Text>
+        </>}
       </View>
-      <Text style={styles.label}>{mode==='public'?'ngrok HTTPS 公网地址':'CCHH 服务器地址'}</Text>
+      <Text style={styles.label}>免费连接方式（第三方免费额度可能调整）</Text>
+      <View style={{flexDirection:'row',gap:8}}>
+        <View style={{flex:1}}><Btn label="同一 Wi-Fi" outline={networkType!=='lan'} onPress={()=>chooseConnection('lan')} /></View>
+        <View style={{flex:1}}><Btn label="Tailscale" outline={networkType!=='tailscale'} onPress={()=>chooseConnection('tailscale')} /></View>
+      </View>
+      <Btn label="公网 ngrok · 免费额度（实验性）" outline={networkType!=='public'} onPress={()=>chooseConnection('public')} />
+      <Text style={styles.guideStep}>{mode==='public'
+        ? '电脑打开「H5 访问 → 公网 ngrok」，使用自己的免费账户开通后生成公网配对二维码。'
+        : networkType==='tailscale'
+          ? '先让手机和电脑加入自己的 Tailscale 网络；扫码读取 H5 令牌后，确认地址是电脑的 100.x 私网地址。'
+          : '手机和电脑连接同一个可信 Wi-Fi，然后扫描自己电脑「H5 访问」中的二维码。'}</Text>
+      <View style={{marginTop:8}}><Btn label={mode==='public'?'扫描公网配对二维码':'扫描电脑 H5 二维码'} outline onPress={()=>startQrScan(mode==='public'?'public':'private')} /></View>
+      {scanning && <View style={{height:270,marginTop:12,borderRadius:16,overflow:'hidden'}}>
+        <CameraView style={{flex:1}} facing="back" barcodeScannerSettings={{barcodeTypes:['qr']}}
+          onBarcodeScanned={onQrScanned} />
+        <View style={{position:'absolute',bottom:8,right:8}}><Btn label="取消扫码" outline onPress={()=>setScanning(false)} /></View>
+      </View>}
+      <Text style={styles.label}>{mode==='public'?'ngrok HTTPS 公网地址':'我的 CCHH 服务器地址'}</Text>
       <TextInput style={styles.input} value={url} onChangeText={setUrl}
         autoCapitalize="none" autoCorrect={false} keyboardType="url" placeholderTextColor={C.muted}
         placeholder={mode==='public'?'https://your-subdomain.ngrok-free.app':'http://100.101.102.103:3456'} />
       {mode==='public' ? <>
-        <View style={{marginTop:14}}><Btn label="使用手机相机扫码配对" outline onPress={startQrScan} /></View>
-        {scanning && <View style={{height:270,marginTop:12,borderRadius:16,overflow:'hidden'}}>
-          <CameraView style={{flex:1}} facing="back" barcodeScannerSettings={{barcodeTypes:['qr']}}
-            onBarcodeScanned={onQrScanned} />
-          <View style={{position:'absolute',bottom:8,right:8}}><Btn label="取消扫码" outline onPress={()=>setScanning(false)} /></View>
-        </View>}
         <Text style={styles.label}>一次性配对密钥（或完整二维码链接）</Text>
         <TextInput style={styles.input} value={pairSecret} onChangeText={value=>{setPairSecret(value);setPairing(null);}}
           autoCapitalize="none" autoCorrect={false} placeholderTextColor={C.muted}
@@ -376,7 +420,7 @@ function Main() {
       {!!error && <Text style={styles.err}>{error}</Text>}
       {!!pairNotice && <Text style={{color:C.green,marginVertical:12,lineHeight:21}}>{pairNotice}</Text>}
       <Btn label={loading?'检查连接中…':mode==='public'?(pairing?'检查审批并连接':'申请公网手机配对'):'连接到 CCHH'} onPress={connect} disabled={loading} />
-      <Text style={styles.hint}>局域网优先 Tailscale；公网使用 CCHH 官方 ngrok 配对，不把 H5 令牌暴露公网。公网审批需在电脑端完成。此版本仍需安卓实机验证。</Text>
+      <Text style={styles.hint}>免费非官方测试版。每位用户独立配对自己的电脑；不需要通过开发者服务器。ngrok 公网流量经第三方转发。此版本仍需真实安卓设备及群友多设备验收。</Text>
       <Text style={styles.credit}>非官方客户端 · Based on cc-haha © 2026 cc-haha</Text>
     </ScrollView>
   </SafeAreaView>;
@@ -436,6 +480,10 @@ const styles=StyleSheet.create({
  connect:{padding:24,paddingTop:65,paddingBottom:40},logo:{height:58,width:58,borderRadius:18,backgroundColor:C.accent,alignItems:'center',justifyContent:'center',marginBottom:22},
  logoText:{fontSize:35,fontWeight:'900',color:C.bg},h1:{fontSize:31,fontWeight:'800',color:C.text,marginBottom:7},
  label:{fontSize:14,fontWeight:'600',color:C.muted,marginTop:23,marginBottom:8},hint:{fontSize:12,lineHeight:20,color:C.muted,marginTop:30},
+ guideCard:{backgroundColor:C.surface,borderWidth:1,borderColor:C.line,borderRadius:13,padding:15,marginTop:24},
+ guideTitle:{fontSize:15,fontWeight:'700',color:C.text},
+ guideStep:{fontSize:13,color:C.muted,lineHeight:20,marginTop:10},
+ guideWarning:{fontSize:12,color:C.red,lineHeight:19,marginTop:11},
  credit:{fontSize:12,color:C.muted,marginTop:45},muted:{fontSize:13,color:C.muted},mini:{fontSize:11,color:C.muted,marginTop:3},
  input:{backgroundColor:C.surface,borderColor:C.line,borderWidth:1,borderRadius:12,padding:14,color:C.text,fontSize:15},
  btn:{backgroundColor:C.accent,borderRadius:12,paddingVertical:11,paddingHorizontal:15,alignItems:'center',justifyContent:'center',marginTop:6},
