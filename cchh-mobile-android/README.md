@@ -5,6 +5,11 @@ Copyright (c) 2026 cc-haha
 
 Standalone Android React Native client for CCHH v0.7.4 (H5/LAN token mode). This is not the official app, nor a WebView shell.
 
+Community onboarding is being developed for independent noncommercial users who each install the same APK and pair their **own** desktop. This slice adds native scanning of the official CCHH LAN H5 QR (serverUrl + h5Token), retaining separate public ngrok pairing. The only supported compatibility baseline is **CCHH 0.7.4**; other desktop versions require protocol verification and acceptance tests.
+
+**Do not distribute this test APK to the community as stable software yet.** Release signing continuity, Android real-device/multi-user testing, an accessible full license/third-party notice bundle, and a final security review are release blockers. See [COMMUNITY_BETA.md](./COMMUNITY_BETA.md) for step-by-step instructions and acceptance gates.
+
+
 Built in an isolated branch. Does not deploy or alter CCHH server, production data, or API keys. Phone connects through a private-network URL with a user-supplied H5 token saved in SecureStore.
 
 Supports: experimental native ngrok pairing, existing sessions, basic text conversation, live assistant streaming, stop, single-use permission approvals, reconnect, transcript refresh, no automatic replay on connection loss. Some advanced CCHH features are not implemented. Ngrok public Cookie pairing is implemented via native fetch with credentials and Origin plus desktop approval. The mobile flow has no WebView. Android real-device acceptance testing is still pending. Do not expose a raw CCHH port on the public internet.
