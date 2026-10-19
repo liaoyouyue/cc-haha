@@ -23,7 +23,7 @@ test('post pairs with exact Origin and cookies, not bearer',async()=>{
   assert.equal(seen[0].options.headers.Authorization,undefined);
 });
 test('foreign QR links rejected without calling server',async()=>{
-  await assert.rejects(()=>createPublicPairing(base,'https://other.ngrok-free.app/?pair='+'a'.repeat(40),'phone',()=>{throw new Error('network called');}),/不一致/);
+  await assert.rejects(()=>createPublicPairing(base,'https://other.ngrok-free.app/remote#pair='+'a'.repeat(40),'phone',()=>{throw new Error('network called');}),/不一致/);
 });
 test('pending/approved/rejected pairing preserved',async()=>{
   for(const status of ['pending','approved','rejected']) {
