@@ -10,6 +10,8 @@ Modes:
 Every mode dismisses a launcher ANR dialog before reading the UI hierarchy;
 that dialog otherwise hides the app's real content from uiautomator.
 """
+import json
+import os
 import re
 import subprocess
 import sys
@@ -107,10 +109,15 @@ def swipe_up() -> None:
 
 def type_text(value: str) -> None:
     # Inject in small chunks and let the field settle; one long injection can
-    # lose trailing characters when the IME is still starting up.
-    for index in range(0, len(value), 12):
-        sh("shell", "input", "text", value[index:index + 12])
-        time.sleep(0.25)
+    # lose trailing characters when the IME is still starting up. Spaces are
+    # sent as %s, which adb's input command expands literally.
+    for index, token in enumerate(value.split(' ')):
+        if index:
+            sh("shell", "input", "text", "%s")
+            time.sleep(0.2)
+        for start in range(0, len(token), 12):
+            sh("shell", "input", "text", token[start:start + 12])
+            time.sleep(0.25)
     time.sleep(0.8)
     # Escape dismisses the IME without exercising the app's BackHandler.
     sh("shell", "input", "keyevent", "111")
@@ -199,6 +206,36 @@ def chat_flow(base_url: str, token: str) -> None:
     send = wait_for(lambda value: value if find(value, "发送") is not None else None, "send button")
     tap_node(find(send, "发送"))
     wait_for(lambda value: value if find(value, "Echo: helloE2E") is not None else None, "assistant reply", timeout=60)
+
+    # A tool call must reach the desktop, wait for the phone's decision, and
+    # only run after "本次批准" is tapped.
+    approval_path = '/tmp/cchh-mobile-e2e-approved.txt'
+    try:
+        os.remove(approval_path)
+    except FileNotFoundError:
+        pass
+    payload = 'MOCK_TOOL ' + json.dumps({
+        'tool': 'Write',
+        'input': {'file_path': approval_path, 'content': 'approved'},
+        'write': {'path': approval_path, 'content': 'approved'},
+        'reply': 'APPROVED_E2E',
+    }, separators=(',', ':'))
+    composer = wait_for(lambda value: find_class(value, "android.widget.EditText"), "approval composer")
+    tap_node(composer)
+    type_text(payload)
+    send = wait_for(lambda value: value if find(value, "发送") is not None else None, "approval send button")
+    tap_node(find(send, "发送"))
+    approve = wait_for(lambda value: value if find(value, "本次批准") is not None else None, "approval prompt", timeout=60)
+    tap_node(find(approve, "本次批准"))
+    deadline = time.time() + 45
+    while time.time() < deadline:
+        if os.path.exists(approval_path):
+            with open(approval_path, encoding='utf-8') as handle:
+                if handle.read() == 'approved':
+                    break
+        time.sleep(1)
+    else:
+        raise SystemExit("approved tool did not run on the desktop")
 
     # Real foreground round-trip: leave the app, come back, and confirm the
     # transcript still loads over a freshly authenticated connection.

@@ -320,12 +320,12 @@ function Main() {
           setError(msg.message || 'CCHH 返回错误'); setTurnBusy(false); sendLock.current=false;
         }
       };
-      ws.onerror = ev => { if(wsRef.current === ws) setError('WS错误 '+(ev?.message||'')); try { ws.close(); } catch{} };
-      ws.onclose = ev => {
+      ws.onerror = () => { try { ws.close(); } catch{} };
+      ws.onclose = () => {
         if(wsRef.current !== ws) return;
         clearTimeout(handshake); clearInterval(pingRef.current);
         wsRef.current=null;
-        if(!cancelled) { setError('WS关闭 '+(ev?.code??'')+' '+(ev?.reason??'')); schedule(); }
+        if(!cancelled) schedule();
       };
     }
     function schedule() {
@@ -470,7 +470,7 @@ function Main() {
     <KeyboardAvoidingView behavior={Platform.OS==='ios'?'padding':undefined}>
       <View style={styles.composer}>
         <TextInput multiline style={styles.composeInput} placeholder="给家里的 CCHH 发送任务" placeholderTextColor={C.muted}
-          value={draft} onChangeText={setDraft} />
+          autoCapitalize="none" autoCorrect={false} value={draft} onChangeText={setDraft} />
         <Btn label={turnBusy?'执行中':'发送'} disabled={turnBusy||!historyReady||!draft.trim()||socketState!=='已连接'} onPress={send} />
         {turnBusy&& <Btn label="停止" danger outline disabled={socketState!=='已连接'} onPress={()=>sendPacket({type:'stop_generation'})} />}
       </View>
