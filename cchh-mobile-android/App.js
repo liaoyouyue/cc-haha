@@ -373,7 +373,7 @@ function Main() {
     <ScrollView contentContainerStyle={styles.connect}>
       <View style={styles.logo}><Text style={styles.logoText}>C</Text></View>
       <Text style={styles.h1}>连接我自己的 CCHH</Text>
-      <Text style={styles.muted}>CCHH Mobile · 免费社区版测试</Text>
+      <Text style={styles.muted}>CCHH Mobile · 免费通用版测试</Text>
       <Text style={styles.muted}>同一个免费 APP，每个人独立连接自己的电脑。不共享 CCHH 账号或 API Key。</Text>
       <View style={styles.guideCard}>
         <Pressable accessibilityRole="button" onPress={()=>setShowGuide(v=>!v)}>
@@ -383,7 +383,7 @@ function Main() {
           <Text style={styles.guideStep}>① 在自己的电脑打开 CCHH 0.7.4 → 设置 → H5 访问，启用访问。</Text>
           <Text style={styles.guideStep}>② 选择免费连接方式，扫描这台电脑对应的二维码。</Text>
           <Text style={styles.guideStep}>③ 核对地址并连接。公网模式还需在电脑端批准手机。</Text>
-          <Text style={styles.guideWarning}>不要把带令牌的二维码发给群友，手机只能配对自己授权的电脑。</Text>
+          <Text style={styles.guideWarning}>不要把带令牌的二维码发给其他人，手机只能配对自己授权的电脑。</Text>
         </>}
       </View>
       <Text style={styles.label}>免费连接方式（第三方免费额度可能调整）</Text>
