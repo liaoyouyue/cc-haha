@@ -126,9 +126,9 @@ def type_text(value: str) -> None:
         if index:
             sh("shell", "input", "text", "%s")
             time.sleep(0.2)
-        for start in range(0, len(token), 12):
-            sh("shell", "input", "text", token[start:start + 12])
-            time.sleep(0.25)
+        for start in range(0, len(token), 4):
+            sh("shell", "input", "text", token[start:start + 4])
+            time.sleep(0.35)
     time.sleep(0.8)
     # Escape dismisses the IME without exercising the app's BackHandler.
     sh("shell", "input", "keyevent", "111")
@@ -144,8 +144,27 @@ def secret_length(root: ET.Element) -> int:
 
 def clear_field(node) -> None:
     tap_node(node)
-    sh("shell", "input", "keyevent", *(["67"] * 80))
-    time.sleep(0.5)
+    sh("shell", "input", "keyevent", *(["67"] * 400))
+    time.sleep(0.8)
+
+
+def input_value(root: ET.Element) -> str:
+    node = find_class(root, "android.widget.EditText")
+    return (node.get("text") or "") if node is not None else ""
+
+
+def type_exact(value: str, label: str) -> None:
+    # Injected keys occasionally arrive out of order; verify and retry.
+    for _ in range(3):
+        composer = wait_for(lambda root: find_class(root, "android.widget.EditText"), label)
+        tap_node(composer)
+        type_text(value)
+        if input_value(dump()) == value:
+            return
+        node = find_class(dump(), "android.widget.EditText")
+        if node is not None:
+            clear_field(node)
+    raise SystemExit(f"{label} input did not match")
 
 
 def mode_connect() -> None:
@@ -211,9 +230,7 @@ def chat_flow(base_url: str, token: str) -> None:
     # The send button stays disabled until sync_state and history complete.
     wait_for(lambda value: value if find(value, "已连接") is not None else None, "connected session state")
 
-    composer = wait_for(lambda value: find_class(value, "android.widget.EditText"), "message input")
-    tap_node(composer)
-    type_text("helloE2E")
+    type_exact("helloE2E", "message input")
     send = wait_for(lambda value: value if find(value, "发送") is not None else None, "send button")
     tap_node(find(send, "发送"))
     wait_for(lambda value: value if find(value, "Echo: helloE2E") is not None else None, "assistant reply", timeout=60)
@@ -231,9 +248,7 @@ def chat_flow(base_url: str, token: str) -> None:
         'write': {'path': approval_path, 'content': 'approved'},
         'reply': 'APPROVED_E2E',
     }, separators=(',', ':'))
-    composer = wait_for(lambda value: find_class(value, "android.widget.EditText"), "approval composer")
-    tap_node(composer)
-    type_text(payload)
+    type_exact(payload, "approval composer")
     send = wait_for(lambda value: value if find(value, "发送") is not None else None, "approval send button")
     tap_node(find(send, "发送"))
     approve = wait_for(lambda value: value if find(value, "本次批准") is not None else None, "approval prompt", timeout=60)
