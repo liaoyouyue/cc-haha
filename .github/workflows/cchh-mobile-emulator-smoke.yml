@@ -15,10 +15,21 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
+      - name: Resolve latest successful APK build
+        id: apk
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          run_id=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow cchh-mobile-apk.yml \
+            --branch "$GITHUB_REF_NAME" --status success --limit 1 \
+            --json databaseId --jq '.[0].databaseId')
+          test -n "$run_id"
+          echo "run-id=$run_id" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         with:
           name: CCHH-Mobile-v0.1.5-Android-APK
-          run-id: 39196822855
+          run-id: ${{ steps.apk.outputs.run-id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: apk
       - name: Verify downloaded APK SHA-256
@@ -53,6 +64,18 @@ jobs:
             adb exec-out cat /data/local/tmp/cchh-mobile-ui.xml > cchh-mobile-ui.xml
             grep -q 'CCHH Mobile' cchh-mobile-ui.xml
             adb shell pidof com.cchh.mobile.client
+            # Background and resume through the Android lifecycle, then confirm
+            # the same activity still renders instead of crashing or clearing.
+            adb shell input keyevent KEYCODE_HOME
+            sleep 5
+            adb shell am start -n com.cchh.mobile.client/.MainActivity
+            sleep 8
+            adb shell pidof com.cchh.mobile.client
+            adb exec-out screencap -p > cchh-mobile-resume.png
+            test -s cchh-mobile-resume.png
+            timeout 90s adb shell uiautomator dump /data/local/tmp/cchh-mobile-resume.xml
+            adb exec-out cat /data/local/tmp/cchh-mobile-resume.xml > cchh-mobile-resume-ui.xml
+            grep -q 'CCHH Mobile' cchh-mobile-resume-ui.xml
       - name: Upload emulator screenshot
         if: always()
         uses: actions/upload-artifact@v4
@@ -62,5 +85,7 @@ jobs:
             cchh-mobile-smoke.png
             cchh-mobile-ui.xml
             cchh-mobile-logcat.txt
+            cchh-mobile-resume.png
+            cchh-mobile-resume-ui.xml
           if-no-files-found: warn
           retention-days: 7
