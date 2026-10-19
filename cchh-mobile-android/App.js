@@ -6,6 +6,7 @@ import {
 } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import CookieManager from '@react-native-cookies/cookies';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import { createPublicPairing, claimPublicPairing, publicSessionActive, parsePairingText } from './remotePairing.mjs';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -77,6 +78,8 @@ function Main() {
   const [pairSecret, setPairSecret] = useState('');
   const [pairing, setPairing] = useState(null);
   const [pairNotice, setPairNotice] = useState('');
+  const [scanning, setScanning] = useState(false);
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [sessions, setSessions] = useState([]);
@@ -158,6 +161,26 @@ function Main() {
     } catch(e) {setError(e.message||'连接失败');}
     finally {setLoading(false);}
   };
+  async function startQrScan() {
+    setError('');
+    try {
+      if(!cameraPermission?.granted) {
+        const result=await requestCameraPermission();
+        if(!result.granted) {setError('需要允许使用摄像头才能扫描配对二维码');return;}
+      }
+      setScanning(true);
+    } catch {setError('无法启用摄像头，请手动粘贴二维码链接');}
+  }
+  function onQrScanned(data) {
+    if(!scanning) return;
+    setScanning(false);
+    try {
+      const parsed=parsePairingText(data?.data||'');
+      if(!parsed.baseUrl) throw new Error('扫描到的不是公网配对链接');
+      setMode('public');setUrl(parsed.baseUrl);setPairSecret(data.data);
+      setPairing(null);setPairNotice('二维码识别成功，点击“申请公网手机配对”开始。');setError('');
+    } catch(e) {setError(e.message||'二维码无法识别');}
+  }
   async function logout() {
     try {
       if(config?.mode === 'public') await CookieManager.clearByName(config.baseUrl,'__Host-haha-remote');
@@ -309,6 +332,12 @@ function Main() {
         autoCapitalize="none" autoCorrect={false} keyboardType="url" placeholderTextColor={C.muted}
         placeholder={mode==='public'?'https://your-subdomain.ngrok-free.app':'http://100.101.102.103:3456'} />
       {mode==='public' ? <>
+        <View style={{marginTop:14}}><Btn label="使用手机相机扫码配对" outline onPress={startQrScan} /></View>
+        {scanning && <View style={{height:270,marginTop:12,borderRadius:16,overflow:'hidden'}}>
+          <CameraView style={{flex:1}} facing="back" barcodeScannerSettings={{barcodeTypes:['qr']}}
+            onBarcodeScanned={onQrScanned} />
+          <View style={{position:'absolute',bottom:8,right:8}}><Btn label="取消扫码" outline onPress={()=>setScanning(false)} /></View>
+        </View>}
         <Text style={styles.label}>一次性配对密钥（或完整二维码链接）</Text>
         <TextInput style={styles.input} value={pairSecret} onChangeText={value=>{setPairSecret(value);setPairing(null);}}
           autoCapitalize="none" autoCorrect={false} placeholderTextColor={C.muted}
