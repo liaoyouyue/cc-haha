@@ -1,4 +1,4 @@
-# CCHH Mobile Android · Unofficial 0.1.4 Test
+# CCHH Mobile Android · Unofficial 0.1.5 Test
 
 Based on cc-haha: https://github.com/NanmiCoder/cc-haha
 Copyright (c) 2026 cc-haha
@@ -12,3 +12,8 @@ Supports: experimental native ngrok pairing, existing sessions, basic text conve
 This Android build uses test signing. Do not upload credentials or use it for sensitive production operations before Android-device acceptance tests.
 
 CCHH upstream source license (v0.7.4): https://github.com/NanmiCoder/cc-haha/blob/v0.7.4/LICENSE . For redistribution ensure all required license and attribution notices are included. App is for personal noncommercial testing; consult the full upstream license before commercial use.
+
+
+Public pairing: open CCHH 0.7.4 Settings > H5 Access > ngrok and generate QR. In the Android app, choose Public/ngrok and scan QR or paste its full URL. Submit the pairing request, approve this device on the desktop, then tap Check approval. This invokes native Cookie-based pairing; desktop must be online and accessible. Real Android-to-CCHH live validation still pending.
+
+Test APK signing keys are generated per build; uninstall the previous test APK before installing a version built by another workflow run if Android reports an incompatible signature.

@@ -2,7 +2,7 @@
   "expo": {
     "name": "CCHH Mobile",
     "slug": "cchh-mobile",
-    "version": "0.1.4",
+    "version": "0.1.5",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "android": {
@@ -20,6 +20,14 @@
           "android": {
             "usesCleartextTraffic": true
           }
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "允许 CCHH Mobile 使用相机扫描连接二维码",
+          "recordAudioAndroid": false,
+          "barcodeScannerEnabled": true
         }
       ]
     ]

@@ -1,6 +1,6 @@
 {
   "name": "cchh-mobile",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
@@ -17,6 +17,7 @@
     "react": "19.2.3",
     "react-native": "0.86.3",
     "react-native-safe-area-context": "~5.7.0",
-    "@react-native-cookies/cookies": "6.2.1"
+    "@react-native-cookies/cookies": "6.2.1",
+    "expo-camera": "~57.0.6"
   }
 }
