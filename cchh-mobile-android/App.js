@@ -317,12 +317,12 @@ function Main() {
           setError(msg.message || 'CCHH 返回错误'); setTurnBusy(false); sendLock.current=false;
         }
       };
-      ws.onerror = () => { try { ws.close(); } catch{} };
-      ws.onclose = () => {
+      ws.onerror = ev => { if(wsRef.current === ws) setError('WS错误 '+(ev?.message||'')); try { ws.close(); } catch{} };
+      ws.onclose = ev => {
         if(wsRef.current !== ws) return;
         clearTimeout(handshake); clearInterval(pingRef.current);
         wsRef.current=null;
-        if(!cancelled) schedule();
+        if(!cancelled) { setError('WS关闭 '+(ev?.code??'')+' '+(ev?.reason??'')); schedule(); }
       };
     }
     function schedule() {
