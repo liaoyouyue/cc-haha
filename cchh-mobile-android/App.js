@@ -275,7 +275,10 @@ function Main() {
       let ws;
       try { ws = config.mode==='public'
         ? new WebSocket(u.toString(),undefined,{headers:{origin:config.baseUrl}})
-        : new WebSocket(u.toString()); }
+        // Stock CCHH 0.7.4 rejects any WebSocket browser Origin that is not
+        // localhost/file://. A native app has no web origin, so declare the
+        // desktop app's own local origin instead of the LAN IP.
+        : new WebSocket(u.toString(),undefined,{headers:{origin:'file://'}}); }
       catch { schedule(); return; }
       wsRef.current = ws; setSocketState(tries ? '重连中' : '连接中');
       handshake = setTimeout(() => { try { ws.close(); } catch{} }, 15000);
