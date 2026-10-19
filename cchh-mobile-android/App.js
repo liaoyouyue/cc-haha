@@ -8,6 +8,7 @@ import * as SecureStore from 'expo-secure-store';
 import CookieManager from '@preeternal/react-native-cookie-manager';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { createPublicPairing, claimPublicPairing, publicSessionActive, parsePairingText } from './remotePairing.mjs';
+import { splitFences } from './messageText.mjs';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 
@@ -60,6 +61,10 @@ function messagesFromHistory(payload) {
       id: String(m.id), role: m.type, text: textFromContent(m.content),
       timestamp: m.timestamp || ''
     })).filter(m => m.text);
+}
+function MessageBody({text}) {
+  return splitFences(text).map((part,index) => <Text key={index} selectable
+    style={part.code?styles.codeText:styles.bubbleText}>{part.text}</Text>);
 }
 function Btn({ label, onPress, disabled, outline, danger }) {
   return <Pressable accessibilityRole="button" disabled={disabled} onPress={onPress}
@@ -412,7 +417,7 @@ function Main() {
       ListHeaderComponent={cursor?<Pressable onPress={()=>loadHistory(selected,true)}><Text style={styles.actionLink}>加载更早记录</Text></Pressable>:null}
       renderItem={({item})=><View style={[styles.bubble,item.role==='user'?styles.mine:styles.theirs]}>
         <Text style={styles.bubbleWho}>{item.pending?'你 · 待服务端确认':item.role==='user'?'你':'CCHH'}</Text>
-        <Text selectable style={styles.bubbleText}>{item.text}</Text></View>} />
+        <MessageBody text={item.text} /></View>} />
     {!!stream && <View style={styles.streaming}><Text style={styles.mini}>正在回复…</Text><Text style={styles.bubbleText} numberOfLines={5}>{stream}</Text></View>}
     <KeyboardAvoidingView behavior={Platform.OS==='ios'?'padding':undefined}>
       <View style={styles.composer}>
@@ -445,6 +450,7 @@ const styles=StyleSheet.create({
  messages:{padding:14,paddingBottom:20,flexGrow:1},bubble:{borderRadius:13,marginBottom:12,padding:13,maxWidth:'92%'},
  mine:{backgroundColor:'#3A3028',alignSelf:'flex-end'},theirs:{backgroundColor:C.surface,alignSelf:'flex-start',borderWidth:1,borderColor:C.line},
  bubbleWho:{fontSize:11,color:C.accent,marginBottom:7},bubbleText:{fontSize:14,lineHeight:21,color:C.text},
+ codeText:{fontFamily:Platform.select({ios:'Menlo',android:'monospace'}),fontSize:13,lineHeight:19,color:C.text,backgroundColor:C.surface2,padding:9,borderRadius:8,marginVertical:5},
  streaming:{marginHorizontal:14,marginBottom:10,padding:12,backgroundColor:C.surface,borderRadius:12},
  composer:{flexDirection:'row',padding:10,borderTopColor:C.line,borderTopWidth:1,alignItems:'flex-end',gap:8,backgroundColor:C.bg},
  composeInput:{color:C.text,backgroundColor:C.surface,borderRadius:11,flex:1,maxHeight:110,minHeight:43,padding:11},
