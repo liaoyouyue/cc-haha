@@ -373,6 +373,7 @@ function Main() {
     <ScrollView contentContainerStyle={styles.connect}>
       <View style={styles.logo}><Text style={styles.logoText}>C</Text></View>
       <Text style={styles.h1}>连接我自己的 CCHH</Text>
+      <Text style={styles.muted}>CCHH Mobile · 免费社区版测试</Text>
       <Text style={styles.muted}>同一个免费 APP，每个人独立连接自己的电脑。不共享 CCHH 账号或 API Key。</Text>
       <View style={styles.guideCard}>
         <Pressable accessibilityRole="button" onPress={()=>setShowGuide(v=>!v)}>
