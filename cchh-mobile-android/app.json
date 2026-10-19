@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "CCHH Mobile",
+    "slug": "cchh-mobile",
+    "version": "0.1.3",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "android": {
+      "package": "com.cchh.mobile.client",
+      "permissions": [
+        "INTERNET"
+      ],
+      "softwareKeyboardLayoutMode": "resize"
+    },
+    "plugins": [
+      "expo-secure-store",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ]
+    ]
+  }
+}
