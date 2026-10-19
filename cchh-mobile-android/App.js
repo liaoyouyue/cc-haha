@@ -232,7 +232,7 @@ function Main() {
       if(config.mode!=='public') u.searchParams.set('token', config.token);
       let ws;
       try { ws = config.mode==='public'
-        ? new WebSocket(u.toString(),undefined,{headers:{Origin:config.baseUrl}})
+        ? new WebSocket(u.toString(),undefined,{headers:{origin:config.baseUrl}})
         : new WebSocket(u.toString()); }
       catch { schedule(); return; }
       wsRef.current = ws; setSocketState(tries ? '重连中' : '连接中');
