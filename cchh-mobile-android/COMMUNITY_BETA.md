@@ -43,3 +43,19 @@
 源码许可：https://github.com/NanmiCoder/cc-haha/blob/v0.7.4/LICENSE
 
 本切片仅处理 APP 首次连接体验与二维码解析，不变更 CCHH 正式版服务端、现有生产数据库、任何生产密钥及 FreeLLMAPI。未经合规和 Android 真机验收，**禁止向群友宣称「已正式可用」或作为稳定版本分发**。
+
+---
+
+## 附录 A：第三方依赖声明
+
+完整第三方依赖声明请见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+主要依赖：
+- Expo / React Native / React：MIT License
+- Expo Modules (expo-camera, expo-secure-store, expo-build-properties, expo-status-bar)：MIT License
+- React Native / React：MIT License
+- @preeternal/react-native-cookie-manager：MIT License
+- AndroidX / Kotlin / OkHttp / Hermes：Apache 2.0 / MIT / BSD
+- 上游 cc-haha v0.7.4：cc-haha Community Source License 1.0（非商业社区分享需遵守许可证第 4 节）
+
+APK 内已包含 META-INF/NOTICE.md 与各依赖 LICENSE.txt。
