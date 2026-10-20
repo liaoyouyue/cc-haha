@@ -1,40 +1,24 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator, Alert, AppState, BackHandler, FlatList,
-  KeyboardAvoidingView, Platform, Pressable, ScrollView,
+  KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView,
   StyleSheet, Text, TextInput, View
 } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import CookieManager from '@preeternal/react-native-cookie-manager';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { createPublicPairing, claimPublicPairing, publicSessionActive, parsePairingText } from './remotePairing.mjs';
+import { parsePrivatePairingQr } from './privatePairing.mjs';
 import { splitFences } from './messageText.mjs';
+import { isForegroundResume, reconnectDelayMs } from './mobileRecovery.mjs';
+import { endpoint } from './connectionUtils.mjs';
+import { LEGAL_LINKS } from './legalLinks.mjs';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 
 const STORE_KEY = 'cchh-mobile-android-connection-v1';
 const C = { bg:'#101215', surface:'#1B1F24', surface2:'#262B32', line:'#363B43',
   text:'#F5F6F7', muted:'#A6ACB5', accent:'#F5AF69', green:'#7FD9A6', red:'#F18686' };
-
-function endpoint(raw) {
-  const url = new URL(raw.trim());
-  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password ||
-      url.search || url.hash || (url.pathname !== '/' && url.pathname !== ''))
-    throw new Error('地址格式不正确：仅填写服务器地址和端口，不带路径、账号或参数');
-  if (url.protocol === 'http:') {
-    const h = url.hostname.toLowerCase();
-    const chunks = h.split('.').map(Number);
-    const validIP = chunks.length === 4 && chunks.every(n => Number.isInteger(n) && n >= 0 && n <= 255);
-    const privateIp = validIP && (chunks[0] === 10 ||
-      (chunks[0] === 172 && chunks[1] >= 16 && chunks[1] <= 31) ||
-      (chunks[0] === 192 && chunks[1] === 168) ||
-      (chunks[0] === 100 && chunks[1] >= 64 && chunks[1] <= 127) ||
-      (chunks[0] === 127));
-    if (!privateIp && h !== 'localhost')
-      throw new Error('公网地址必须使用 HTTPS；HTTP 仅允许局域网或 Tailscale IP');
-  }
-  return url.origin;
-}
 async function getJson(config, path) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 15000);
@@ -80,6 +64,9 @@ function Main() {
   const [url, setUrl] = useState('');
   const [token, setToken] = useState('');
   const [mode, setMode] = useState('private');
+  const [networkType, setNetworkType] = useState('lan');
+  const [scanKind, setScanKind] = useState('public');
+  const [showGuide, setShowGuide] = useState(true);
   const [pairSecret, setPairSecret] = useState('');
   const [pairing, setPairing] = useState(null);
   const [pairNotice, setPairNotice] = useState('');
@@ -92,6 +79,7 @@ function Main() {
   const [history, setHistory] = useState([]);
   const [historyReady, setHistoryReady] = useState(false);
   const [cursor, setCursor] = useState(null);
+  const [showAbout, setShowAbout] = useState(false);
   const [draft, setDraft] = useState('');
   const [socketState, setSocketState] = useState('未连接');
   const [stream, setStream] = useState('');
@@ -101,6 +89,7 @@ function Main() {
   const wsRef = useRef(null);
   const reconnectRef = useRef(null);
   const pingRef = useRef(null);
+  const pongRef = useRef(null);
   const sendLock = useRef(false);
   const selectedId = useRef(null);
   const chatList = useRef(null);
@@ -168,7 +157,15 @@ function Main() {
     } catch(e) {setError(e.message||'连接失败');}
     finally {setLoading(false);}
   };
-  async function startQrScan() {
+  function chooseConnection(next) {
+    setMode(next === 'public' ? 'public' : 'private');
+    setNetworkType(next);
+    // Do not carry credentials or pending pairing state across connection choices.
+    setUrl(''); setToken(''); setPairSecret(''); setPairing(null);
+    setPairNotice(''); setScanning(false); setError('');
+  }
+  async function startQrScan(kind) {
+    setScanKind(kind);
     setError('');
     try {
       if(!cameraPermission?.granted) {
@@ -182,10 +179,22 @@ function Main() {
     if(!scanning) return;
     setScanning(false);
     try {
-      const parsed=parsePairingText(data?.data||'');
-      if(!parsed.baseUrl) throw new Error('扫描到的不是公网配对链接');
-      setMode('public');setUrl(parsed.baseUrl);setPairSecret(data.data);
-      setPairing(null);setPairNotice('二维码识别成功，点击“申请公网手机配对”开始。');setError('');
+      if(scanKind === 'private') {
+        const parsed = parsePrivatePairingQr(data?.data||'');
+        setMode('private'); setUrl(parsed.baseUrl); setToken(parsed.token);
+        setPairing(null); setPairSecret(''); setError('');
+        const isLanQr = parsed.baseUrl.startsWith('http://192.168.') ||
+          parsed.baseUrl.startsWith('http://10.') ||
+          parsed.baseUrl.startsWith('http://172.');
+        setPairNotice(networkType === 'tailscale' && isLanQr
+          ? '已识别电脑 H5 令牌，但地址仍是局域网地址。请改为同一台电脑的 Tailscale 100.x 地址。'
+          : '已识别 H5 二维码。请核对电脑地址后点击连接；扫码不会自动发送任务。');
+      } else {
+        const parsed=parsePairingText(data?.data||'');
+        if(!parsed.baseUrl) throw new Error('扫描到的不是公网配对链接');
+        setMode('public');setUrl(parsed.baseUrl);setPairSecret(data.data);
+        setPairing(null);setPairNotice('二维码识别成功，点击“申请公网手机配对”开始。');setError('');
+      }
     } catch(e) {setError(e.message||'二维码无法识别');}
   }
   async function logout() {
@@ -194,7 +203,9 @@ function Main() {
       await SecureStore.deleteItemAsync(STORE_KEY);
       setSelected(null);setConfig(null);setSessions([]);
       setHistory([]);setApprovals([]);setStream('');
-      setError('');
+      setUrl('');setToken('');setPairSecret('');setPairing(null);
+      setPairNotice('');setMode('private');setNetworkType('lan');
+      setScanning(false);setError('');
     } catch {
       Alert.alert('无法解除配对','请重试，并在电脑端撤销旧设备授权。');
     }
@@ -231,12 +242,12 @@ function Main() {
 
   useEffect(() => {
     if(!config || !selected) return;
-    let cancelled = false, tries = 0, handshake = null, previousAppState = AppState.currentState, lastSeen = 0;
+let cancelled = false, tries = 0, handshake = null, previousAppState = AppState.currentState;
     setHistory([]); setHistoryReady(false); setCursor(null); setApprovals([]); setStream(''); keepScroll.current=false;
     setTurnBusy(false); sendLock.current = true; setDraft('');
     setSocketState('连接中'); loadHistory(selected);
     function clearConn() {
-      clearTimeout(reconnectRef.current); clearTimeout(handshake); clearInterval(pingRef.current);
+      clearTimeout(reconnectRef.current); clearTimeout(handshake); clearInterval(pingRef.current); clearTimeout(pongRef.current);
       if(wsRef.current) { const s=wsRef.current; wsRef.current=null; try { s.close(); } catch{} }
     }
     function open() {
@@ -249,26 +260,35 @@ function Main() {
       let ws;
       try { ws = config.mode==='public'
         ? new WebSocket(u.toString(),undefined,{headers:{origin:config.baseUrl}})
-        : new WebSocket(u.toString()); }
+        // Stock CCHH 0.7.4 rejects any WebSocket browser Origin that is not
+        // localhost/file://. A native app has no web origin, so declare the
+        // desktop app's own local origin instead of the LAN IP.
+        : new WebSocket(u.toString(),undefined,{headers:{origin:'file://'}}); }
       catch { schedule(); return; }
       wsRef.current = ws; setSocketState(tries ? '重连中' : '连接中');
       handshake = setTimeout(() => { try { ws.close(); } catch{} }, 15000);
       ws.onopen = () => {
         if(wsRef.current !== ws) return;
-        clearTimeout(handshake); tries=0; lastSeen=Date.now(); setSocketState('同步中');
+        clearTimeout(handshake); tries=0; setSocketState('同步中');
         ws.send(JSON.stringify({type:'sync_state'}));
-        pingRef.current = setInterval(() => {
-          if(ws.readyState !== WebSocket.OPEN) return;
-          // A half-open socket never fires onclose; probe and replace it.
-          if(Date.now() - lastSeen > 90000) { try { ws.close(); } catch{} return; }
-          ws.send(JSON.stringify({type:'ping'}));
+pingRef.current = setInterval(() => {
+          if(cancelled || wsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return;
+          try {
+            ws.send(JSON.stringify({type:'ping'}));
+            clearTimeout(pongRef.current);
+            pongRef.current = setTimeout(() => {
+              if(!cancelled && wsRef.current === ws && ws.readyState === WebSocket.OPEN) {
+                try { ws.close(); } catch {}
+              }
+            }, 12000);
+          } catch { try { ws.close(); } catch {} }
         }, 30000);
         loadHistory(selected);
       };
       ws.onmessage = ev => {
-        if(wsRef.current !== ws) return;
+if(wsRef.current !== ws) return;
         let msg; try { msg=JSON.parse(ev.data); } catch { return; }
-        lastSeen=Date.now();
+        if(msg.type === 'pong') { clearTimeout(pongRef.current); return; }
         if(msg.type === 'content_delta' && typeof msg.text === 'string')
           setStream(prev => prev + msg.text);
         else if(msg.type === 'content_start' && msg.blockType === 'text') setStream('');
@@ -299,14 +319,15 @@ function Main() {
         if(!cancelled) schedule();
       };
     }
-    function schedule() {
+function schedule() {
       if(cancelled) return;
+      clearTimeout(reconnectRef.current);
       setSocketState('正在重连');
-      tries++; reconnectRef.current=setTimeout(open, Math.min(30000, 1000 * 2**Math.min(tries,5)));
+      tries++; reconnectRef.current=setTimeout(open, reconnectDelayMs(tries));
     }
     open();
     const foreground = AppState.addEventListener('change', state => {
-      if(previousAppState !== 'active' && state === 'active') {
+      if(isForegroundResume(previousAppState, state)) {
         clearConn(); tries=0; open(); loadHistory(selected);
       }
       previousAppState=state;
@@ -341,28 +362,76 @@ function Main() {
       setApprovals(prev => prev.filter(p => p.requestId !== request.requestId));
     }
   }
+  function openLegal(url) {
+    Linking.openURL(url).catch(() => Alert.alert('无法打开链接', url));
+  }
 
   if(restoring) return <View style={styles.center}><ActivityIndicator color={C.accent} /></View>;
+  if(showAbout) return <SafeAreaView style={styles.flex}><StatusBar style="light" />
+    <View style={styles.header}>
+      <Text style={styles.title}>关于 / 法律</Text>
+      <Pressable accessibilityRole="button" onPress={()=>setShowAbout(false)}><Text style={styles.actionLink}>关闭</Text></Pressable>
+    </View>
+    <ScrollView contentContainerStyle={styles.aboutContent}>
+      <Text style={styles.aboutTitle}>CCHH Mobile</Text>
+      <Text style={styles.aboutText}>版本 0.1.5 (Build 1)</Text>
+      <Text style={styles.aboutText}>包名: com.cchh.mobile.client</Text>
+      <Text style={styles.aboutText}>基于 CCHH v0.7.4</Text>
+      <Text style={styles.aboutText}>非官方客户端，不代表上游认可或背书。</Text>
+      <View style={styles.aboutSection}>
+        <Text style={styles.aboutSectionTitle}>源码与许可证</Text>
+        <Text style={styles.aboutText}>Based on cc-haha: https://github.com/NanmiCoder/cc-haha</Text>
+        <Text style={styles.aboutText}>Copyright (c) 2026 cc-haha</Text>
+        <Pressable accessibilityRole="link" onPress={()=>openLegal(LEGAL_LINKS.upstreamLicense)}><Text style={styles.legalLink}>打开上游许可证</Text></Pressable>
+        <Pressable accessibilityRole="link" onPress={()=>openLegal(LEGAL_LINKS.source)}><Text style={styles.legalLink}>打开本客户端源码</Text></Pressable>
+        <Pressable accessibilityRole="link" onPress={()=>openLegal(LEGAL_LINKS.thirdPartyNotices)}><Text style={styles.legalLink}>打开第三方声明</Text></Pressable>
+      </View>
+      <View style={styles.aboutSection}>
+        <Text style={styles.aboutSectionTitle}>免责声明</Text>
+        <Text style={styles.aboutText}>非官方、非商业测试版，不保证稳定性。</Text>
+        <Text style={styles.aboutText}>每位用户独立连接自己的 CCHH；不提供集中账号或开发者代理。</Text>
+      </View>
+    </ScrollView>
+  </SafeAreaView>;
   if(!config) return <SafeAreaView style={styles.flex}><StatusBar style="light" />
     <ScrollView contentContainerStyle={styles.connect}>
       <View style={styles.logo}><Text style={styles.logoText}>C</Text></View>
-      <Text style={styles.h1}>CCHH Mobile</Text>
-      <Text style={styles.muted}>把家里的 AI 工作台带在身边。</Text>
-      <View style={{flexDirection:'row',gap:8,marginTop:24}}>
-        <View style={{flex:1}}><Btn label="私有网络" outline={mode!=='private'} onPress={()=>{setMode('private');setPairing(null);setError('')}} /></View>
-        <View style={{flex:1}}><Btn label="公网 ngrok" outline={mode!=='public'} onPress={()=>{setMode('public');setPairing(null);setError('')}} /></View>
+      <Text style={styles.h1}>连接我自己的 CCHH</Text>
+      <Text style={styles.muted}>CCHH Mobile · 免费通用版测试</Text>
+      <Text style={styles.muted}>同一个免费 APP，每个人独立连接自己的电脑。不共享 CCHH 账号或 API Key。</Text>
+      <View style={styles.guideCard}>
+        <Pressable accessibilityRole="button" onPress={()=>setShowGuide(v=>!v)}>
+          <Text style={styles.guideTitle}>{showGuide?'▼':'▶'} 首次连接指引</Text>
+        </Pressable>
+        {showGuide && <>
+          <Text style={styles.guideStep}>① 在自己的电脑打开 CCHH 0.7.4 → 设置 → H5 访问，启用访问。</Text>
+          <Text style={styles.guideStep}>② 选择免费连接方式，扫描这台电脑对应的二维码。</Text>
+          <Text style={styles.guideStep}>③ 核对地址并连接。公网模式还需在电脑端批准手机。</Text>
+          <Text style={styles.guideWarning}>不要把带令牌的二维码发给其他人，手机只能配对自己授权的电脑。</Text>
+        </>}
       </View>
-      <Text style={styles.label}>{mode==='public'?'ngrok HTTPS 公网地址':'CCHH 服务器地址'}</Text>
+      <Text style={styles.label}>免费连接方式（第三方免费额度可能调整）</Text>
+      <View style={{flexDirection:'row',gap:8}}>
+        <View style={{flex:1}}><Btn label="同一 Wi-Fi" outline={networkType!=='lan'} onPress={()=>chooseConnection('lan')} /></View>
+        <View style={{flex:1}}><Btn label="Tailscale" outline={networkType!=='tailscale'} onPress={()=>chooseConnection('tailscale')} /></View>
+      </View>
+      <Btn label="公网 ngrok · 免费额度（实验性）" outline={networkType!=='public'} onPress={()=>chooseConnection('public')} />
+      <Text style={styles.guideStep}>{mode==='public'
+        ? '电脑打开「H5 访问 → 公网 ngrok」，使用自己的免费账户开通后生成公网配对二维码。'
+        : networkType==='tailscale'
+          ? '先让手机和电脑加入自己的 Tailscale 网络；扫码读取 H5 令牌后，确认地址是电脑的 100.x 私网地址。'
+          : '手机和电脑连接同一个可信 Wi-Fi，然后扫描自己电脑「H5 访问」中的二维码。'}</Text>
+      <View style={{marginTop:8}}><Btn label={mode==='public'?'扫描公网配对二维码':'扫描电脑 H5 二维码'} outline onPress={()=>startQrScan(mode==='public'?'public':'private')} /></View>
+      {scanning && <View style={{height:270,marginTop:12,borderRadius:16,overflow:'hidden'}}>
+        <CameraView style={{flex:1}} facing="back" barcodeScannerSettings={{barcodeTypes:['qr']}}
+          onBarcodeScanned={onQrScanned} />
+        <View style={{position:'absolute',bottom:8,right:8}}><Btn label="取消扫码" outline onPress={()=>setScanning(false)} /></View>
+      </View>}
+      <Text style={styles.label}>{mode==='public'?'ngrok HTTPS 公网地址':'我的 CCHH 服务器地址'}</Text>
       <TextInput style={styles.input} value={url} onChangeText={setUrl}
         autoCapitalize="none" autoCorrect={false} keyboardType="url" placeholderTextColor={C.muted}
         placeholder={mode==='public'?'https://your-subdomain.ngrok-free.app':'http://100.101.102.103:3456'} />
       {mode==='public' ? <>
-        <View style={{marginTop:14}}><Btn label="使用手机相机扫码配对" outline onPress={startQrScan} /></View>
-        {scanning && <View style={{height:270,marginTop:12,borderRadius:16,overflow:'hidden'}}>
-          <CameraView style={{flex:1}} facing="back" barcodeScannerSettings={{barcodeTypes:['qr']}}
-            onBarcodeScanned={onQrScanned} />
-          <View style={{position:'absolute',bottom:8,right:8}}><Btn label="取消扫码" outline onPress={()=>setScanning(false)} /></View>
-        </View>}
         <Text style={styles.label}>一次性配对密钥（或完整二维码链接）</Text>
         <TextInput style={styles.input} value={pairSecret} onChangeText={value=>{setPairSecret(value);setPairing(null);}}
           autoCapitalize="none" autoCorrect={false} placeholderTextColor={C.muted}
@@ -376,12 +445,19 @@ function Main() {
       {!!error && <Text style={styles.err}>{error}</Text>}
       {!!pairNotice && <Text style={{color:C.green,marginVertical:12,lineHeight:21}}>{pairNotice}</Text>}
       <Btn label={loading?'检查连接中…':mode==='public'?(pairing?'检查审批并连接':'申请公网手机配对'):'连接到 CCHH'} onPress={connect} disabled={loading} />
-      <Text style={styles.hint}>局域网优先 Tailscale；公网使用 CCHH 官方 ngrok 配对，不把 H5 令牌暴露公网。公网审批需在电脑端完成。此版本仍需安卓实机验证。</Text>
+      <Text style={styles.hint}>免费非官方测试版。每位用户独立配对自己的电脑；不需要通过开发者服务器。ngrok 公网流量经第三方转发。此版本仍需真实安卓设备及群友多设备验收。</Text>
       <Text style={styles.credit}>非官方客户端 · Based on cc-haha © 2026 cc-haha</Text>
+      <Pressable accessibilityRole="button" onPress={()=>setShowAbout(true)}><Text style={styles.legalLink}>关于 / 法律</Text></Pressable>
     </ScrollView>
   </SafeAreaView>;
   if(!selected) return <SafeAreaView style={styles.flex}><StatusBar style="light" />
-    <View style={styles.header}><Text style={styles.title}>会话</Text><Pressable onPress={logout}><Text style={styles.actionLink}>解除配对</Text></Pressable></View>
+    <View style={styles.header}>
+      <Text style={styles.title}>会话</Text>
+      <View style={styles.headerActions}>
+        <Pressable accessibilityRole="button" onPress={()=>setShowAbout(true)}><Text style={styles.actionLink}>关于</Text></Pressable>
+        <Pressable accessibilityRole="button" onPress={logout}><Text style={styles.actionLink}>解除配对</Text></Pressable>
+      </View>
+    </View>
     <TextInput style={styles.search} value={search} onChangeText={setSearch} placeholder="搜索会话或项目" placeholderTextColor={C.muted} />
     {!!error && <Text style={styles.err}>{error}</Text>}
     <FlatList data={sessions.filter(s => (s.title+' '+s.projectPath).toLowerCase().includes(search.toLowerCase()))}
@@ -399,7 +475,7 @@ function Main() {
       <Pressable onPress={()=>{setSelected(null);setError('')}}><Text style={styles.actionLink}>‹ 会话</Text></Pressable>
       <View style={styles.headerCenter}><Text numberOfLines={1} style={styles.headerTitle}>{selected.title||'聊天'}</Text>
         <Text style={styles.mini}>{socketState}{turnBusy?' · 执行中':''}</Text></View>
-      <Pressable onPress={()=>loadHistory(selected)}><Text style={styles.actionLink}>刷新</Text></Pressable>
+      <Pressable onPress={()=>setShowAbout(true)}><Text style={styles.actionLink}>关于</Text></Pressable>
     </View>
     {!!error && <Text style={styles.err}>{error}</Text>}
     {!!approvals.length && <View style={styles.approval}>
@@ -422,7 +498,7 @@ function Main() {
     <KeyboardAvoidingView behavior={Platform.OS==='ios'?'padding':undefined}>
       <View style={styles.composer}>
         <TextInput multiline style={styles.composeInput} placeholder="给家里的 CCHH 发送任务" placeholderTextColor={C.muted}
-          value={draft} onChangeText={setDraft} />
+          autoCapitalize="none" autoCorrect={false} value={draft} onChangeText={setDraft} />
         <Btn label={turnBusy?'执行中':'发送'} disabled={turnBusy||!historyReady||!draft.trim()||socketState!=='已连接'} onPress={send} />
         {turnBusy&& <Btn label="停止" danger outline disabled={socketState!=='已连接'} onPress={()=>sendPacket({type:'stop_generation'})} />}
       </View>
@@ -436,6 +512,10 @@ const styles=StyleSheet.create({
  connect:{padding:24,paddingTop:65,paddingBottom:40},logo:{height:58,width:58,borderRadius:18,backgroundColor:C.accent,alignItems:'center',justifyContent:'center',marginBottom:22},
  logoText:{fontSize:35,fontWeight:'900',color:C.bg},h1:{fontSize:31,fontWeight:'800',color:C.text,marginBottom:7},
  label:{fontSize:14,fontWeight:'600',color:C.muted,marginTop:23,marginBottom:8},hint:{fontSize:12,lineHeight:20,color:C.muted,marginTop:30},
+ guideCard:{backgroundColor:C.surface,borderWidth:1,borderColor:C.line,borderRadius:13,padding:15,marginTop:24},
+ guideTitle:{fontSize:15,fontWeight:'700',color:C.text},
+ guideStep:{fontSize:13,color:C.muted,lineHeight:20,marginTop:10},
+ guideWarning:{fontSize:12,color:C.red,lineHeight:19,marginTop:11},
  credit:{fontSize:12,color:C.muted,marginTop:45},muted:{fontSize:13,color:C.muted},mini:{fontSize:11,color:C.muted,marginTop:3},
  input:{backgroundColor:C.surface,borderColor:C.line,borderWidth:1,borderRadius:12,padding:14,color:C.text,fontSize:15},
  btn:{backgroundColor:C.accent,borderRadius:12,paddingVertical:11,paddingHorizontal:15,alignItems:'center',justifyContent:'center',marginTop:6},
@@ -455,5 +535,9 @@ const styles=StyleSheet.create({
  composer:{flexDirection:'row',padding:10,borderTopColor:C.line,borderTopWidth:1,alignItems:'flex-end',gap:8,backgroundColor:C.bg},
  composeInput:{color:C.text,backgroundColor:C.surface,borderRadius:11,flex:1,maxHeight:110,minHeight:43,padding:11},
  approval:{padding:11,margin:12,borderRadius:13,backgroundColor:C.surface2,borderColor:C.accent,borderWidth:1},
- approvalTitle:{color:C.accent,fontWeight:'800',marginBottom:6},actions:{flexDirection:'row',justifyContent:'flex-end',gap:10,marginTop:8}
+ approvalTitle:{color:C.accent,fontWeight:'800',marginBottom:6},actions:{flexDirection:'row',justifyContent:'flex-end',gap:10,marginTop:8},
+ headerActions:{flexDirection:'row',alignItems:'center',gap:16},
+ aboutContent:{padding:24,paddingBottom:48},aboutTitle:{fontSize:27,fontWeight:'800',color:C.text,marginBottom:18},
+ aboutText:{fontSize:13,lineHeight:21,color:C.muted,marginBottom:5},aboutSection:{marginTop:22},
+ aboutSectionTitle:{fontSize:16,fontWeight:'700',color:C.text,marginBottom:9},legalLink:{fontSize:14,lineHeight:22,color:C.accent,marginTop:9,textDecorationLine:'underline'}
 });

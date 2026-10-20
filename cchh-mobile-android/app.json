@@ -7,6 +7,7 @@
     "userInterfaceStyle": "dark",
     "android": {
       "package": "com.cchh.mobile.client",
+      "versionCode": 1,
       "permissions": [
         "INTERNET"
       ],

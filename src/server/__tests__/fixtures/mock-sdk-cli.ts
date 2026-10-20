@@ -114,6 +114,32 @@ async function appendGuideReplayHistory(inputs: any[], reply: string): Promise<v
   }
 }
 
+async function appendNormalTurn(userText: string, reply: string): Promise<void> {
+  if (!process.env.CLAUDE_CONFIG_DIR) return
+  const projects = join(process.env.CLAUDE_CONFIG_DIR, 'projects')
+  for (const directory of await readdir(projects).catch(() => [])) {
+    const file = join(projects, directory, `${sessionId}.jsonl`)
+    try { await readFile(file) } catch { continue }
+    const now = Date.now()
+    const userUuid = crypto.randomUUID()
+    const records = [
+      {
+        type: 'user', uuid: userUuid, parentUuid: null, sessionId, userType: 'external',
+        isSidechain: false, cwd: process.cwd(),
+        timestamp: new Date(now).toISOString(),
+        message: { role: 'user', content: userText },
+      },
+      {
+        type: 'assistant', uuid: crypto.randomUUID(), parentUuid: userUuid, sessionId,
+        timestamp: new Date(now + 1).toISOString(),
+        message: { id: `msg_${crypto.randomUUID()}`, type: 'message', role: 'assistant', model: 'mock-opus', content: [{ type: 'text', text: reply }] },
+      },
+    ]
+    await appendFile(file, `${records.map(record => JSON.stringify(record)).join('\n')}\n`)
+    return
+  }
+}
+
 /**
  * Deterministic tool-use support.
  *
@@ -590,6 +616,7 @@ ws.addEventListener('message', (event) => {
           event: { type: 'content_block_stop', index: 0 },
           session_id: sessionId,
         })
+        if (process.env.CCHH_E2E_PERSIST_TURNS === '1') await appendNormalTurn(text, `Echo: ${text}`)
         emit(ws, {
           type: 'result',
           subtype: 'success',

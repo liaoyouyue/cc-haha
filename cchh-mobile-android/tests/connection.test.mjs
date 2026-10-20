@@ -33,7 +33,7 @@ test('foreground recovery replaces the socket, syncs state and never resends a t
     URL,WebSocket:FakeSocket,AppState:appState,Date:{now:()=>now},
     config:{mode:'private',baseUrl:'http://127.0.0.1:3456',token:'fixture'},
     selected:{id:'fixture-session',title:'Fixture'},
-    wsRef,reconnectRef,pingRef,sendLock,keepScroll:{current:false},
+    wsRef,reconnectRef,pingRef,pongRef:{current:null},sendLock,keepScroll:{current:false},
     useEffect(callback){cleanup=callback();},
     loadHistory(session){history.push(session.id);},
     setHistory(){},setHistoryReady(){},setCursor(){},setDraft(){},setApprovals(value){approvals=typeof value==='function'?value(approvals):value;},
@@ -45,6 +45,11 @@ test('foreground recovery replaces the socket, syncs state and never resends a t
     clearInterval(id){timers.delete(id);},
   };
   vm.runInNewContext(effect,sandbox);
+  // The test slices App.js and runs the connection effect in a sandbox; inline
+  // the two recovery policy helpers so the effect can call them without the
+  // ESM import that the slice strips out.
+  sandbox.isForegroundResume = (prev, next) => next === 'active' && (prev === 'inactive' || prev === 'background')
+  sandbox.reconnectDelayMs = attempt => Math.min(30000, 1000 * 2 ** Math.max(0, Math.min(5, Math.trunc(Number.isFinite(attempt) ? attempt : 0))))
   try {
     assert.equal(sockets.length,1);
     const first=sockets[0];
@@ -95,8 +100,13 @@ test('foreground recovery replaces the socket, syncs state and never resends a t
     assert.ok(resumed.sent.includes('ping'));
     resumed.onmessage({data:JSON.stringify({type:'pong'})});
     assert.equal(resumed.readyState,FakeSocket.OPEN);
-    now+=100000;
     tick.callback();
+    assert.ok(resumed.sent.filter(s=>s==='ping').length>=2);
+    assert.equal(resumed.readyState,FakeSocket.OPEN);
+    assert.equal(socketState,'已连接');
+    const pongTimer=[...timers.values()].find(t=>t.delay===12000);
+    assert.ok(pongTimer);
+    pongTimer.callback();
     assert.equal(resumed.readyState,3);
     assert.equal(socketState,'正在重连');
     const retry=[...timers.values()].find(t=>t.delay===2000);
