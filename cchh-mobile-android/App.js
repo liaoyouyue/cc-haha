@@ -13,12 +13,13 @@ import { splitFences } from './messageText.mjs';
 import { isForegroundResume, reconnectDelayMs } from './mobileRecovery.mjs';
 import { endpoint } from './connectionUtils.mjs';
 import { LEGAL_LINKS } from './legalLinks.mjs';
+import { WORKSPACE_TABS, projectRootOf, withinProjectRoot, terminalEntriesFromHistory, safeModelChoices } from './mobileWorkbench.mjs';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 
 const STORE_KEY = 'cchh-mobile-android-connection-v1';
-const C = { bg:'#101215', surface:'#1B1F24', surface2:'#262B32', line:'#363B43',
-  text:'#F5F6F7', muted:'#A6ACB5', accent:'#F5AF69', green:'#7FD9A6', red:'#F18686' };
+const C = { bg:'#FFFFFF', surface:'#F8F7FB', surface2:'#EFEDF5', line:'#EAE7EF',
+  text:'#17161D', muted:'#787680', accent:'#9981C4', green:'#23845A', red:'#C53D49' };
 async function getJson(config, path) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 15000);
@@ -32,6 +33,23 @@ async function getJson(config, path) {
       ? '访问被拒绝，请检查 H5 令牌、配对及远程访问设置' : '服务器错误 ' + res.status);
     return await res.json();
   } finally { clearTimeout(timer); }
+}
+// Explicit model/effort changes affect the paired desktop's defaults.
+async function putJson(config, path, body) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 15000);
+  try {
+    const res = await fetch(config.baseUrl + path, {
+      method:'PUT',
+      headers:config.mode === 'public'
+        ? {Origin:config.baseUrl,Accept:'application/json','Content-Type':'application/json'}
+        : {Authorization:'Bearer ' + config.token,'Content-Type':'application/json'},
+      credentials:config.mode === 'public' ? 'include' : 'omit',
+      body:JSON.stringify(body),signal:ctl.signal
+    });
+    if(!res.ok) throw new Error('CCHH 不允许更新此设置（HTTP ' + res.status + '）');
+    return await res.json();
+  } finally {clearTimeout(timer);}
 }
 function textFromContent(value) {
   if (typeof value === 'string') return value;
@@ -86,6 +104,20 @@ function Main() {
   const [turnBusy, setTurnBusy] = useState(false);
   const [approvals, setApprovals] = useState([]);
   const [search, setSearch] = useState('');
+  const [tab, setTab] = useState('chat');
+  const [queued, setQueued] = useState([]); // unsent local drafts, never replay automatically
+  const [terminalEvents, setTerminalEvents] = useState([]);
+  const [modelInfo, setModelInfo] = useState(null);
+  const [modelChoices, setModelChoices] = useState([]);
+  const [modelPicker, setModelPicker] = useState(false);
+  const [effortInfo, setEffortInfo] = useState(null);
+  const [effortPicker, setEffortPicker] = useState(false);
+  const [filesDir, setFilesDir] = useState('');
+  const [fileEntries, setFileEntries] = useState([]);
+  const [filesError, setFilesError] = useState('');
+  const [filesLoading, setFilesLoading] = useState(false);
+  const [desktopInfo, setDesktopInfo] = useState(null);
+  const [desktopError, setDesktopError] = useState('');
   const wsRef = useRef(null);
   const reconnectRef = useRef(null);
   const pingRef = useRef(null);
@@ -219,6 +251,10 @@ function Main() {
       const payload = await getJson(config, path);
       if(selectedId.current !== session.id) return;
       const loaded = messagesFromHistory(payload);
+      const observedTools = terminalEntriesFromHistory(payload);
+      setTerminalEvents(prev => older
+        ? [...observedTools.filter(v=>!prev.some(x=>x.id === v.id)), ...prev].slice(-60)
+        : observedTools);
       setHistory(prev => {
         if(older) {
           const seen = new Set(prev.map(m => m.id));
@@ -243,7 +279,8 @@ function Main() {
   useEffect(() => {
     if(!config || !selected) return;
 let cancelled = false, tries = 0, handshake = null, previousAppState = AppState.currentState;
-    setHistory([]); setHistoryReady(false); setCursor(null); setApprovals([]); setStream(''); keepScroll.current=false;
+    setHistory([]); setHistoryReady(false); setCursor(null); setApprovals([]); setStream('');
+    setTerminalEvents([]); setModelPicker(false); setEffortPicker(false); keepScroll.current=false;
     setTurnBusy(false); sendLock.current = true; setDraft('');
     setSocketState('连接中'); loadHistory(selected);
     function clearConn() {
@@ -337,11 +374,12 @@ function schedule() {
 
   useEffect(() => {
     const handler=BackHandler.addEventListener('hardwareBackPress', () => {
+      if(selected && tab !== 'chat') { setTab('chat'); return true; }
       if(selected) { setSelected(null); setError(''); return true; }
       return false;
     });
     return () => handler.remove();
-  },[selected]);
+  },[selected,tab]);
 
   function sendPacket(packet) {
     const ws=wsRef.current;
@@ -362,12 +400,86 @@ function schedule() {
       setApprovals(prev => prev.filter(p => p.requestId !== request.requestId));
     }
   }
+
+  const activeQueue = queued.filter(item => item.sessionId === selected?.id);
+  function addToQueue() {
+    const value=draft.trim();
+    if(!selected || !value) return;
+    setQueued(prev=>[...prev,{id:'q-'+Date.now()+'-'+Math.random(),sessionId:selected.id,text:value}]);
+    setDraft('');
+  }
+  function moveQueueToComposer(item) {
+    if(draft.trim()) {Alert.alert('输入框里还有内容','先发送或保存当前文字，再选择队列内容。');return;}
+    setDraft(item.text);
+    setQueued(prev=>prev.filter(x=>x.id!==item.id));
+    setTab('chat');
+  }
+  useEffect(()=>{
+    if(!config || !selected) return;
+    let active=true;
+    Promise.allSettled([getJson(config,'/api/models/current'),getJson(config,'/api/effort')])
+      .then(([m,e])=>{
+        if(!active)return;
+        setModelInfo(m.status==='fulfilled'?m.value.model:null);
+        setEffortInfo(e.status==='fulfilled'?e.value:null);
+      });
+    return ()=>{active=false;};
+  },[config,selected?.id]);
+  async function openModelPicker() {
+    setEffortPicker(false);
+    if(modelPicker){setModelPicker(false);return;}
+    try {
+      const data=await getJson(config,'/api/models');
+      setModelChoices(safeModelChoices(data));setModelPicker(true);
+    } catch(e){setError('无法读取电脑模型列表：'+(e.message||'不支持'));}
+  }
+  function changeDefaultModel(item) {
+    if(turnBusy){Alert.alert('任务执行中','请等待当前任务完成再切换模型。');return;}
+    Alert.alert('切换电脑默认模型','这会修改当前配对电脑的 CCHH 默认模型，并非仅修改手机显示。',[{text:'取消',style:'cancel'},
+      {text:'确认切换',onPress:async()=>{
+        try{await putJson(config,'/api/models/current',{modelId:item.id});
+          setModelInfo({id:item.id,name:item.name});setModelPicker(false);setError('');}
+        catch(e){setError(e.message||'模型切换失败');}
+      }}]);
+  }
+  function changeEffort(level) {
+    if(turnBusy){Alert.alert('任务执行中','请等待当前任务完成再修改思考等级。');return;}
+    Alert.alert('修改思考等级','将更改当前电脑 CCHH 的默认思考设置。',[{text:'取消',style:'cancel'},
+      {text:'确认',onPress:async()=>{
+        try{await putJson(config,'/api/effort',{level});setEffortInfo(prev=>({...prev,level}));setEffortPicker(false);setError('');}
+        catch(e){setError(e.message||'思考等级设置失败');}
+      }}]);
+  }
+  async function browseFiles(requestPath) {
+    const root=projectRootOf(selected);
+    if(!root){setFilesError('当前会话没有可用的项目路径');setFileEntries([]);return;}
+    if(!withinProjectRoot(root,requestPath)){setFilesError('只能浏览当前会话的项目目录');return;}
+    setFilesLoading(true);setFilesError('');
+    try{
+      const data=await getJson(config,'/api/filesystem/browse?path='+encodeURIComponent(requestPath)+'&includeFiles=true&maxResults=100');
+      if(!withinProjectRoot(root,data.currentPath||requestPath))throw new Error('服务器返回了项目以外的路径');
+      setFilesDir(data.currentPath||requestPath);
+      setFileEntries((data.entries||[]).filter(x=>withinProjectRoot(root,x.path)));
+    }catch(e){setFilesError(e.message||'文件浏览不可用');setFileEntries([]);}
+    finally{setFilesLoading(false);}
+  }
+  async function refreshDesktop(){
+    setDesktopError('');
+    try{setDesktopInfo(await getJson(config,'/api/status'));}
+    catch(e){setDesktopInfo(null);setDesktopError(e.message||'无法读取电脑服务状态');}
+  }
+  function changeTab(next) {
+    setTab(next);setModelPicker(false);setEffortPicker(false);
+    if(next==='files')void browseFiles(projectRootOf(selected));
+    if(next==='desktop')void refreshDesktop();
+  }
+
   function openLegal(url) {
     Linking.openURL(url).catch(() => Alert.alert('无法打开链接', url));
   }
 
   if(restoring) return <View style={styles.center}><ActivityIndicator color={C.accent} /></View>;
-  if(showAbout) return <SafeAreaView style={styles.flex}><StatusBar style="light" />
+  if(showAbout) return <SafeAreaView style={styles.flex}><StatusBar style="dark" />
     <View style={styles.header}>
       <Text style={styles.title}>关于 / 法律</Text>
       <Pressable accessibilityRole="button" onPress={()=>setShowAbout(false)}><Text style={styles.actionLink}>关闭</Text></Pressable>
@@ -393,7 +505,7 @@ function schedule() {
       </View>
     </ScrollView>
   </SafeAreaView>;
-  if(!config) return <SafeAreaView style={styles.flex}><StatusBar style="light" />
+  if(!config) return <SafeAreaView style={styles.flex}><StatusBar style="dark" />
     <ScrollView contentContainerStyle={styles.connect}>
       <View style={styles.logo}><Text style={styles.logoText}>C</Text></View>
       <Text style={styles.h1}>连接我自己的 CCHH</Text>
@@ -450,9 +562,10 @@ function schedule() {
       <Pressable accessibilityRole="button" onPress={()=>setShowAbout(true)}><Text style={styles.legalLink}>关于 / 法律</Text></Pressable>
     </ScrollView>
   </SafeAreaView>;
-  if(!selected) return <SafeAreaView style={styles.flex}><StatusBar style="light" />
+
+  if(!selected) return <SafeAreaView style={styles.flex}><StatusBar style="dark" />
     <View style={styles.header}>
-      <Text style={styles.title}>会话</Text>
+      <Text style={styles.title}>CCHH Mobile</Text>
       <View style={styles.headerActions}>
         <Pressable accessibilityRole="button" onPress={()=>setShowAbout(true)}><Text style={styles.actionLink}>关于</Text></Pressable>
         <Pressable accessibilityRole="button" onPress={logout}><Text style={styles.actionLink}>解除配对</Text></Pressable>
@@ -460,49 +573,178 @@ function schedule() {
     </View>
     <TextInput style={styles.search} value={search} onChangeText={setSearch} placeholder="搜索会话或项目" placeholderTextColor={C.muted} />
     {!!error && <Text style={styles.err}>{error}</Text>}
-    <FlatList data={sessions.filter(s => (s.title+' '+s.projectPath).toLowerCase().includes(search.toLowerCase()))}
+    <FlatList data={sessions.filter(s => ((s.title||'')+' '+(s.projectPath||s.workDir||'')).toLowerCase().includes(search.toLowerCase()))}
       keyExtractor={s=>s.id} contentContainerStyle={styles.list}
       refreshing={loading} onRefresh={() => listSessions()}
-      ListEmptyComponent={<Text style={styles.muted}>暂无会话，或连接尚未完成。</Text>}
-      renderItem={({item})=><Pressable style={styles.session} onPress={()=>{setError('');setSelected(item);}}>
+      ListEmptyComponent={<Text style={styles.muted}>暂无会话，请在电脑 CCHH 中创建或打开会话。</Text>}
+      renderItem={({item})=><Pressable style={styles.session} onPress={()=>{setError('');setTab('chat');setSelected(item);}}>
         <Text style={styles.sessionTitle} numberOfLines={1}>{item.title||'未命名会话'}</Text>
-        <Text style={styles.muted} numberOfLines={1}>{item.projectPath||item.workDir||'默认项目'}</Text>
+        <Text style={styles.muted} numberOfLines={1}>{projectRootOf(item)||'默认项目'}</Text>
         <Text style={styles.sessionMeta}>{item.messageCount||0} 条记录</Text>
       </Pressable>}/>
   </SafeAreaView>;
-  return <SafeAreaView style={styles.flex}><StatusBar style="light" />
-    <View style={styles.header}>
-      <Pressable onPress={()=>{setSelected(null);setError('')}}><Text style={styles.actionLink}>‹ 会话</Text></Pressable>
-      <View style={styles.headerCenter}><Text numberOfLines={1} style={styles.headerTitle}>{selected.title||'聊天'}</Text>
-        <Text style={styles.mini}>{socketState}{turnBusy?' · 执行中':''}</Text></View>
-      <Pressable onPress={()=>setShowAbout(true)}><Text style={styles.actionLink}>关于</Text></Pressable>
-    </View>
-    {!!error && <Text style={styles.err}>{error}</Text>}
-    {!!approvals.length && <View style={styles.approval}>
-      <Text style={styles.approvalTitle}>需要批准 · {approvals.length} 项</Text>
-      <Text style={styles.muted} numberOfLines={3}>{approvals[0].displayName||approvals[0].toolName||'工具操作'}</Text>
-      <Text style={styles.mini} numberOfLines={4}>{JSON.stringify(approvals[0].input||{}).slice(0,1200)}</Text>
-      <View style={styles.actions}><Btn label="拒绝" danger outline onPress={()=>decision(approvals[0],false)} /><Btn label="本次批准" onPress={()=>decision(approvals[0],true)} /></View>
-    </View>}
-    <FlatList ref={chatList} data={history} keyExtractor={x=>x.id}
-      contentContainerStyle={styles.messages}
-      onContentSizeChange={()=>{
-        if(keepScroll.current) {keepScroll.current=false;return;}
-        chatList.current?.scrollToEnd({animated:false});
-      }}
-      ListHeaderComponent={cursor?<Pressable onPress={()=>loadHistory(selected,true)}><Text style={styles.actionLink}>加载更早记录</Text></Pressable>:null}
-      renderItem={({item})=><View style={[styles.bubble,item.role==='user'?styles.mine:styles.theirs]}>
-        <Text style={styles.bubbleWho}>{item.pending?'你 · 待服务端确认':item.role==='user'?'你':'CCHH'}</Text>
-        <MessageBody text={item.text} /></View>} />
-    {!!stream && <View style={styles.streaming}><Text style={styles.mini}>正在回复…</Text><Text style={styles.bubbleText} numberOfLines={5}>{stream}</Text></View>}
-    <KeyboardAvoidingView behavior={Platform.OS==='ios'?'padding':undefined}>
-      <View style={styles.composer}>
-        <TextInput multiline style={styles.composeInput} placeholder="给家里的 CCHH 发送任务" placeholderTextColor={C.muted}
-          autoCapitalize="none" autoCorrect={false} value={draft} onChangeText={setDraft} />
-        <Btn label={turnBusy?'执行中':'发送'} disabled={turnBusy||!historyReady||!draft.trim()||socketState!=='已连接'} onPress={send} />
-        {turnBusy&& <Btn label="停止" danger outline disabled={socketState!=='已连接'} onPress={()=>sendPacket({type:'stop_generation'})} />}
+
+  return <SafeAreaView style={styles.flex}><StatusBar style="dark" />
+    <View style={styles.workbenchHeader}>
+      <Pressable accessibilityRole="button" accessibilityLabel="切换会话" style={styles.avatarCircle}
+        onPress={()=>{setSelected(null);setTab('chat');setError('');}}>
+        <Text style={styles.avatarText}>C</Text>
+      </Pressable>
+      <View style={styles.workbenchHeading}>
+        <Text style={styles.workbenchTitle}>CCHH Mobile</Text>
+        <Text style={styles.workbenchSubtitle} numberOfLines={1}>{selected.title||'当前会话'} · {socketState}</Text>
       </View>
-    </KeyboardAvoidingView>
+      <Pressable accessibilityRole="button" accessibilityLabel="历史会话" style={styles.historyButton}
+        onPress={()=>{setSelected(null);setTab('chat');setError('');}}>
+        <Text style={styles.historyGlyph}>◷</Text>
+      </Pressable>
+    </View>
+    {!!error && <Pressable accessibilityRole="button" onPress={()=>setError('')} style={styles.errorBar}>
+      <Text style={styles.err}>{error} · 点击关闭</Text>
+    </Pressable>}
+    {(tab==='chat'||tab==='tasks') && approvals.length>0 && <View style={styles.approval}>
+      <Text style={styles.approvalTitle}>等待你的批准 · {approvals.length}</Text>
+      <Text style={styles.muted} numberOfLines={3}>{approvals[0].displayName||approvals[0].toolName||'工具操作'}</Text>
+      <Text style={styles.mini} numberOfLines={3}>{JSON.stringify(approvals[0].input||{}).slice(0,700)}</Text>
+      <View style={styles.actions}><Btn label="拒绝" danger outline onPress={()=>decision(approvals[0],false)} />
+        <Btn label="本次批准" onPress={()=>decision(approvals[0],true)} /></View>
+    </View>}
+
+    {tab==='chat' && <>
+      <FlatList ref={chatList} data={history} keyExtractor={x=>x.id}
+        contentContainerStyle={styles.messages}
+        onContentSizeChange={()=>{if(keepScroll.current){keepScroll.current=false;return;}chatList.current?.scrollToEnd({animated:false});}}
+        ListEmptyComponent={<View style={styles.emptyChat}><Text style={styles.emptyTitle}>继续你的 CCHH 任务</Text>
+          <Text style={styles.muted}>手机上的消息会发送到当前已配对电脑。</Text></View>}
+        ListHeaderComponent={cursor?<Pressable onPress={()=>loadHistory(selected,true)}><Text style={styles.actionLink}>加载更早记录</Text></Pressable>:null}
+        renderItem={({item})=><View style={[styles.bubble,item.role==='user'?styles.mine:styles.theirs]}>
+          <Text style={styles.bubbleWho}>{item.pending?'你 · 等待服务端确认':item.role==='user'?'你':'CCHH'}</Text>
+          <MessageBody text={item.text} /></View>} />
+      {!!stream && <View style={styles.streaming}><Text style={styles.mini}>● 正在思考与回复…</Text>
+        <Text style={styles.bubbleText} numberOfLines={6}>{stream}</Text></View>}
+      {turnBusy && !stream && <Text style={styles.runningHint}>◌  CCHH 正在执行任务…</Text>}
+      {activeQueue.length>0 && <View style={styles.queueCard}>
+        <Text style={styles.queueTitle}>消息队列 · 本机待发送 {activeQueue.length}</Text>
+        {activeQueue.slice(0,3).map((item,i)=><View key={item.id} style={styles.queueItem}>
+          <Text style={styles.queueItemText} numberOfLines={1}>{i+1}. {item.text}</Text>
+          <Pressable accessibilityRole="button" accessibilityLabel="取出待发送消息" onPress={()=>moveQueueToComposer(item)}><Text style={styles.queueAction}>↑</Text></Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel="删除待发送消息" onPress={()=>setQueued(q=>q.filter(x=>x.id!==item.id))}><Text style={styles.queueDelete}>×</Text></Pressable>
+        </View>)}
+        <Text style={styles.mini}>队列只保存在当前运行的手机界面，取出后需再次确认发送；不会自动执行。</Text>
+      </View>}
+      <KeyboardAvoidingView behavior={Platform.OS==='ios'?'padding':undefined}>
+        <View style={styles.modelLine}>
+          <Pressable accessibilityRole="button" onPress={()=>void openModelPicker()} style={styles.modelChip}>
+            <Text style={styles.modelText} numberOfLines={1}>{modelInfo?.name||'电脑模型不可读'}  ⌄</Text>
+          </Pressable>
+          <Pressable accessibilityRole="button" onPress={()=>{setModelPicker(false);setEffortPicker(v=>!v);}} style={styles.effortChip}>
+            <Text style={styles.modelText}>思考：{effortInfo?.level||'未读取'} ⌄</Text>
+          </Pressable>
+        </View>
+        {modelPicker && <ScrollView style={styles.settingPicker} nestedScrollEnabled>
+          <Text style={styles.settingTitle}>电脑默认模型 · 点击后需确认</Text>
+          {modelChoices.map(m=><Pressable key={m.id} style={styles.settingItem} onPress={()=>changeDefaultModel(m)}>
+            <Text style={styles.settingText}>{m.name}</Text><Text style={styles.mini}>{m.id}</Text>
+          </Pressable>)}
+        </ScrollView>}
+        {effortPicker && <View style={styles.settingPicker}>
+          <Text style={styles.settingTitle}>思考等级 · 将影响电脑默认配置</Text>
+          <View style={styles.effortChoices}>{(effortInfo?.available||[]).map(level=>
+            <Pressable key={level} style={styles.effortOption} onPress={()=>changeEffort(level)}><Text style={styles.settingText}>{level}</Text></Pressable>)}</View>
+          {(!effortInfo?.available?.length) && <Text style={styles.muted}>当前连接无法读取可用等级</Text>}
+        </View>}
+        <View style={styles.composer}>
+          <Pressable accessibilityRole="button" accessibilityLabel="加入本机待发送队列" disabled={!draft.trim()} onPress={addToQueue}
+            style={styles.queuePlus}><Text style={styles.plusText}>＋</Text></Pressable>
+          <TextInput multiline style={styles.composeInput} placeholder="发消息…" placeholderTextColor={C.muted}
+            autoCapitalize="none" autoCorrect={false} value={draft} onChangeText={setDraft}/>
+          {turnBusy
+            ? <Pressable accessibilityRole="button" accessibilityLabel="停止生成" style={styles.sendButton}
+                disabled={socketState!=='已连接'} onPress={()=>sendPacket({type:'stop_generation'})}><Text style={styles.sendText}>■</Text></Pressable>
+            : <Pressable accessibilityRole="button" accessibilityLabel="发送消息" style={styles.sendButton}
+                disabled={!historyReady||!draft.trim()||socketState!=='已连接'} onPress={send}><Text style={styles.sendText}>↑</Text></Pressable>}
+        </View>
+      </KeyboardAvoidingView>
+    </>}
+
+    {tab==='tasks' && <ScrollView style={styles.panelScroll} contentContainerStyle={styles.panelContent}>
+      <Text style={styles.panelTitle}>任务</Text>
+      <Text style={styles.panelSubtitle}>当前会话的真实运行状态与最近指令</Text>
+      <View style={styles.infoCard}><Text style={styles.cardHeading}>当前执行</Text>
+        <Text style={styles.stateBig}>{turnBusy?'● 正在执行':socketState==='已连接'?'✓ 等待新指令':'◌ '+socketState}</Text>
+        <Text style={styles.muted}>待审批 {approvals.length} 项 · 本机待发送 {activeQueue.length} 条</Text>
+        {turnBusy && <Btn label="停止当前生成" danger outline disabled={socketState!=='已连接'}
+          onPress={()=>sendPacket({type:'stop_generation'})}/>}
+      </View>
+      <Text style={styles.cardHeading}>最近发送的指令</Text>
+      {history.filter(m=>m.role==='user'&&!m.pending).slice(-12).reverse().map(m=>
+        <View key={m.id} style={styles.infoCard}><Text style={styles.taskText} numberOfLines={5}>{m.text}</Text>
+          <Text style={styles.mini}>{m.timestamp||'已记录在 CCHH 会话历史'}</Text></View>)}
+      {!history.some(m=>m.role==='user') && <Text style={styles.muted}>这段会话暂无已记录的指令。</Text>}
+    </ScrollView>}
+
+    {tab==='terminal' && <ScrollView style={styles.panelScroll} contentContainerStyle={styles.panelContent}>
+      <Text style={styles.panelTitle}>终端</Text>
+      <Text style={styles.panelSubtitle}>来自电脑 CCHH 会话的真实命令与输出 · 只读</Text>
+      {terminalEvents.map((ev,i)=><View key={ev.id+'-'+i} style={styles.terminalCard}>
+        <Text style={styles.terminalLabel}>{ev.kind==='command'?'$ '+ev.label:'↳ '+ev.label}</Text>
+        <Text selectable style={styles.terminalText}>{ev.text}</Text>
+      </View>)}
+      {terminalEvents.length===0 && <View style={styles.infoCard}><Text style={styles.muted}>
+        当前已加载历史中没有可识别的终端调用。这里不会伪造终端画面，也不会直接执行电脑命令。
+      </Text></View>}
+    </ScrollView>}
+
+    {tab==='files' && <ScrollView style={styles.panelScroll} contentContainerStyle={styles.panelContent}>
+      <Text style={styles.panelTitle}>文件</Text>
+      <Text style={styles.panelSubtitle}>仅浏览当前项目，路径由电脑 CCHH 接口返回</Text>
+      <View style={styles.infoCard}>
+        <Text selectable style={styles.pathText}>{filesDir||projectRootOf(selected)||'当前会话未提供项目路径'}</Text>
+        <View style={styles.fileActions}>
+          {withinProjectRoot(projectRootOf(selected),filesDir)&&filesDir!==projectRootOf(selected)&&
+            <Btn label="上一级" outline onPress={()=>{const sep=filesDir.includes('\\')?'\\':'/';
+              const parent=filesDir.slice(0,filesDir.lastIndexOf(sep));
+              if(withinProjectRoot(projectRootOf(selected),parent))void browseFiles(parent);}}/>}
+          <Btn label={filesLoading?'加载中…':'刷新文件'} outline onPress={()=>void browseFiles(filesDir||projectRootOf(selected))}/>
+        </View>
+        {!!filesError && <Text style={styles.err}>{filesError}</Text>}
+      </View>
+      {fileEntries.map(item=><Pressable key={item.path} accessibilityRole="button" style={styles.fileItem}
+        onPress={()=>item.isDirectory ? void browseFiles(item.path)
+          : Alert.alert('项目文件',item.name+'\n当前版本支持安全浏览；普通文件编辑和读取待核实 CCHH 接口。')}>
+        <Text style={styles.fileGlyph}>{item.isDirectory?'▣':'▤'}</Text>
+        <Text style={styles.fileName} numberOfLines={1}>{item.name}</Text>
+        {item.isDirectory&&<Text style={styles.muted}>›</Text>}
+      </Pressable>)}
+      {fileEntries.length===0&&!filesLoading&&!filesError && <Text style={styles.muted}>目录里暂无可展示的文件。</Text>}
+    </ScrollView>}
+
+    {tab==='desktop' && <ScrollView style={styles.panelScroll} contentContainerStyle={styles.panelContent}>
+      <Text style={styles.panelTitle}>桌面</Text>
+      <Text style={styles.panelSubtitle}>你自己电脑的 CCHH 连接状态</Text>
+      <View style={styles.infoCard}><Text style={styles.cardHeading}>电脑连接</Text>
+        <Text style={styles.stateBig}>{desktopInfo?.status==='ok'?'● 服务在线':'◌ 状态待确认'}</Text>
+        <Text style={styles.detailText}>连接地址：{config.baseUrl}</Text>
+        <Text style={styles.detailText}>连接模式：{config.mode==='public'?'公网 HTTPS':'私人网络'}</Text>
+        <Text style={styles.detailText}>服务版本：{desktopInfo?.version||'未读取'}</Text>
+        <Text style={styles.detailText}>当前项目：{projectRootOf(selected)||'未提供'}</Text>
+        {!!desktopError && <Text style={styles.err}>{desktopError}</Text>}
+        <Btn label="刷新电脑状态" outline onPress={()=>void refreshDesktop()}/>
+      </View>
+      <View style={styles.infoCard}><Text style={styles.cardHeading}>远程桌面画面</Text>
+        <Text style={styles.muted}>当前 CCHH Mobile 尚未实现真实桌面视频与控制协议，因此不展示虚假的电脑桌面。已有聊天、审批和文件浏览可继续使用。</Text>
+        <Btn label="返回聊天" outline onPress={()=>changeTab('chat')}/>
+      </View>
+    </ScrollView>}
+
+    <View style={styles.tabbar}>
+      {WORKSPACE_TABS.map(t=><Pressable key={t.id} accessibilityRole="tab" accessibilityState={{selected:tab===t.id}}
+        onPress={()=>changeTab(t.id)} style={styles.tabItem}>
+        <Text style={[styles.tabGlyph,tab===t.id&&styles.tabActive]}>{t.symbol}</Text>
+        <Text style={[styles.tabLabel,tab===t.id&&styles.tabActive]}>{t.label}</Text>
+        {tab===t.id&&<View style={styles.tabUnderline}/>}
+      </Pressable>)}
+    </View>
   </SafeAreaView>;
 }
 export default function App() { return <SafeAreaProvider><Main /></SafeAreaProvider>; }
@@ -510,7 +752,7 @@ export default function App() { return <SafeAreaProvider><Main /></SafeAreaProvi
 const styles=StyleSheet.create({
  flex:{flex:1,backgroundColor:C.bg},center:{flex:1,alignItems:'center',justifyContent:'center',backgroundColor:C.bg},
  connect:{padding:24,paddingTop:65,paddingBottom:40},logo:{height:58,width:58,borderRadius:18,backgroundColor:C.accent,alignItems:'center',justifyContent:'center',marginBottom:22},
- logoText:{fontSize:35,fontWeight:'900',color:C.bg},h1:{fontSize:31,fontWeight:'800',color:C.text,marginBottom:7},
+ logoText:{fontSize:35,fontWeight:'900',color:'#FFFFFF'},h1:{fontSize:31,fontWeight:'800',color:C.text,marginBottom:7},
  label:{fontSize:14,fontWeight:'600',color:C.muted,marginTop:23,marginBottom:8},hint:{fontSize:12,lineHeight:20,color:C.muted,marginTop:30},
  guideCard:{backgroundColor:C.surface,borderWidth:1,borderColor:C.line,borderRadius:13,padding:15,marginTop:24},
  guideTitle:{fontSize:15,fontWeight:'700',color:C.text},
@@ -519,7 +761,7 @@ const styles=StyleSheet.create({
  credit:{fontSize:12,color:C.muted,marginTop:45},muted:{fontSize:13,color:C.muted},mini:{fontSize:11,color:C.muted,marginTop:3},
  input:{backgroundColor:C.surface,borderColor:C.line,borderWidth:1,borderRadius:12,padding:14,color:C.text,fontSize:15},
  btn:{backgroundColor:C.accent,borderRadius:12,paddingVertical:11,paddingHorizontal:15,alignItems:'center',justifyContent:'center',marginTop:6},
- btnOutline:{backgroundColor:C.surface2,borderWidth:1,borderColor:C.line},btnDanger:{borderColor:C.red},btnText:{color:C.bg,fontWeight:'700',fontSize:14},
+ btnOutline:{backgroundColor:C.surface2,borderWidth:1,borderColor:C.line},btnDanger:{borderColor:C.red},btnText:{color:'#221B2E',fontWeight:'700',fontSize:14},
  err:{fontSize:12,color:C.red,paddingHorizontal:16,paddingVertical:8},
  header:{height:62,flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingHorizontal:17,borderBottomColor:C.line,borderBottomWidth:1},
  title:{fontSize:24,fontWeight:'800',color:C.text},headerCenter:{flex:1,marginHorizontal:13,alignItems:'center'},
@@ -527,17 +769,67 @@ const styles=StyleSheet.create({
  search:{backgroundColor:C.surface,borderRadius:11,margin:15,padding:12,color:C.text,fontSize:14},
  list:{paddingHorizontal:15,paddingBottom:30},session:{backgroundColor:C.surface,borderRadius:13,padding:16,marginBottom:10,borderWidth:1,borderColor:C.line},
  sessionTitle:{color:C.text,fontSize:16,fontWeight:'700',marginBottom:6},sessionMeta:{color:C.muted,fontSize:11,marginTop:8},
- messages:{padding:14,paddingBottom:20,flexGrow:1},bubble:{borderRadius:13,marginBottom:12,padding:13,maxWidth:'92%'},
- mine:{backgroundColor:'#3A3028',alignSelf:'flex-end'},theirs:{backgroundColor:C.surface,alignSelf:'flex-start',borderWidth:1,borderColor:C.line},
- bubbleWho:{fontSize:11,color:C.accent,marginBottom:7},bubbleText:{fontSize:14,lineHeight:21,color:C.text},
+ messages:{padding:18,paddingBottom:20,flexGrow:1},bubble:{borderRadius:13,marginBottom:12,padding:13,maxWidth:'92%'},
+ mine:{backgroundColor:'#F0ECF7',alignSelf:'flex-end'},theirs:{backgroundColor:C.bg,alignSelf:'flex-start',borderWidth:0,borderColor:C.line,maxWidth:'100%'},
+ bubbleWho:{fontSize:11,color:C.accent,marginBottom:7},bubbleText:{fontSize:16,lineHeight:26,color:C.text},
  codeText:{fontFamily:Platform.select({ios:'Menlo',android:'monospace'}),fontSize:13,lineHeight:19,color:C.text,backgroundColor:C.surface2,padding:9,borderRadius:8,marginVertical:5},
  streaming:{marginHorizontal:14,marginBottom:10,padding:12,backgroundColor:C.surface,borderRadius:12},
- composer:{flexDirection:'row',padding:10,borderTopColor:C.line,borderTopWidth:1,alignItems:'flex-end',gap:8,backgroundColor:C.bg},
- composeInput:{color:C.text,backgroundColor:C.surface,borderRadius:11,flex:1,maxHeight:110,minHeight:43,padding:11},
+ composer:{flexDirection:'row',paddingHorizontal:11,paddingBottom:10,paddingTop:5,alignItems:'flex-end',gap:8,backgroundColor:C.bg},
+ composeInput:{color:C.text,backgroundColor:'#F5F2F9',borderRadius:17,flex:1,maxHeight:140,minHeight:48,paddingHorizontal:15,paddingVertical:12,fontSize:16},
  approval:{padding:11,margin:12,borderRadius:13,backgroundColor:C.surface2,borderColor:C.accent,borderWidth:1},
  approvalTitle:{color:C.accent,fontWeight:'800',marginBottom:6},actions:{flexDirection:'row',justifyContent:'flex-end',gap:10,marginTop:8},
  headerActions:{flexDirection:'row',alignItems:'center',gap:16},
  aboutContent:{padding:24,paddingBottom:48},aboutTitle:{fontSize:27,fontWeight:'800',color:C.text,marginBottom:18},
  aboutText:{fontSize:13,lineHeight:21,color:C.muted,marginBottom:5},aboutSection:{marginTop:22},
- aboutSectionTitle:{fontSize:16,fontWeight:'700',color:C.text,marginBottom:9},legalLink:{fontSize:14,lineHeight:22,color:C.accent,marginTop:9,textDecorationLine:'underline'}
+ aboutSectionTitle:{fontSize:16,fontWeight:'700',color:C.text,marginBottom:9},legalLink:{fontSize:14,lineHeight:22,color:C.accent,marginTop:9,textDecorationLine:'underline'},
+
+  workbenchHeader:{height:76,flexDirection:'row',alignItems:'center',borderBottomColor:C.line,borderBottomWidth:1,paddingHorizontal:18,backgroundColor:C.bg},
+  avatarCircle:{height:42,width:42,borderRadius:22,backgroundColor:'#E5DCF4',alignItems:'center',justifyContent:'center'},
+  avatarText:{fontSize:22,fontWeight:'900',color:'#7859B3'},
+  workbenchHeading:{flex:1,alignItems:'center',paddingHorizontal:8},
+  workbenchTitle:{fontSize:25,color:C.text,fontWeight:'800',letterSpacing:-0.6},
+  workbenchSubtitle:{fontSize:10,color:C.muted,marginTop:2,maxWidth:'90%'},
+  historyButton:{width:42,height:42,alignItems:'center',justifyContent:'center'},
+  historyGlyph:{fontSize:32,color:C.text},
+  errorBar:{backgroundColor:'#FFF0F2',marginHorizontal:10,borderRadius:8,marginVertical:5},
+  emptyChat:{padding:28,justifyContent:'center',alignItems:'center',minHeight:180},
+  emptyTitle:{fontSize:21,color:C.text,fontWeight:'700',marginBottom:9},
+  runningHint:{color:C.muted,fontSize:13,paddingHorizontal:22,paddingVertical:10},
+  queueCard:{marginHorizontal:12,marginBottom:5,padding:11,borderRadius:16,backgroundColor:'#F6F2FA'},
+  queueTitle:{fontSize:13,fontWeight:'700',color:'#615A6D',marginBottom:8},
+  queueItem:{flexDirection:'row',alignItems:'center',gap:9,paddingVertical:9,borderTopWidth:1,borderColor:'#EAE5F0'},
+  queueItemText:{color:C.text,flex:1,fontSize:13},queueAction:{color:C.accent,fontSize:24,paddingHorizontal:8},
+  queueDelete:{color:C.red,fontSize:25,paddingHorizontal:8},
+  modelLine:{flexDirection:'row',alignItems:'center',paddingHorizontal:14,paddingVertical:7,gap:10},
+  modelChip:{maxWidth:'55%',paddingHorizontal:11,paddingVertical:7,borderRadius:18,backgroundColor:'#F8F7FB'},
+  effortChip:{paddingHorizontal:8,paddingVertical:7},modelText:{fontSize:13,color:'#686370'},
+  settingPicker:{maxHeight:230,backgroundColor:C.bg,borderTopColor:C.line,borderTopWidth:1,padding:10},
+  settingTitle:{color:C.muted,fontSize:12,fontWeight:'700',marginBottom:8},
+  settingItem:{paddingVertical:10,borderBottomWidth:1,borderColor:C.line},
+  settingText:{color:C.text,fontSize:14,fontWeight:'600'},
+  effortChoices:{flexDirection:'row',flexWrap:'wrap',gap:8},
+  effortOption:{padding:8,backgroundColor:C.surface,borderRadius:10},
+  queuePlus:{height:44,width:43,alignItems:'center',justifyContent:'center'},
+  plusText:{fontSize:31,fontWeight:'300',color:'#67646C'},
+  sendButton:{width:48,height:48,borderRadius:16,backgroundColor:C.accent,alignItems:'center',justifyContent:'center'},
+  sendText:{fontSize:24,fontWeight:'700',color:'#241D31'},
+  tabbar:{height:67,flexDirection:'row',borderTopWidth:1,borderTopColor:C.line,backgroundColor:C.bg},
+  tabItem:{flex:1,alignItems:'center',justifyContent:'center',gap:3},
+  tabGlyph:{fontSize:24,color:'#5E5B62'},tabLabel:{fontSize:11,color:'#66626B'},
+  tabActive:{color:'#7960A6',fontWeight:'700'},
+  tabUnderline:{position:'absolute',bottom:1,width:29,height:3,borderRadius:8,backgroundColor:C.accent},
+  panelScroll:{flex:1},panelContent:{padding:18,paddingBottom:32,gap:12},
+  panelTitle:{fontSize:25,fontWeight:'800',color:C.text},
+  panelSubtitle:{fontSize:13,color:C.muted,marginBottom:10,lineHeight:20},
+  infoCard:{padding:16,backgroundColor:C.surface,borderWidth:1,borderColor:C.line,borderRadius:16,gap:9},
+  cardHeading:{fontSize:17,fontWeight:'700',color:C.text},stateBig:{fontSize:21,fontWeight:'700',color:C.green},
+  taskText:{fontSize:14,lineHeight:22,color:C.text},
+  terminalCard:{padding:13,borderRadius:12,backgroundColor:'#202128',gap:9},
+  terminalLabel:{fontSize:12,color:'#A7E1B2'},
+  terminalText:{fontSize:13,lineHeight:20,color:'#E9EAF2',fontFamily:Platform.OS==='android'?'monospace':'Menlo'},
+  pathText:{fontSize:12,color:C.text},fileActions:{flexDirection:'row',gap:8,alignItems:'center'},
+  fileItem:{paddingVertical:14,flexDirection:'row',alignItems:'center',gap:12,borderBottomWidth:1,borderColor:C.line},
+  fileGlyph:{fontSize:23,color:C.accent},fileName:{flex:1,color:C.text,fontSize:14},
+  detailText:{fontSize:13,color:C.text,lineHeight:20},
+
 });
