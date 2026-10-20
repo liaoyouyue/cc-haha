@@ -235,6 +235,9 @@ function Main() {
       await SecureStore.deleteItemAsync(STORE_KEY);
       setSelected(null);setConfig(null);setSessions([]);
       setHistory([]);setApprovals([]);setStream('');
+      setQueued([]);setTerminalEvents([]);setFileEntries([]);setFilesDir('');
+      setModelInfo(null);setModelChoices([]);setEffortInfo(null);
+      setDesktopInfo(null);setDesktopError('');setTab('chat');
       setUrl('');setToken('');setPairSecret('');setPairing(null);
       setPairNotice('');setMode('private');setNetworkType('lan');
       setScanning(false);setError('');
@@ -280,7 +283,7 @@ function Main() {
     if(!config || !selected) return;
 let cancelled = false, tries = 0, handshake = null, previousAppState = AppState.currentState;
     setHistory([]); setHistoryReady(false); setCursor(null); setApprovals([]); setStream('');
-    setTerminalEvents([]); setModelPicker(false); setEffortPicker(false); keepScroll.current=false;
+    setTerminalEvents([]); setModelPicker(false); setEffortPicker(false); setModelInfo(null); setEffortInfo(null); keepScroll.current=false;
     setTurnBusy(false); sendLock.current = true; setDraft('');
     setSocketState('连接中'); loadHistory(selected);
     function clearConn() {
@@ -455,6 +458,7 @@ function schedule() {
     if(!root){setFilesError('当前会话没有可用的项目路径');setFileEntries([]);return;}
     if(!withinProjectRoot(root,requestPath)){setFilesError('只能浏览当前会话的项目目录');return;}
     setFilesLoading(true);setFilesError('');
+    setFileEntries([]);setFilesDir(requestPath);
     try{
       const data=await getJson(config,'/api/filesystem/browse?path='+encodeURIComponent(requestPath)+'&includeFiles=true&maxResults=100');
       if(!withinProjectRoot(root,data.currentPath||requestPath))throw new Error('服务器返回了项目以外的路径');
