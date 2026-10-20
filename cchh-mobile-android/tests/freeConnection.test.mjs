@@ -83,7 +83,7 @@ test('public pairing rejects non-HTTPS',()=>{
 
 test('ngrok free tier limits documented',()=>{
   // Verify ngrok free tier limits are documented in COMMUNITY_BETA.md
-  const doc = fs.readFileSync('D:/cchh-mobile-acceptance-20261019/cchh-mobile-android/COMMUNITY_BETA.md','utf8');
+  const doc = fs.readFileSync('./COMMUNITY_BETA.md','utf8');
   assert.ok(doc.includes('ngrok'), 'Document should mention ngrok');
   assert.ok(doc.includes('免费'), 'Document should mention free tier');
   assert.ok(doc.includes('限额') || doc.includes('限制'), 'Document should mention limits');
