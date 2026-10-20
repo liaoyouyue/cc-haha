@@ -617,7 +617,10 @@ function schedule() {
     {tab==='chat' && <>
       <FlatList ref={chatList} data={history} keyExtractor={x=>x.id}
         contentContainerStyle={styles.messages}
-        onContentSizeChange={()=>{if(keepScroll.current){keepScroll.current=false;return;}chatList.current?.scrollToEnd({animated:false});}}
+        onContentSizeChange={()=>{
+        if(keepScroll.current){keepScroll.current=false;return;}
+        chatList.current?.scrollToEnd({animated:false});
+      }}
         ListEmptyComponent={<View style={styles.emptyChat}><Text style={styles.emptyTitle}>继续你的 CCHH 任务</Text>
           <Text style={styles.muted}>手机上的消息会发送到当前已配对电脑。</Text></View>}
         ListHeaderComponent={cursor?<Pressable onPress={()=>loadHistory(selected,true)}><Text style={styles.actionLink}>加载更早记录</Text></Pressable>:null}
