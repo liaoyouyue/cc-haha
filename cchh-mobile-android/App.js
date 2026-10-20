@@ -78,6 +78,7 @@ function Main() {
   const [history, setHistory] = useState([]);
   const [historyReady, setHistoryReady] = useState(false);
   const [cursor, setCursor] = useState(null);
+  const [showAbout, setShowAbout] = useState(false);
   const [draft, setDraft] = useState('');
   const [socketState, setSocketState] = useState('未连接');
   const [stream, setStream] = useState('');
@@ -432,12 +433,43 @@ function schedule() {
         <Text style={styles.sessionMeta}>{item.messageCount||0} 条记录</Text>
       </Pressable>}/>
   </SafeAreaView>;
-  return <SafeAreaView style={styles.flex}><StatusBar style="light" />
+  if(showAbout) return <SafeAreaView style={styles.flex}><StatusBar style="light" />
+    <View style={styles.aboutModal}>
+      <View style={styles.aboutContent}>
+        <Text style={styles.aboutTitle}>关于 CCHH Mobile</Text>
+        <Text style={styles.aboutText}>版本 0.1.5 (Build 1)</Text>
+        <Text style={styles.aboutText}>包名: com.cchh.mobile.client</Text>
+        <Text style={styles.aboutText}>基于 CCHH v0.7.4</Text>
+        <Text style={styles.aboutText}>非官方客户端 · Based on cc-haha © 2026 cc-haha</Text>
+        <View style={styles.aboutSection}>
+          <Text style={styles.aboutSectionTitle}>许可证</Text>
+          <Text style={styles.aboutText}>基于 cc-haha Community Source License 1.0</Text>
+          <Text style={styles.aboutText}>非商业社区分享需遵守许可证第 4 节</Text>
+          <Text style={styles.aboutText}>商业用途需另行授权</Text>
+        </View>
+        <View style={styles.aboutSection}>
+          <Text style={styles.aboutSectionTitle}>第三方依赖</Text>
+          <Text style={styles.aboutText}>Expo / React Native / React: MIT License</Text>
+          <Text style={styles.aboutText}>Expo Modules: MIT License</Text>
+          <Text style={styles.aboutText}>AndroidX / Kotlin / OkHttp / Hermes: Apache 2.0 / MIT / BSD</Text>
+          <Text style={styles.aboutText}>完整声明见 THIRD_PARTY_NOTICES.md</Text>
+        </View>
+        <View style={styles.aboutSection}>
+          <Text style={styles.aboutSectionTitle}>免责声明</Text>
+          <Text style={styles.aboutText}>非官方测试版，不保证稳定性</Text>
+          <Text style={styles.aboutText}>不提供集中账号或开发者代理</Text>
+          <Text style={styles.aboutText}>每位用户独立连接自己的 CCHH</Text>
+        </View>
+        <Btn label="关闭" onPress={()=>setShowAbout(false)} />
+      </View>
+    </View>
+  </SafeAreaView>;
+  if(!config) return <SafeAreaView style={styles.flex}><StatusBar style="light" />
     <View style={styles.header}>
       <Pressable onPress={()=>{setSelected(null);setError('')}}><Text style={styles.actionLink}>‹ 会话</Text></Pressable>
       <View style={styles.headerCenter}><Text numberOfLines={1} style={styles.headerTitle}>{selected.title||'聊天'}</Text>
         <Text style={styles.mini}>{socketState}{turnBusy?' · 执行中':''}</Text></View>
-      <Pressable onPress={()=>loadHistory(selected)}><Text style={styles.actionLink}>刷新</Text></Pressable>
+      <Pressable onPress={()=>setShowAbout(true)}><Text style={styles.actionLink}>关于</Text></Pressable>
     </View>
     {!!error && <Text style={styles.err}>{error}</Text>}
     {!!approvals.length && <View style={styles.approval}>
