@@ -22,6 +22,8 @@ jobs:
         working-directory: cchh-mobile-android
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -60,7 +62,7 @@ jobs:
           fi
           "$APKSIGNER" verify artifacts/CCHH-Mobile-v0.1.5.apk
           sha256sum artifacts/CCHH-Mobile-v0.1.5.apk > artifacts/SHA256SUMS.txt
-          cp ../LICENSE artifacts/UPSTREAM_LICENSE.txt
+          git -C .. show v0.7.4:LICENSE > artifacts/UPSTREAM_LICENSE.txt
           cp THIRD_PARTY_NOTICES.md COMMUNITY_BETA.md artifacts/
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
