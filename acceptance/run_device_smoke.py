@@ -15,7 +15,8 @@ ACTIVITY = f'{PACKAGE}/.MainActivity'
 
 
 def run(*args, check=True, text=True):
-    return subprocess.run(args, check=check, capture_output=True, text=text)
+    options = {'text': True, 'encoding': 'utf-8', 'errors': 'replace'} if text else {'text': False}
+    return subprocess.run(args, check=check, capture_output=True, **options)
 
 
 def adb(serial, *args, check=True, text=True):

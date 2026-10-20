@@ -1,83 +1,74 @@
 #!/usr/bin/env python3
-"""Verify APK integrity and extract metadata for acceptance testing."""
+"""Verify one CCHH Mobile APK against its recorded SHA-256 and available SDK tools."""
+
+import argparse
 import hashlib
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-APK_PATH = Path(__file__).parent / 'apk' / 'CCHH-Mobile-v0.1.5.apk'
-SHA256_PATH = Path(__file__).parent / 'apk' / 'SHA256SUMS.txt'
 
-def verify_sha256():
-    """Verify APK SHA256 matches the recorded value."""
-    expected = None
-    if SHA256_PATH.exists():
-        content = SHA256_PATH.read_text().strip()
-        expected = content.split()[0]
+def digest(apk):
+    value = hashlib.sha256()
+    with apk.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            value.update(chunk)
+    return value.hexdigest()
 
-    hasher = hashlib.sha256()
-    with APK_PATH.open('rb') as f:
-        for chunk in iter(lambda: f.read(8192), b''):
-            hasher.update(chunk)
-    actual = hasher.hexdigest()
 
-    print(f"Expected SHA256: {expected}")
-    print(f"Actual   SHA256: {actual}")
-    if expected and actual != expected:
-        print("❌ SHA256 MISMATCH")
+def expected_digest(apk, supplied):
+    if supplied:
+        return supplied.lower()
+    sums = apk.parent / 'SHA256SUMS.txt'
+    if not sums.exists():
+        raise RuntimeError('缺少 SHA256SUMS.txt；请传 --sha256。')
+    return sums.read_text(encoding='utf-8').split()[0].lower()
+
+
+def optional_tool(name, *args):
+    executable = shutil.which(name) or shutil.which(f'{name}.exe') or shutil.which(f'{name}.bat')
+    if not executable:
+        print(f'{name}: NOT CHECKED（工具不在 PATH）')
+        return True
+    result = subprocess.run([executable, *args], capture_output=True, text=True, timeout=30)
+    if result.stdout.strip():
+        print(result.stdout.strip())
+    if result.returncode:
+        print(result.stderr.strip(), file=sys.stderr)
         return False
-    print("✅ SHA256 OK")
     return True
 
-def extract_apk_info():
-    """Extract package info using aapt if available."""
-    try:
-        result = subprocess.run(
-            ['aapt', 'dump', 'badging', str(APK_PATH)],
-            capture_output=True, text=True, timeout=30
-        )
-        if result.returncode == 0:
-            print("\n=== APK Metadata ===")
-            for line in result.stdout.split('\n'):
-                if any(k in line for k in ['package:', 'versionCode', 'versionName', 'application:']):
-                    print(line)
-    except FileNotFoundError:
-        print("aapt not found, skipping metadata extraction")
-    except subprocess.TimeoutExpired:
-        print("aapt timeout")
-
-def check_signature():
-    """Check APK signature with apksigner if available."""
-    try:
-        result = subprocess.run(
-            ['apksigner', 'verify', '--verbose', str(APK_PATH)],
-            capture_output=True, text=True, timeout=30
-        )
-        print("\n=== Signature Verification ===")
-        if result.returncode == 0:
-            print("✅ Signature VERIFIED")
-        else:
-            print("❌ Signature INVALID")
-        for line in result.stdout.split('\n')[:10]:
-            if line.strip():
-                print(line)
-    except FileNotFoundError:
-        print("apksigner not found, skipping signature check")
 
 def main():
-    print(f"Verifying: {APK_PATH}")
-    print(f"Size: {APK_PATH.stat().st_size:,} bytes")
+    parser = argparse.ArgumentParser(description='验证 CCHH Mobile APK')
+    parser.add_argument('apk', type=Path)
+    parser.add_argument('--sha256', help='完整预期 SHA-256；默认读取 APK 同目录 SHA256SUMS.txt')
+    args = parser.parse_args()
 
-    ok = verify_sha256()
-    extract_apk_info()
-    check_signature()
+    apk = args.apk.resolve()
+    if not apk.is_file():
+        raise RuntimeError(f'APK 不存在：{apk}')
+    expected = expected_digest(apk, args.sha256)
+    actual = digest(apk)
+    print(f'文件: {apk}')
+    print(f'大小: {apk.stat().st_size} bytes')
+    print(f'预期 SHA256: {expected}')
+    print(f'实际 SHA256: {actual}')
+    if actual != expected:
+        raise RuntimeError('SHA-256 不一致。')
 
-    if ok:
-        print("\n✅ APK verification PASSED")
-        return 0
-    else:
-        print("\n❌ APK verification FAILED")
-        return 1
+    metadata_ok = optional_tool('aapt', 'dump', 'badging', str(apk))
+    signature_ok = optional_tool('apksigner', 'verify', '--verbose', '--print-certs', str(apk))
+    if not metadata_ok or not signature_ok:
+        raise RuntimeError('APK 元数据或签名检查失败。')
+    print('PASS：SHA-256 一致；可用的 Android SDK 检查均通过。')
+    return 0
+
 
 if __name__ == '__main__':
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except (RuntimeError, OSError, subprocess.SubprocessError) as error:
+        print(f'失败: {error}', file=sys.stderr)
+        sys.exit(1)
