@@ -60,6 +60,8 @@ jobs:
           fi
           "$APKSIGNER" verify artifacts/CCHH-Mobile-v0.1.5.apk
           sha256sum artifacts/CCHH-Mobile-v0.1.5.apk > artifacts/SHA256SUMS.txt
+          cp ../LICENSE artifacts/UPSTREAM_LICENSE.txt
+          cp THIRD_PARTY_NOTICES.md COMMUNITY_BETA.md artifacts/
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
@@ -67,5 +69,8 @@ jobs:
           path: |
             cchh-mobile-android/artifacts/*.apk
             cchh-mobile-android/artifacts/SHA256SUMS.txt
+            cchh-mobile-android/artifacts/UPSTREAM_LICENSE.txt
+            cchh-mobile-android/artifacts/THIRD_PARTY_NOTICES.md
+            cchh-mobile-android/artifacts/COMMUNITY_BETA.md
           if-no-files-found: error
           retention-days: 14

@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator, Alert, AppState, BackHandler, FlatList,
-  KeyboardAvoidingView, Platform, Pressable, ScrollView,
+  KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView,
   StyleSheet, Text, TextInput, View
 } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
@@ -12,6 +12,7 @@ import { parsePrivatePairingQr } from './privatePairing.mjs';
 import { splitFences } from './messageText.mjs';
 import { isForegroundResume, reconnectDelayMs } from './mobileRecovery.mjs';
 import { endpoint } from './connectionUtils.mjs';
+import { LEGAL_LINKS } from './legalLinks.mjs';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 
@@ -361,8 +362,37 @@ function schedule() {
       setApprovals(prev => prev.filter(p => p.requestId !== request.requestId));
     }
   }
+  function openLegal(url) {
+    Linking.openURL(url).catch(() => Alert.alert('无法打开链接', url));
+  }
 
   if(restoring) return <View style={styles.center}><ActivityIndicator color={C.accent} /></View>;
+  if(showAbout) return <SafeAreaView style={styles.flex}><StatusBar style="light" />
+    <View style={styles.header}>
+      <Text style={styles.title}>关于 / 法律</Text>
+      <Pressable accessibilityRole="button" onPress={()=>setShowAbout(false)}><Text style={styles.actionLink}>关闭</Text></Pressable>
+    </View>
+    <ScrollView contentContainerStyle={styles.aboutContent}>
+      <Text style={styles.aboutTitle}>CCHH Mobile</Text>
+      <Text style={styles.aboutText}>版本 0.1.5 (Build 1)</Text>
+      <Text style={styles.aboutText}>包名: com.cchh.mobile.client</Text>
+      <Text style={styles.aboutText}>基于 CCHH v0.7.4</Text>
+      <Text style={styles.aboutText}>非官方客户端，不代表上游认可或背书。</Text>
+      <View style={styles.aboutSection}>
+        <Text style={styles.aboutSectionTitle}>源码与许可证</Text>
+        <Text style={styles.aboutText}>Based on cc-haha: https://github.com/NanmiCoder/cc-haha</Text>
+        <Text style={styles.aboutText}>Copyright (c) 2026 cc-haha</Text>
+        <Pressable accessibilityRole="link" onPress={()=>openLegal(LEGAL_LINKS.upstreamLicense)}><Text style={styles.legalLink}>打开上游许可证</Text></Pressable>
+        <Pressable accessibilityRole="link" onPress={()=>openLegal(LEGAL_LINKS.source)}><Text style={styles.legalLink}>打开本客户端源码</Text></Pressable>
+        <Pressable accessibilityRole="link" onPress={()=>openLegal(LEGAL_LINKS.thirdPartyNotices)}><Text style={styles.legalLink}>打开第三方声明</Text></Pressable>
+      </View>
+      <View style={styles.aboutSection}>
+        <Text style={styles.aboutSectionTitle}>免责声明</Text>
+        <Text style={styles.aboutText}>非官方、非商业测试版，不保证稳定性。</Text>
+        <Text style={styles.aboutText}>每位用户独立连接自己的 CCHH；不提供集中账号或开发者代理。</Text>
+      </View>
+    </ScrollView>
+  </SafeAreaView>;
   if(!config) return <SafeAreaView style={styles.flex}><StatusBar style="light" />
     <ScrollView contentContainerStyle={styles.connect}>
       <View style={styles.logo}><Text style={styles.logoText}>C</Text></View>
@@ -417,10 +447,17 @@ function schedule() {
       <Btn label={loading?'检查连接中…':mode==='public'?(pairing?'检查审批并连接':'申请公网手机配对'):'连接到 CCHH'} onPress={connect} disabled={loading} />
       <Text style={styles.hint}>免费非官方测试版。每位用户独立配对自己的电脑；不需要通过开发者服务器。ngrok 公网流量经第三方转发。此版本仍需真实安卓设备及群友多设备验收。</Text>
       <Text style={styles.credit}>非官方客户端 · Based on cc-haha © 2026 cc-haha</Text>
+      <Pressable accessibilityRole="button" onPress={()=>setShowAbout(true)}><Text style={styles.legalLink}>关于 / 法律</Text></Pressable>
     </ScrollView>
   </SafeAreaView>;
   if(!selected) return <SafeAreaView style={styles.flex}><StatusBar style="light" />
-    <View style={styles.header}><Text style={styles.title}>会话</Text><Pressable onPress={logout}><Text style={styles.actionLink}>解除配对</Text></Pressable></View>
+    <View style={styles.header}>
+      <Text style={styles.title}>会话</Text>
+      <View style={styles.headerActions}>
+        <Pressable accessibilityRole="button" onPress={()=>setShowAbout(true)}><Text style={styles.actionLink}>关于</Text></Pressable>
+        <Pressable accessibilityRole="button" onPress={logout}><Text style={styles.actionLink}>解除配对</Text></Pressable>
+      </View>
+    </View>
     <TextInput style={styles.search} value={search} onChangeText={setSearch} placeholder="搜索会话或项目" placeholderTextColor={C.muted} />
     {!!error && <Text style={styles.err}>{error}</Text>}
     <FlatList data={sessions.filter(s => (s.title+' '+s.projectPath).toLowerCase().includes(search.toLowerCase()))}
@@ -433,38 +470,7 @@ function schedule() {
         <Text style={styles.sessionMeta}>{item.messageCount||0} 条记录</Text>
       </Pressable>}/>
   </SafeAreaView>;
-  if(showAbout) return <SafeAreaView style={styles.flex}><StatusBar style="light" />
-    <View style={styles.aboutModal}>
-      <View style={styles.aboutContent}>
-        <Text style={styles.aboutTitle}>关于 CCHH Mobile</Text>
-        <Text style={styles.aboutText}>版本 0.1.5 (Build 1)</Text>
-        <Text style={styles.aboutText}>包名: com.cchh.mobile.client</Text>
-        <Text style={styles.aboutText}>基于 CCHH v0.7.4</Text>
-        <Text style={styles.aboutText}>非官方客户端 · Based on cc-haha © 2026 cc-haha</Text>
-        <View style={styles.aboutSection}>
-          <Text style={styles.aboutSectionTitle}>许可证</Text>
-          <Text style={styles.aboutText}>基于 cc-haha Community Source License 1.0</Text>
-          <Text style={styles.aboutText}>非商业社区分享需遵守许可证第 4 节</Text>
-          <Text style={styles.aboutText}>商业用途需另行授权</Text>
-        </View>
-        <View style={styles.aboutSection}>
-          <Text style={styles.aboutSectionTitle}>第三方依赖</Text>
-          <Text style={styles.aboutText}>Expo / React Native / React: MIT License</Text>
-          <Text style={styles.aboutText}>Expo Modules: MIT License</Text>
-          <Text style={styles.aboutText}>AndroidX / Kotlin / OkHttp / Hermes: Apache 2.0 / MIT / BSD</Text>
-          <Text style={styles.aboutText}>完整声明见 THIRD_PARTY_NOTICES.md</Text>
-        </View>
-        <View style={styles.aboutSection}>
-          <Text style={styles.aboutSectionTitle}>免责声明</Text>
-          <Text style={styles.aboutText}>非官方测试版，不保证稳定性</Text>
-          <Text style={styles.aboutText}>不提供集中账号或开发者代理</Text>
-          <Text style={styles.aboutText}>每位用户独立连接自己的 CCHH</Text>
-        </View>
-        <Btn label="关闭" onPress={()=>setShowAbout(false)} />
-      </View>
-    </View>
-  </SafeAreaView>;
-  if(!config) return <SafeAreaView style={styles.flex}><StatusBar style="light" />
+  return <SafeAreaView style={styles.flex}><StatusBar style="light" />
     <View style={styles.header}>
       <Pressable onPress={()=>{setSelected(null);setError('')}}><Text style={styles.actionLink}>‹ 会话</Text></Pressable>
       <View style={styles.headerCenter}><Text numberOfLines={1} style={styles.headerTitle}>{selected.title||'聊天'}</Text>
@@ -529,5 +535,9 @@ const styles=StyleSheet.create({
  composer:{flexDirection:'row',padding:10,borderTopColor:C.line,borderTopWidth:1,alignItems:'flex-end',gap:8,backgroundColor:C.bg},
  composeInput:{color:C.text,backgroundColor:C.surface,borderRadius:11,flex:1,maxHeight:110,minHeight:43,padding:11},
  approval:{padding:11,margin:12,borderRadius:13,backgroundColor:C.surface2,borderColor:C.accent,borderWidth:1},
- approvalTitle:{color:C.accent,fontWeight:'800',marginBottom:6},actions:{flexDirection:'row',justifyContent:'flex-end',gap:10,marginTop:8}
+ approvalTitle:{color:C.accent,fontWeight:'800',marginBottom:6},actions:{flexDirection:'row',justifyContent:'flex-end',gap:10,marginTop:8},
+ headerActions:{flexDirection:'row',alignItems:'center',gap:16},
+ aboutContent:{padding:24,paddingBottom:48},aboutTitle:{fontSize:27,fontWeight:'800',color:C.text,marginBottom:18},
+ aboutText:{fontSize:13,lineHeight:21,color:C.muted,marginBottom:5},aboutSection:{marginTop:22},
+ aboutSectionTitle:{fontSize:16,fontWeight:'700',color:C.text,marginBottom:9},legalLink:{fontSize:14,lineHeight:22,color:C.accent,marginTop:9,textDecorationLine:'underline'}
 });

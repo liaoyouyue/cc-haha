@@ -7,7 +7,7 @@ import { H5AccessService } from '../../src/server/services/h5AccessService.js'
 
 const configDir = process.env.CLAUDE_CONFIG_DIR!
 // Alphanumeric only: adb `input text` is reliable for these characters.
-const TOKEN = 'E2EACCEPTANCETOKEN0123456789ABCDEF'
+const TOKEN = process.env.CCHH_E2E_TOKEN || 'E2EACCEPTANCETOKEN0123456789ABCDEF'
 await mkdir(configDir, { recursive: true })
 await mkdir(path.join(configDir, 'cc-haha'), { recursive: true })
 await writeFile(path.join(configDir, 'settings.json'),

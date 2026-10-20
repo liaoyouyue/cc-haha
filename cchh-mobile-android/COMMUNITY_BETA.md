@@ -58,4 +58,4 @@
 - AndroidX / Kotlin / OkHttp / Hermes：Apache 2.0 / MIT / BSD
 - 上游 cc-haha v0.7.4：cc-haha Community Source License 1.0（非商业社区分享需遵守许可证第 4 节）
 
-APK 内已包含 META-INF/NOTICE.md 与各依赖 LICENSE.txt。
+当前未证明 APK 内嵌了全部许可证文本；CI 下载包会把上游许可证、本声明和第三方声明与 APK 一起交付。公开分发前仍需对最终锁文件和 APK 做完整许可证审计。

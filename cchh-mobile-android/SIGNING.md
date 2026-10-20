@@ -1,137 +1,103 @@
-# CCHH Mobile Android · 签名与发布方案
-
-## 概述
-
-本文档描述 CCHH Mobile Android v0.1.5 的签名方案、密钥管理策略及发布流程。
-
----
+# CCHH Mobile Android · Beta 签名与升级方案
 
 ## 当前状态
 
-- **版本**：v0.1.5 (versionCode: 1, versionName: "0.1.5")
-- **包名**：com.cchh.mobile.client
-- **最低 SDK**：30 (Android 11)
-- **目标 SDK**：35 (Android 15)
-- **架构**：arm64-v8a, armeabi-v7a
-- **当前签名**：CI 临时生成测试密钥（每次构建重新生成）
-- **APK SHA256 (v0.1.5)**：`db1f8e893ad4a0f1de28dd1e191810bd5aa9264b5c1ceca8441d84aee43cf063`
+- 版本：v0.1.5
+- 包名：`com.cchh.mobile.client`
+- 当前 `versionCode`：1
+- 当前 CI：每次构建临时生成测试密钥，并在 CI 内执行 `apksigner verify`
+- 结果：单个 APK 可安装；不同 CI 构建签名不同，不能互相覆盖升级
+- 长期/固定 Beta 私钥：尚未生成，也未授权生成
 
----
+当前 APK 只能用于本人授权的首次安装测试，不能当作可持续升级的正式 Beta 包。
 
-## 签名方案设计
+## 免费固定 Beta 方案
 
-### 长期签名密钥要求
-
-| 项目 | 要求 |
-|------|------|
-| 算法 | RSA 3072-bit 或 EC P-256 |
-| 有效期 | ≥ 25 年（覆盖应用生命周期） |
-| 存储 | 硬件安全模块 (HSM) 或加密密钥库 |
-| 备份 | 离线冷存储，多地点冗余 |
-| 访问控制 | 多因子认证，最少 2 人授权 |
-
-### 密钥生成流程（待授权执行）
+HSM 不是社区 Beta 的前置条件。授权后可在离线或受控本地电脑生成一把固定 RSA-3072 Keystore：
 
 ```bash
-# 示例：生成长期签名密钥（需在安全环境执行）
 keytool -genkeypair \
-  -keystore cchh-mobile-release.jks \
-  -alias cchh-mobile-release \
+  -keystore cchh-mobile-beta.p12 \
+  -storetype PKCS12 \
+  -alias cchh-mobile-beta \
   -keyalg RSA \
   -keysize 3072 \
   -validity 9125 \
-  -storepass <强密码> \
-  -keypass <强密码> \
-  -dname "CN=CCHH Mobile Release, O=CCHH, C=CN"
+  -storepass '<强随机口令>' \
+  -keypass '<强随机口令>' \
+  -dname 'CN=CCHH Mobile Beta, O=CCHH, C=CN'
 ```
 
-### 密钥存储与备份策略
+本仓库不会执行上面的命令，也不会生成真实私钥。
 
-| 层级 | 存储方式 | 访问权限 | 更新频率 |
-|------|----------|----------|----------|
-| 主密钥 | HSM / 加密 USB Token | 核心维护组（≥2人） | 仅轮换时 |
-| 离线备份 | 加密纸质/硬盘 | 核心维护组 + 存档 | 每次轮换后 |
-| CI 临时密钥 | 内存中生成 | CI 系统自动 | 每次构建 |
+### 保存规则
 
----
+1. Keystore 只放在加密磁盘或加密密钥库中。
+2. 口令放密码管理器，不写入脚本、文档、聊天或 CI 日志。
+3. 至少保留两份离线加密备份，分别保存。
+4. Git 只记录公钥证书 SHA-256 指纹；Keystore 和口令永不入库。
+5. 只有明确授权的维护者可使用该密钥签名。
 
-## 当前 CI 临时签名行为
+本地固定签名即可满足免费 Beta；接入 GitHub Actions Secrets 是后续可选项，不是前置条件。
 
-**`.github/workflows/cchh-mobile-apk.yml`** 中的签名逻辑：
+## versionCode 规则
+
+- `versionName` 面向用户，例如 `0.1.5`、`0.1.6`。
+- `versionCode` 每个可分发 APK 必须严格递增，不能复用或回退。
+- 当前临时签名包使用 1。
+- 首个固定 Beta 签名包建议从 2 开始；之后使用 3、4、5……
+- 临时签名包切换到固定签名包时签名不同，需卸载旧包；固定签名启用后才开始验证连续覆盖升级。
+
+## 固定签名验收
+
+1. 使用同一固定 Keystore 构建旧版 APK（例如 `versionCode=2`）。
+2. 只增加 `versionCode` 后构建新版 APK（例如 `versionCode=3`）。
+3. 先做离线检查：
 
 ```bash
-# 当前行为：每次构建生成临时密钥
-keytool -genkeypair -keystore /tmp/cchh-test.jks \
-  -alias cchh -storepass changeit -keypass changeit \
-  -dname "CN=CCHH Mobile Test" -keyalg RSA -keysize 3072 -validity 3650
-apksigner sign --ks /tmp/cchh-test.jks ...
+python acceptance/verify_android_upgrade.py old.apk new.apk
 ```
 
-**问题**：
-- 每次构建密钥不同 → 用户无法直接升级安装（签名不一致）
-- 临时密钥无长期有效性保证
+4. 在明确授权的一台测试手机上执行覆盖升级：
 
----
+```bash
+python acceptance/verify_android_upgrade.py old.apk new.apk --install
+```
 
-## 正式签名接入计划
+脚本会先验证两个 APK 的证书 SHA-256 完全一致，且新版 `versionCode` 更大；任一条件不满足时不会自动卸载旧包。
 
-### 阶段 1：密钥生成与验证（需授权）
-- [ ] 在安全环境生成长期发布密钥
-- [ ] 验证 `apksigner verify` 通过
-- [ ] 导出公钥证书指纹（SHA256）用于透明度验证
+## CI 接入（可选）
 
-### 阶段 2：CI 集成（密钥不入仓库）
-- [ ] 配置 GitHub Actions Secrets / OIDC 信任 HSM
-- [ ] 修改 `cchh-mobile-apk.yml` 使用长期密钥签名
-- [ ] 验证同一密钥连续构建可直接升级安装
+如后续确需 CI 自动签名：
 
-### 阶段 3：密钥轮换预案
-- [ ] 文档化轮换流程（保留旧密钥支持现有用户升级）
-- [ ] 定期演练（每 12-24 个月）
-
----
+1. 将加密后的 Keystore 与口令放入受限 Secrets；不要放进仓库。
+2. 构建时写入临时目录，签名后立即删除。
+3. 日志不得打印 Keystore、口令或私钥内容。
+4. 发布物同时记录 APK SHA-256、证书 SHA-256、源码提交和 `versionCode`。
+5. 用 `acceptance/verify_android_upgrade.py` 做同签名升级门禁。
 
 ## 当前验证状态
 
-| 检查项 | 状态 | 备注 |
-|--------|------|------|
-| APK 可安装 | ✅ | 模拟器/真机验证通过 |
-| SHA256 固定 | ✅ | `db1f8e893ad4a0f1de28dd1e191810bd5aa9264b5c1ceca8441d84aee43cf063` |
-| 临时签名可验证 | ✅ | `apksigner verify` 通过 |
-| 升级兼容性 | ❌ | 每次构建密钥不同，无法直接升级 |
-| 长期密钥 | ⏳ | 等待授权生成 |
+| 检查项 | 状态 | 证据/限制 |
+|---|---|---|
+| CI 临时签名有效 | PASS | APK Build `39415730800` 的签名验证步骤成功 |
+| 固定 Beta 签名 | BLOCKED | 尚未授权生成固定 Keystore |
+| 跨构建覆盖升级 | BLOCKED | 当前每次 CI 使用不同临时密钥 |
+| `versionCode` 显式配置 | PASS | `app.json` 已设为 1 |
+| 真机升级 | BLOCKED | 尚无授权真机和两份同签名递增 APK |
 
----
+## 泄露或丢失
 
-## 密钥泄露应急预案
-
-1. **立即撤销**：在 Google Play / 分发渠道撤销旧证书（如已上架）
-2. **生成新密钥**：按上述流程生成新长期密钥
-3. **强制重装**：用户需卸载旧版安装新版（签名不一致无法直接升级）
-4. **通知用户**：通过官方渠道告知重装步骤
-
----
+- 立即停止使用受影响密钥，并记录受影响 APK 的证书指纹。
+- 未接入 Play App Signing 时，新密钥无法覆盖安装旧签名包；用户必须卸载后重装。
+- 不自动删除用户电脑上的 CCHH 会话或数据库。
+- 通过已确认的官方渠道说明受影响版本、指纹和重装步骤。
 
 ## 禁止事项
 
-- ❌ 将私钥、Keystore 文件、密码提交至 Git 仓库
-- ❌ 在 CI 日志、聊天记录、文档中泄露私钥/口令
-- ❌ 将临时测试签名包作为正式升级包分发
-- ❌ 在未授权环境生成或使用长期发布密钥
-- ❌ 共享签名密钥给非核心维护人员
-
----
-
-## 下一步行动
-
-**等待授权**：长期发布密钥生成需明确授权，且需在安全环境执行。
-
-当前可执行：
-- [x] 验证当前 APK 签名有效性
-- [x] 记录当前 APK SHA256 供后续对比
-- [ ] 设计 CI 集成方案（待密钥就绪）
-- [ ] 编写密钥轮换 SOP
-
----
+- 不把私钥、Keystore 或口令提交到 Git。
+- 不把临时测试签名包描述为可持续升级的正式包。
+- 不在未授权环境生成或使用固定 Beta 密钥。
+- 不为通过测试而关闭 Android 签名校验或跳过证书比对。
 
 *文档版本：2026-10-20 | CCHH Mobile Android v0.1.5*

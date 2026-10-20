@@ -130,25 +130,21 @@ Includes: androidx.activity, androidx.annotation, androidx.appcompat, androidx.a
 
 ---
 
-## License Compliance Summary
+## Verification Scope
 
-| Requirement | Status | Notes |
-|-------------|--------|-------|
-| MIT/Apache licenses included | ✅ | All MIT/Apache dependencies have license files in APK META-INF |
-| Upstream cc-haha license | ✅ | Community Source License 1.0 included |
-| Non-commercial restriction noted | ✅ | Documented in COMMUNITY_BETA.md and LICENSE |
-| Attribution in APK | ✅ | META-INF/NOTICE.md and individual LICENSE.txt files present |
-| No GPL/LGPL dependencies | ✅ | Verified - all transitive deps are MIT/Apache/BSD |
+- The direct dependency versions above come from `cchh-mobile-android/package.json`.
+- The transitive list is a practical inventory, not a complete legal audit or SBOM.
+- The current test APK has not been proven to embed every license text in `META-INF`.
+- No claim is made here that the full transitive graph contains no copyleft component.
 
 ---
 
 ## Distribution Notes
 
-1. **APK includes**: META-INF/NOTICE.md and individual LICENSE.txt files for all third-party components
-2. **Source availability**: This project's source is available at the repository URL above
-3. **Upstream source**: https://github.com/NanmiCoder/cc-haha (v0.7.4 tag)
-3. **No GPL/LGPL**: Confirmed - no copyleft dependencies in the dependency chain
-4. **Attribution**: All licenses require preserving copyright notices and license terms in redistributions
+1. The CI artifact ships the APK together with `UPSTREAM_LICENSE.txt`, this notice, and `COMMUNITY_BETA.md`.
+2. The About/Legal page links to the upstream license, upstream attribution, this notice, and the client source.
+3. Before any public release, regenerate a dependency/SBOM license report from the exact release lockfile and inspect the final APK.
+4. Preserve all applicable copyright notices and license terms when redistributing.
 
 ---
 
