@@ -286,7 +286,7 @@ let cancelled = false, tries = 0, handshake = null, previousAppState = AppState.
       handshake = setTimeout(() => { try { ws.close(); } catch{} }, 15000);
       ws.onopen = () => {
         if(wsRef.current !== ws) return;
-        clearTimeout(handshake); tries=0; lastSeen=Date.now(); setSocketState('同步中');
+        clearTimeout(handshake); tries=0; setSocketState('同步中');
         ws.send(JSON.stringify({type:'sync_state'}));
 pingRef.current = setInterval(() => {
           if(cancelled || wsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return;
