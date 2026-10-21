@@ -34,6 +34,7 @@ import { isAllowedUser, tryPair } from '../common/pairing.js'
 import { AttachmentStore } from '../common/attachment/attachment-store.js'
 import { checkAttachmentLimit } from '../common/attachment/attachment-limits.js'
 import {
+  ensureDingTalkApiNoProxy,
   extractDingTalkAttachments,
   extractDingTalkText,
   getDingTalkChatId,
@@ -667,6 +668,7 @@ async function collectAttachments(
 }
 
 async function start(): Promise<void> {
+  ensureDingTalkApiNoProxy()
   const client = new DWClient({
     clientId: config.dingtalk.clientId,
     clientSecret: config.dingtalk.clientSecret,

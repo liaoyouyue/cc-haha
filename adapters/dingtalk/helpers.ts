@@ -20,6 +20,28 @@ export type DingTalkAttachmentCandidate = {
   fileName?: string
 }
 
+const DINGTALK_API_HOST = 'api.dingtalk.com'
+
+export function ensureDingTalkApiNoProxy(env: NodeJS.ProcessEnv = process.env): void {
+  const entries: string[] = []
+  const seen = new Set<string>()
+  for (const entry of [env.NO_PROXY, env.no_proxy]
+    .flatMap((value) => value?.split(',') ?? [])
+    .map((value) => value.trim())
+    .filter(Boolean)) {
+    const normalized = entry.toLowerCase()
+    if (seen.has(normalized)) continue
+    seen.add(normalized)
+    entries.push(entry)
+  }
+
+  if (!seen.has(DINGTALK_API_HOST)) entries.push(DINGTALK_API_HOST)
+
+  const value = entries.join(',')
+  env.NO_PROXY = value
+  env.no_proxy = value
+}
+
 export function parseDingTalkPayload(raw: unknown): DingTalkRobotMessage | null {
   if (!raw) return null
   if (typeof raw === 'object') return raw as DingTalkRobotMessage
