@@ -1,4 +1,5 @@
 name: CCHH Mobile - Android Emulator Smoke
+# UI acceptance: latest successful same-branch APK (compact onboarding + task list).
 on:
   push:
     branches:
