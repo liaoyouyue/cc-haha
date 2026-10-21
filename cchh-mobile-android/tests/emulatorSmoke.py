@@ -19,7 +19,7 @@ import time
 import xml.etree.ElementTree as ET
 
 PACKAGE = "com.cchh.mobile.client"
-TITLES = ("CCHH Mobile", "连接我自己的 CCHH")
+TITLES = ("CCHH Mobile", "连接自己的 CCHH", "连接我自己的 CCHH")
 DIALOG_MARKERS = ("isn't responding", "无响应")
 DIALOG_ACTIONS = ("Wait", "等待", "Close app", "关闭应用")
 
