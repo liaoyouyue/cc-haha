@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import {
+  ensureDingTalkApiNoProxy,
   extractDingTalkAttachments,
   extractDingTalkText,
   getDingTalkChatId,
@@ -9,6 +10,19 @@ import {
 } from '../helpers.js'
 
 describe('DingTalk helpers', () => {
+  it('adds the DingTalk API to both no-proxy variables without dropping existing entries', () => {
+    const env = {
+      NO_PROXY: '127.0.0.1,localhost',
+      no_proxy: '::1,API.DINGTALK.COM',
+    }
+
+    ensureDingTalkApiNoProxy(env)
+    ensureDingTalkApiNoProxy(env)
+
+    expect(env.NO_PROXY).toBe('127.0.0.1,localhost,::1,API.DINGTALK.COM')
+    expect(env.no_proxy).toBe(env.NO_PROXY)
+  })
+
   it('parses robot payload JSON safely', () => {
     expect(parseDingTalkPayload('{"msgtype":"text"}')?.msgtype).toBe('text')
     expect(parseDingTalkPayload('not-json')).toBeNull()
