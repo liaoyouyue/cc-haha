@@ -84,7 +84,7 @@ function Main() {
   const [mode, setMode] = useState('private');
   const [networkType, setNetworkType] = useState('lan');
   const [scanKind, setScanKind] = useState('public');
-  const [showGuide, setShowGuide] = useState(true);
+  const [showGuide, setShowGuide] = useState(false);
   const [pairSecret, setPairSecret] = useState('');
   const [pairing, setPairing] = useState(null);
   const [pairNotice, setPairNotice] = useState('');
@@ -107,6 +107,9 @@ function Main() {
   const [tab, setTab] = useState('chat');
   const [queued, setQueued] = useState([]); // unsent local drafts, never replay automatically
   const [terminalEvents, setTerminalEvents] = useState([]);
+  const [taskItems, setTaskItems] = useState([]);
+  const [taskError, setTaskError] = useState('');
+  const [taskLoading, setTaskLoading] = useState(false);
   const [modelInfo, setModelInfo] = useState(null);
   const [modelChoices, setModelChoices] = useState([]);
   const [modelPicker, setModelPicker] = useState(false);
@@ -236,6 +239,7 @@ function Main() {
       setSelected(null);setConfig(null);setSessions([]);
       setHistory([]);setApprovals([]);setStream('');
       setQueued([]);setTerminalEvents([]);setFileEntries([]);setFilesDir('');
+      setTaskItems([]);setTaskError('');
       setModelInfo(null);setModelChoices([]);setEffortInfo(null);
       setDesktopInfo(null);setDesktopError('');setTab('chat');
       setUrl('');setToken('');setPairSecret('');setPairing(null);
@@ -283,7 +287,8 @@ function Main() {
     if(!config || !selected) return;
 let cancelled = false, tries = 0, handshake = null, previousAppState = AppState.currentState;
     setHistory([]); setHistoryReady(false); setCursor(null); setApprovals([]); setStream('');
-    setTerminalEvents([]); setModelPicker(false); setEffortPicker(false); setModelInfo(null); setEffortInfo(null); keepScroll.current=false;
+    setTerminalEvents([]); setModelPicker(false); setEffortPicker(false); setModelInfo(null); setEffortInfo(null);
+    setTaskItems([]);setTaskError('');keepScroll.current=false;
     setTurnBusy(false); sendLock.current = true; setDraft('');
     setSocketState('连接中'); loadHistory(selected);
     function clearConn() {
@@ -467,6 +472,19 @@ function schedule() {
     }catch(e){setFilesError(e.message||'文件浏览不可用');setFileEntries([]);}
     finally{setFilesLoading(false);}
   }
+  async function loadTaskItems(){
+    if(!selected?.id || !config)return;
+    setTaskLoading(true);setTaskError('');
+    try{
+      // Restrict listing to the selected session rather than exposing other
+      // sessions' or unrelated terminated teams' task registers.
+      const data=await getJson(config,'/api/tasks/lists/'+encodeURIComponent(selected.id));
+      const list=Array.isArray(data.tasks)?data.tasks:[];
+      setTaskItems(list.filter(item=>item && item.taskListId===selected.id &&
+        ['pending','in_progress','completed'].includes(item.status)));
+    }catch(e){setTaskItems([]);setTaskError(e.message||'任务列表不可用');}
+    finally{setTaskLoading(false);}
+  }
   async function refreshDesktop(){
     setDesktopError('');
     try{setDesktopInfo(await getJson(config,'/api/status'));}
@@ -474,6 +492,7 @@ function schedule() {
   }
   function changeTab(next) {
     setTab(next);setModelPicker(false);setEffortPicker(false);
+    if(next==='tasks')void loadTaskItems();
     if(next==='files')void browseFiles(projectRootOf(selected));
     if(next==='desktop')void refreshDesktop();
   }
@@ -512,9 +531,8 @@ function schedule() {
   if(!config) return <SafeAreaView style={styles.flex}><StatusBar style="dark" />
     <ScrollView contentContainerStyle={styles.connect}>
       <View style={styles.logo}><Text style={styles.logoText}>C</Text></View>
-      <Text style={styles.h1}>连接我自己的 CCHH</Text>
-      <Text style={styles.muted}>CCHH Mobile · 免费通用版测试</Text>
-      <Text style={styles.muted}>同一个免费 APP，每个人独立连接自己的电脑。不共享 CCHH 账号或 API Key。</Text>
+      <Text style={styles.h1}>连接自己的 CCHH</Text>
+      <Text style={styles.connectLead}>扫码配对自己的电脑 · 无需共享账号或 API 密钥</Text>
       <View style={styles.guideCard}>
         <Pressable accessibilityRole="button" onPress={()=>setShowGuide(v=>!v)}>
           <Text style={styles.guideTitle}>{showGuide?'▼':'▶'} 首次连接指引</Text>
@@ -526,18 +544,18 @@ function schedule() {
           <Text style={styles.guideWarning}>不要把带令牌的二维码发给其他人，手机只能配对自己授权的电脑。</Text>
         </>}
       </View>
-      <Text style={styles.label}>免费连接方式（第三方免费额度可能调整）</Text>
+      <Text style={styles.label}>选择连接方式</Text>
       <View style={{flexDirection:'row',gap:8}}>
         <View style={{flex:1}}><Btn label="同一 Wi-Fi" outline={networkType!=='lan'} onPress={()=>chooseConnection('lan')} /></View>
         <View style={{flex:1}}><Btn label="Tailscale" outline={networkType!=='tailscale'} onPress={()=>chooseConnection('tailscale')} /></View>
       </View>
-      <Btn label="公网 ngrok · 免费额度（实验性）" outline={networkType!=='public'} onPress={()=>chooseConnection('public')} />
+      <Btn label="公网 ngrok（实验性）" outline={networkType!=='public'} onPress={()=>chooseConnection('public')} />
       <Text style={styles.guideStep}>{mode==='public'
         ? '电脑打开「H5 访问 → 公网 ngrok」，使用自己的免费账户开通后生成公网配对二维码。'
         : networkType==='tailscale'
           ? '先让手机和电脑加入自己的 Tailscale 网络；扫码读取 H5 令牌后，确认地址是电脑的 100.x 私网地址。'
           : '手机和电脑连接同一个可信 Wi-Fi，然后扫描自己电脑「H5 访问」中的二维码。'}</Text>
-      <View style={{marginTop:8}}><Btn label={mode==='public'?'扫描公网配对二维码':'扫描电脑 H5 二维码'} outline onPress={()=>startQrScan(mode==='public'?'public':'private')} /></View>
+      <View style={styles.primaryScan}><Btn label={mode==='public'?'扫码申请公网配对':'扫码连接电脑  ↗'} onPress={()=>startQrScan(mode==='public'?'public':'private')} /></View>
       {scanning && <View style={{height:270,marginTop:12,borderRadius:16,overflow:'hidden'}}>
         <CameraView style={{flex:1}} facing="back" barcodeScannerSettings={{barcodeTypes:['qr']}}
           onBarcodeScanned={onQrScanned} />
@@ -676,13 +694,22 @@ function schedule() {
 
     {tab==='tasks' && <ScrollView style={styles.panelScroll} contentContainerStyle={styles.panelContent}>
       <Text style={styles.panelTitle}>任务</Text>
-      <Text style={styles.panelSubtitle}>当前会话的真实运行状态与最近指令</Text>
+      <Text style={styles.panelSubtitle}>当前会话的实时状态、待审批任务和真实任务清单</Text>
       <View style={styles.infoCard}><Text style={styles.cardHeading}>当前执行</Text>
         <Text style={styles.stateBig}>{turnBusy?'● 正在执行':socketState==='已连接'?'✓ 等待新指令':'◌ '+socketState}</Text>
         <Text style={styles.muted}>待审批 {approvals.length} 项 · 本机待发送 {activeQueue.length} 条</Text>
         {turnBusy && <Btn label="停止当前生成" danger outline disabled={socketState!=='已连接'}
           onPress={()=>sendPacket({type:'stop_generation'})}/>}
       </View>
+      <View style={styles.taskSectionHeader}><Text style={styles.cardHeading}>当前会话任务清单</Text>
+        <Pressable accessibilityRole="button" onPress={()=>void loadTaskItems()}><Text style={styles.actionLink}>{taskLoading?'加载中':'刷新'}</Text></Pressable></View>
+      {!!taskError && <Text style={styles.err}>{taskError}</Text>}
+      {taskItems.map(t=><View key={t.taskListId+'-'+t.id} style={styles.infoCard}>
+        <Text style={styles.taskText}>{t.status==='completed'?'✓ ':t.status==='in_progress'?'● ':'○ '}{t.subject||'未命名任务'}</Text>
+        <Text style={styles.muted}>{t.status==='completed'?'已完成':t.status==='in_progress'?'执行中':'等待执行'}{t.owner?' · '+t.owner:''}</Text>
+        {!!t.description && <Text style={styles.mini} numberOfLines={4}>{t.description}</Text>}
+      </View>)}
+      {!taskLoading&&!taskItems.length&&!taskError&&<Text style={styles.muted}>当前会话尚无独立任务清单，下面显示聊天指令记录。</Text>}
       <Text style={styles.cardHeading}>最近发送的指令</Text>
       {history.filter(m=>m.role==='user'&&!m.pending).slice(-12).reverse().map(m=>
         <View key={m.id} style={styles.infoCard}><Text style={styles.taskText} numberOfLines={5}>{m.text}</Text>
@@ -758,10 +785,10 @@ export default function App() { return <SafeAreaProvider><Main /></SafeAreaProvi
 
 const styles=StyleSheet.create({
  flex:{flex:1,backgroundColor:C.bg},center:{flex:1,alignItems:'center',justifyContent:'center',backgroundColor:C.bg},
- connect:{padding:24,paddingTop:65,paddingBottom:40},logo:{height:58,width:58,borderRadius:18,backgroundColor:C.accent,alignItems:'center',justifyContent:'center',marginBottom:22},
- logoText:{fontSize:35,fontWeight:'900',color:'#FFFFFF'},h1:{fontSize:31,fontWeight:'800',color:C.text,marginBottom:7},
- label:{fontSize:14,fontWeight:'600',color:C.muted,marginTop:23,marginBottom:8},hint:{fontSize:12,lineHeight:20,color:C.muted,marginTop:30},
- guideCard:{backgroundColor:C.surface,borderWidth:1,borderColor:C.line,borderRadius:13,padding:15,marginTop:24},
+ connect:{padding:22,paddingTop:26,paddingBottom:35},logo:{height:47,width:47,borderRadius:15,backgroundColor:C.accent,alignItems:'center',justifyContent:'center',marginBottom:17},
+ logoText:{fontSize:29,fontWeight:'900',color:'#FFFFFF'},h1:{fontSize:28,fontWeight:'800',color:C.text,marginBottom:6},connectLead:{fontSize:14,color:C.muted,lineHeight:23,marginBottom:10},primaryScan:{marginTop:13},
+ label:{fontSize:14,fontWeight:'600',color:C.muted,marginTop:17,marginBottom:8},hint:{fontSize:12,lineHeight:20,color:C.muted,marginTop:30},
+ guideCard:{backgroundColor:C.surface,borderWidth:1,borderColor:C.line,borderRadius:13,padding:13,marginTop:16},
  guideTitle:{fontSize:15,fontWeight:'700',color:C.text},
  guideStep:{fontSize:13,color:C.muted,lineHeight:20,marginTop:10},
  guideWarning:{fontSize:12,color:C.red,lineHeight:19,marginTop:11},
@@ -825,7 +852,7 @@ const styles=StyleSheet.create({
   tabGlyph:{fontSize:24,color:'#5E5B62'},tabLabel:{fontSize:11,color:'#66626B'},
   tabActive:{color:'#7960A6',fontWeight:'700'},
   tabUnderline:{position:'absolute',bottom:1,width:29,height:3,borderRadius:8,backgroundColor:C.accent},
-  panelScroll:{flex:1},panelContent:{padding:18,paddingBottom:32,gap:12},
+  panelScroll:{flex:1},panelContent:{padding:18,paddingBottom:32,gap:12},taskSectionHeader:{flexDirection:'row',justifyContent:'space-between',alignItems:'center'},
   panelTitle:{fontSize:25,fontWeight:'800',color:C.text},
   panelSubtitle:{fontSize:13,color:C.muted,marginBottom:10,lineHeight:20},
   infoCard:{padding:16,backgroundColor:C.surface,borderWidth:1,borderColor:C.line,borderRadius:16,gap:9},
