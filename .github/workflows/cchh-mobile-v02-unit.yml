@@ -1,0 +1,25 @@
+name: CCHH Mobile v0.2 - Unit and Contract
+on:
+  push:
+    branches:
+      - feat/cchh-mobile-v02-m1-message-foundation-20261021
+    paths:
+      - 'cchh-mobile-android/**'
+      - '.github/workflows/cchh-mobile-v02-unit.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  node-mobile-unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout isolated mobile ref
+        uses: actions/checkout@v4
+      - name: Use Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run pure mobile unit and protocol tests
+        working-directory: cchh-mobile-android
+        run: node --test ./tests/*.test.mjs

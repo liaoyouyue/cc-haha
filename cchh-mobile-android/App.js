@@ -10,6 +10,8 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import { createPublicPairing, claimPublicPairing, publicSessionActive, parsePairingText } from './remotePairing.mjs';
 import { parsePrivatePairingQr } from './privatePairing.mjs';
 import { splitFences } from './messageText.mjs';
+import { messagesFromHistory } from './src/features/chat/historyMessage.mjs';
+import { COLORS as C } from './src/theme/tokens.mjs';
 import { isForegroundResume, reconnectDelayMs } from './mobileRecovery.mjs';
 import { endpoint } from './connectionUtils.mjs';
 import { LEGAL_LINKS } from './legalLinks.mjs';
@@ -18,8 +20,7 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 
 const STORE_KEY = 'cchh-mobile-android-connection-v1';
-const C = { bg:'#FFFFFF', surface:'#F8F7FB', surface2:'#EFEDF5', line:'#EAE7EF',
-  text:'#17161D', muted:'#787680', accent:'#9981C4', green:'#23845A', red:'#C53D49' };
+
 async function getJson(config, path) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 15000);
@@ -50,19 +51,6 @@ async function putJson(config, path, body) {
     if(!res.ok) throw new Error('CCHH 不允许更新此设置（HTTP ' + res.status + '）');
     return await res.json();
   } finally {clearTimeout(timer);}
-}
-function textFromContent(value) {
-  if (typeof value === 'string') return value;
-  if (!Array.isArray(value)) return '';
-  return value.filter(v => v && v.type === 'text' && typeof v.text === 'string')
-    .map(v => v.text).join('\n');
-}
-function messagesFromHistory(payload) {
-  return (payload.messages || []).filter(m => m.type === 'user' || m.type === 'assistant')
-    .map(m => ({
-      id: String(m.id), role: m.type, text: textFromContent(m.content),
-      timestamp: m.timestamp || ''
-    })).filter(m => m.text);
 }
 function MessageBody({text}) {
   return splitFences(text).map((part,index) => <Text key={index} selectable
