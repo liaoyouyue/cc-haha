@@ -123,6 +123,8 @@ jobs:
             cchh-mobile-logcat.txt
             cchh-mobile-resume.png
             cchh-mobile-resume-ui.xml
+            cchh-mobile-chat-ui.png
+            cchh-mobile-chat-ui.xml
             cchh-mobile-chat-failure.png
             cchh-mobile-chat-failure.xml
             cchh-chat-logcat.txt
