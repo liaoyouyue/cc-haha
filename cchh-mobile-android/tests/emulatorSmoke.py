@@ -19,7 +19,7 @@ import time
 import xml.etree.ElementTree as ET
 
 PACKAGE = "com.cchh.mobile.client"
-TITLES = ("CCHH Mobile", "连接我自己的 CCHH")
+TITLES = ("CCHH Mobile", "连接自己的 CCHH", "连接我自己的 CCHH")
 DIALOG_MARKERS = ("isn't responding", "无响应")
 DIALOG_ACTIONS = ("Wait", "等待", "Close app", "关闭应用")
 
@@ -51,6 +51,22 @@ def texts(root: ET.Element):
 def find(root: ET.Element, needle: str):
     for node in root.iter("node"):
         if needle in (node.get("text") or ""):
+            return node
+    return None
+
+
+def find_exact(root: ET.Element, label: str):
+    # Exact labels prevent tapping chat copy like "继续你的 CCHH 任务" instead
+    # of the actual bottom navigation tab "任务".
+    for node in root.iter("node"):
+        if (node.get("text") or "").strip() == label:
+            return node
+    return None
+
+
+def find_label(root: ET.Element, needle: str):
+    for node in root.iter("node"):
+        if any(needle in (node.get(field) or "") for field in ("text", "content-desc")):
             return node
     return None
 
@@ -240,14 +256,23 @@ def chat_flow(base_url: str, token: str, info_path: str) -> None:
 
     sessions = wait_for(lambda value: value if find(value, "Untitled Session") is not None else None, "session list")
     tap_node(find(sessions, "Untitled Session"))
-    wait_for(lambda value: value if find(value, "给家里的 CCHH 发送任务") is not None else None, "chat composer")
+    wait_for(lambda value: value if find(value, "CCHH Mobile") is not None and find_class(value, "android.widget.EditText") is not None else None, "new chat workbench")
+    # Exercise real five-tab rendering/taps before sending. These are never mocked screens.
+    for tab, title in (("任务", "当前执行"), ("终端", "只读"), ("文件", "刷新文件"), ("桌面", "电脑连接")):
+        root = wait_for(lambda value: value if find_exact(value, tab) is not None else None, f"{tab} tab")
+        tap_node(find_exact(root, tab))
+        wait_for(lambda value: value if find(value, title) is not None else None, f"{tab} page")
+    root = wait_for(lambda value: value if find_exact(value, "聊天") is not None else None, "chat tab")
+    tap_node(find_exact(root, "聊天"))
+    wait_for(lambda value: value if find_class(value, "android.widget.EditText") is not None else None, "chat composer")
     # The send button stays disabled until sync_state and history complete.
     wait_for(lambda value: value if find(value, "已连接") is not None else None, "connected session state")
 
     type_exact("helloE2E", "message input")
-    send = wait_for(lambda value: value if find(value, "发送") is not None else None, "send button")
-    tap_node(find(send, "发送"))
-    wait_for(lambda value: value if find(value, "Echo: helloE2E") is not None else None, "assistant reply", timeout=60)
+    send = wait_for(lambda value: value if find_label(value, "发送消息") is not None else None, "send button")
+    tap_node(find_label(send, "发送消息"))
+    reply_ui = wait_for(lambda value: value if find(value, "Echo: helloE2E") is not None else None, "assistant reply", timeout=60)
+    save(reply_ui, "cchh-mobile-chat-ui.xml", "cchh-mobile-chat-ui.png")
 
     # A tool call must reach the desktop, wait for the phone's decision, and
     # only run after "本次批准" is tapped.

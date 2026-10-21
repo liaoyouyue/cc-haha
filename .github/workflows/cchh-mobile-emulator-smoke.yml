@@ -1,9 +1,11 @@
 name: CCHH Mobile - Android Emulator Smoke
+# UI acceptance: latest successful APK (compact onboarding, session tasks, updated selector).
 on:
   push:
     branches:
       - feat/cchh-mobile-android-build-20261019
       - feat/cchh-mobile-community-pairing-20261019
+      - feat/cchh-mobile-loopii-ui-20261021
     paths:
       - '.github/workflows/cchh-mobile-emulator-smoke.yml'
   workflow_dispatch:
@@ -77,14 +79,14 @@ jobs:
             adb shell pidof com.cchh.mobile.client
             test -s cchh-mobile-smoke.png
             file cchh-mobile-smoke.png | grep -q 'PNG image data'
-            grep -q 'CCHH Mobile' cchh-mobile-ui.xml
+            grep -Eq 'CCHH Mobile|连接自己的 CCHH' cchh-mobile-ui.xml
             adb logcat -d -v time > cchh-mobile-logcat.txt
             # Background and resume through the Android lifecycle.
             python3 cchh-mobile-android/tests/emulatorSmoke.py resume
             adb shell pidof com.cchh.mobile.client
             test -s cchh-mobile-resume.png
             file cchh-mobile-resume.png | grep -q 'PNG image data'
-            grep -q 'CCHH Mobile' cchh-mobile-resume-ui.xml
+            grep -Eq 'CCHH Mobile|连接自己的 CCHH' cchh-mobile-resume-ui.xml
             # Connect to the isolated host server, send one task over the real
             # WebSocket, and confirm the reply survives a foreground resume.
             # Each emulator-runner line is its own shell, so the script reads
@@ -122,6 +124,8 @@ jobs:
             cchh-mobile-logcat.txt
             cchh-mobile-resume.png
             cchh-mobile-resume-ui.xml
+            cchh-mobile-chat-ui.png
+            cchh-mobile-chat-ui.xml
             cchh-mobile-chat-failure.png
             cchh-mobile-chat-failure.xml
             cchh-chat-logcat.txt
