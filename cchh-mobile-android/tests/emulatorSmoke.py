@@ -55,6 +55,13 @@ def find(root: ET.Element, needle: str):
     return None
 
 
+def find_label(root: ET.Element, needle: str):
+    for node in root.iter("node"):
+        if any(needle in (node.get(field) or "") for field in ("text", "content-desc")):
+            return node
+    return None
+
+
 def find_class(root: ET.Element, cls: str, index: int = 0):
     found = [node for node in root.iter("node") if node.get("class") == cls]
     return found[index] if len(found) > index else None
@@ -240,13 +247,21 @@ def chat_flow(base_url: str, token: str, info_path: str) -> None:
 
     sessions = wait_for(lambda value: value if find(value, "Untitled Session") is not None else None, "session list")
     tap_node(find(sessions, "Untitled Session"))
-    wait_for(lambda value: value if find(value, "给家里的 CCHH 发送任务") is not None else None, "chat composer")
+    wait_for(lambda value: value if find(value, "CCHH Mobile") is not None and find_class(value, "android.widget.EditText") is not None else None, "new chat workbench")
+    # Exercise real five-tab rendering/taps before sending. These are never mocked screens.
+    for tab, title in (("任务", "当前执行"), ("终端", "只读"), ("文件", "刷新文件"), ("桌面", "电脑连接")):
+        root = wait_for(lambda value: value if find(value, tab) is not None else None, f"{tab} tab")
+        tap_node(find(root, tab))
+        wait_for(lambda value: value if find(value, title) is not None else None, f"{tab} page")
+    root = wait_for(lambda value: value if find(value, "聊天") is not None else None, "chat tab")
+    tap_node(find(root, "聊天"))
+    wait_for(lambda value: value if find_class(value, "android.widget.EditText") is not None else None, "chat composer")
     # The send button stays disabled until sync_state and history complete.
     wait_for(lambda value: value if find(value, "已连接") is not None else None, "connected session state")
 
     type_exact("helloE2E", "message input")
-    send = wait_for(lambda value: value if find(value, "发送") is not None else None, "send button")
-    tap_node(find(send, "发送"))
+    send = wait_for(lambda value: value if find_label(value, "发送消息") is not None else None, "send button")
+    tap_node(find_label(send, "发送消息"))
     wait_for(lambda value: value if find(value, "Echo: helloE2E") is not None else None, "assistant reply", timeout=60)
 
     # A tool call must reach the desktop, wait for the phone's decision, and
