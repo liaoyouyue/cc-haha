@@ -36,7 +36,7 @@ test('foreground recovery replaces the socket, syncs state and never resends a t
     wsRef,reconnectRef,pingRef,pongRef:{current:null},sendLock,keepScroll:{current:false},
     useEffect(callback){cleanup=callback();},
     loadHistory(session){history.push(session.id);},
-    setHistory(){},setHistoryReady(){},setCursor(){},setDraft(){},setTerminalEvents(){},setModelPicker(){},setEffortPicker(){},setModelInfo(){},setEffortInfo(){},setApprovals(value){approvals=typeof value==='function'?value(approvals):value;},
+    setHistory(){},setHistoryReady(){},setCursor(){},setDraft(){},setTerminalEvents(){},setTaskItems(){},setTaskError(){},setModelPicker(){},setEffortPicker(){},setModelInfo(){},setEffortInfo(){},setApprovals(value){approvals=typeof value==='function'?value(approvals):value;},
     setStream(value){stream=typeof value==='function'?value(stream):value;},
     setTurnBusy(value){turnBusy=value;},setSocketState(value){socketState=value;},setError(){},
     setTimeout(callback,delay){const id=++timerId;timers.set(id,{callback,delay});return id;},
