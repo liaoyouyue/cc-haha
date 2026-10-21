@@ -127,6 +127,8 @@ function Main() {
   const pongRef = useRef(null);
   const sendLock = useRef(false);
   const selectedId = useRef(null);
+  const browseSeq = useRef(0);
+  const taskSeq = useRef(0);
   const chatList = useRef(null);
   const keepScroll = useRef(false);
   selectedId.current = selected?.id || null;
@@ -239,7 +241,7 @@ function Main() {
       setSelected(null);setConfig(null);setSessions([]);
       setHistory([]);setApprovals([]);setStream('');
       setQueued([]);setTerminalEvents([]);setFileEntries([]);setFilesDir('');
-      setTaskItems([]);setTaskError('');
+      setTaskItems([]);setTaskError('');browseSeq.current++;taskSeq.current++;
       setModelInfo(null);setModelChoices([]);setEffortInfo(null);
       setDesktopInfo(null);setDesktopError('');setTab('chat');
       setUrl('');setToken('');setPairSecret('');setPairing(null);
@@ -459,6 +461,8 @@ function schedule() {
       }}]);
   }
   async function browseFiles(requestPath) {
+    const activeId=selected?.id;
+    const seq=++browseSeq.current;
     const root=projectRootOf(selected);
     if(!root){setFilesError('当前会话没有可用的项目路径');setFileEntries([]);return;}
     if(!withinProjectRoot(root,requestPath)){setFilesError('只能浏览当前会话的项目目录');return;}
@@ -466,24 +470,27 @@ function schedule() {
     setFileEntries([]);setFilesDir(requestPath);
     try{
       const data=await getJson(config,'/api/filesystem/browse?path='+encodeURIComponent(requestPath)+'&includeFiles=true&maxResults=100');
+      if(browseSeq.current!==seq || selectedId.current!==activeId)return;
       if(!withinProjectRoot(root,data.currentPath||requestPath))throw new Error('服务器返回了项目以外的路径');
       setFilesDir(data.currentPath||requestPath);
       setFileEntries((data.entries||[]).filter(x=>withinProjectRoot(root,x.path)));
-    }catch(e){setFilesError(e.message||'文件浏览不可用');setFileEntries([]);}
-    finally{setFilesLoading(false);}
+    }catch(e){if(browseSeq.current===seq && selectedId.current===activeId){setFilesError(e.message||'文件浏览不可用');setFileEntries([]);}}
+    finally{if(browseSeq.current===seq && selectedId.current===activeId)setFilesLoading(false);}
   }
   async function loadTaskItems(){
     if(!selected?.id || !config)return;
+    const sessionId=selected.id,seq=++taskSeq.current;
     setTaskLoading(true);setTaskError('');
     try{
       // Restrict listing to the selected session rather than exposing other
       // sessions' or unrelated terminated teams' task registers.
-      const data=await getJson(config,'/api/tasks/lists/'+encodeURIComponent(selected.id));
+      const data=await getJson(config,'/api/tasks/lists/'+encodeURIComponent(sessionId));
+      if(taskSeq.current!==seq || selectedId.current!==sessionId)return;
       const list=Array.isArray(data.tasks)?data.tasks:[];
-      setTaskItems(list.filter(item=>item && item.taskListId===selected.id &&
+      setTaskItems(list.filter(item=>item && item.taskListId===sessionId &&
         ['pending','in_progress','completed'].includes(item.status)));
-    }catch(e){setTaskItems([]);setTaskError(e.message||'任务列表不可用');}
-    finally{setTaskLoading(false);}
+    }catch(e){if(taskSeq.current===seq&&selectedId.current===sessionId){setTaskItems([]);setTaskError(e.message||'任务列表不可用');}}
+    finally{if(taskSeq.current===seq&&selectedId.current===sessionId)setTaskLoading(false);}
   }
   async function refreshDesktop(){
     setDesktopError('');
