@@ -537,7 +537,7 @@ function schedule() {
     </View>
     <ScrollView contentContainerStyle={styles.aboutContent}>
       <Text style={styles.aboutTitle}>CCHH Mobile</Text>
-      <Text style={styles.aboutText}>版本 0.1.5 (Build 1)</Text>
+      <Text style={styles.aboutText}>版本 0.2.0 (Build 2)</Text>
       <Text style={styles.aboutText}>包名: com.cchh.mobile.client</Text>
       <Text style={styles.aboutText}>基于 CCHH v0.7.4</Text>
       <Text style={styles.aboutText}>非官方客户端，不代表上游认可或背书。</Text>
