@@ -1,10 +1,8 @@
-// The five workspaces map to real CCHH data; unsupported remote desktop is never faked.
+// Core workflow tabs only. Terminal, file browsing and the desktop
+// placeholder are out of scope for the free LAN-first client.
 export const WORKSPACE_TABS = [
   {id:'chat',label:'聊天',symbol:'◉'},
   {id:'tasks',label:'任务',symbol:'☑'},
-  {id:'terminal',label:'终端',symbol:'▣'},
-  {id:'files',label:'文件',symbol:'▤'},
-  {id:'desktop',label:'桌面',symbol:'▢'},
 ];
 
 export function projectRootOf(session) {

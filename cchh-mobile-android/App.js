@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator, Alert, AppState, BackHandler, FlatList,
+  ActivityIndicator, Alert, AppState, BackHandler, FlatList, SectionList,
   KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView,
   StyleSheet, Text, TextInput, View
 } from 'react-native';
@@ -14,6 +14,8 @@ import { isForegroundResume, reconnectDelayMs } from './mobileRecovery.mjs';
 import { endpoint } from './connectionUtils.mjs';
 import { LEGAL_LINKS } from './legalLinks.mjs';
 import { WORKSPACE_TABS, projectRootOf, withinProjectRoot, terminalEntriesFromHistory, safeModelChoices } from './mobileWorkbench.mjs';
+import { groupSessions } from './sessionGroups.mjs';
+import { toolCardsFromContent, toolCardSummary } from './toolCards.mjs';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 
@@ -61,12 +63,30 @@ function messagesFromHistory(payload) {
   return (payload.messages || []).filter(m => m.type === 'user' || m.type === 'assistant')
     .map(m => ({
       id: String(m.id), role: m.type, text: textFromContent(m.content),
-      timestamp: m.timestamp || ''
-    })).filter(m => m.text);
+      timestamp: m.timestamp || '',
+      toolCards: m.type === 'assistant' ? toolCardsFromContent(m.content) : []
+    })).filter(m => m.text || (m.toolCards && m.toolCards.length));
 }
 function MessageBody({text}) {
   return splitFences(text).map((part,index) => <Text key={index} selectable
     style={part.code?styles.codeText:styles.bubbleText}>{part.text}</Text>);
+}
+function ToolCard({card, open, onToggle}) {
+  const brief = toolCardSummary(card);
+  return <Pressable accessibilityRole="button" onPress={onToggle}
+    style={[styles.toolCard, card.isError && styles.toolCardError]}>
+    <Text style={[styles.toolCardTitle, card.isError && {color:C.red}]} numberOfLines={open?4:2}>
+      {open?'▼ ':'▶ '}{(card.isError?'⚠ ':'')}{brief}
+    </Text>
+    {open && <>
+      <Text style={styles.toolDetailLabel}>参数</Text>
+      <Text style={styles.toolDetail} selectable>{JSON.stringify(card.input||{},null,2)}</Text>
+      {!!card.output && <>
+        <Text style={styles.toolDetailLabel}>{card.isError?'错误输出':'输出'}</Text>
+        <Text style={[styles.toolDetail, card.isError && {color:C.red}]} selectable>{card.output}</Text>
+      </>}
+    </>}
+  </Pressable>;
 }
 function Btn({ label, onPress, disabled, outline, danger }) {
   return <Pressable accessibilityRole="button" disabled={disabled} onPress={onPress}
@@ -104,6 +124,7 @@ function Main() {
   const [turnBusy, setTurnBusy] = useState(false);
   const [approvals, setApprovals] = useState([]);
   const [search, setSearch] = useState('');
+  const [expandedTools, setExpandedTools] = useState({});
   const [tab, setTab] = useState('chat');
   const [queued, setQueued] = useState([]); // unsent local drafts, never replay automatically
   const [terminalEvents, setTerminalEvents] = useState([]);
@@ -385,7 +406,7 @@ function schedule() {
   useEffect(() => {
     const handler=BackHandler.addEventListener('hardwareBackPress', () => {
       if(selected && tab !== 'chat') { setTab('chat'); return true; }
-      if(selected) { setSelected(null); setError(''); return true; }
+      if(selected) { setSelected(null); setError(''); setExpandedTools({}); return true; }
       return false;
     });
     return () => handler.remove();
@@ -602,14 +623,19 @@ function schedule() {
     </View>
     <TextInput style={styles.search} value={search} onChangeText={setSearch} placeholder="搜索会话或项目" placeholderTextColor={C.muted} />
     {!!error && <Text style={styles.err}>{error}</Text>}
-    <FlatList data={sessions.filter(s => ((s.title||'')+' '+(s.projectPath||s.workDir||'')).toLowerCase().includes(search.toLowerCase()))}
+    <SectionList
+      sections={groupSessions(sessions, { search }).map(g => ({
+        key: g.key, title: g.label,
+        data: g.sessions.map(s => ({...s, __hot: g.key === 'attention'}))
+      }))}
       keyExtractor={s=>s.id} contentContainerStyle={styles.list}
       refreshing={loading} onRefresh={() => listSessions()}
       ListEmptyComponent={<Text style={styles.muted}>暂无会话，请在电脑 CCHH 中创建或打开会话。</Text>}
-      renderItem={({item})=><Pressable style={styles.session} onPress={()=>{setError('');setTab('chat');setSelected(item);}}>
+      renderSectionHeader={({section}) => <Text style={styles.sectionHeader}>{section.title}</Text>}
+      renderItem={({item})=><Pressable style={[styles.session, item.__hot && styles.sessionHot]} onPress={()=>{setError('');setTab('chat');setSelected(item);}}>
         <Text style={styles.sessionTitle} numberOfLines={1}>{item.title||'未命名会话'}</Text>
         <Text style={styles.muted} numberOfLines={1}>{projectRootOf(item)||'默认项目'}</Text>
-        <Text style={styles.sessionMeta}>{item.messageCount||0} 条记录</Text>
+        <Text style={styles.sessionMeta}>{item.messageCount||0} 条记录{item.__hot?' · 需要你':''}</Text>
       </Pressable>}/>
   </SafeAreaView>;
 
@@ -631,7 +657,7 @@ function schedule() {
     {!!error && <Pressable accessibilityRole="button" onPress={()=>setError('')} style={styles.errorBar}>
       <Text style={styles.err}>{error} · 点击关闭</Text>
     </Pressable>}
-    {(tab==='chat'||tab==='tasks') && approvals.length>0 && <View style={styles.approval}>
+    {tab==='tasks' && approvals.length>0 && <View style={styles.approval}>
       <Text style={styles.approvalTitle}>等待你的批准 · {approvals.length}</Text>
       <Text style={styles.muted} numberOfLines={3}>{approvals[0].displayName||approvals[0].toolName||'工具操作'}</Text>
       <Text style={styles.mini} numberOfLines={3}>{JSON.stringify(approvals[0].input||{}).slice(0,700)}</Text>
@@ -651,7 +677,11 @@ function schedule() {
         ListHeaderComponent={cursor?<Pressable onPress={()=>loadHistory(selected,true)}><Text style={styles.actionLink}>加载更早记录</Text></Pressable>:null}
         renderItem={({item})=><View style={[styles.bubble,item.role==='user'?styles.mine:styles.theirs]}>
           <Text style={styles.bubbleWho}>{item.pending?'你 · 等待服务端确认':item.role==='user'?'你':'CCHH'}</Text>
-          <MessageBody text={item.text} /></View>} />
+          <MessageBody text={item.text} />
+          {!!(item.toolCards||[]).length && item.toolCards.map(card =>
+            <ToolCard key={card.toolUseId} card={card}
+              open={!!expandedTools[card.toolUseId]}
+              onToggle={()=>setExpandedTools(prev=>({...prev,[card.toolUseId]:!prev[card.toolUseId]}))} />)}</View>} />
       {!!stream && <View style={styles.streaming}><Text style={styles.mini}>● 正在思考与回复…</Text>
         <Text style={styles.bubbleText} numberOfLines={6}>{stream}</Text></View>}
       {turnBusy && !stream && <Text style={styles.runningHint}>◌  CCHH 正在执行任务…</Text>}
@@ -665,6 +695,13 @@ function schedule() {
         <Text style={styles.mini}>队列只保存在当前运行的手机界面，取出后需再次确认发送；不会自动执行。</Text>
       </View>}
       <KeyboardAvoidingView behavior={Platform.OS==='ios'?'padding':undefined}>
+        {tab==='chat' && approvals.length>0 && <View style={styles.approvalDock}>
+          <Text style={styles.approvalTitle}>需要批准 · {approvals.length} 项</Text>
+          <Text style={styles.muted} numberOfLines={2}>{approvals[0].displayName||approvals[0].toolName||'工具操作'}</Text>
+          <Text style={styles.mini} numberOfLines={3}>{JSON.stringify(approvals[0].input||{}).slice(0,700)}</Text>
+          <View style={styles.actions}><Btn label="拒绝" danger outline onPress={()=>decision(approvals[0],false)} />
+            <Btn label="本次批准" onPress={()=>decision(approvals[0],true)} /></View>
+        </View>}
         <View style={styles.modelLine}>
           <Pressable accessibilityRole="button" onPress={()=>void openModelPicker()} style={styles.modelChip}>
             <Text style={styles.modelText} numberOfLines={1}>{modelInfo?.name||'电脑模型不可读'}  ⌄</Text>
@@ -872,5 +909,13 @@ const styles=StyleSheet.create({
   fileItem:{paddingVertical:14,flexDirection:'row',alignItems:'center',gap:12,borderBottomWidth:1,borderColor:C.line},
   fileGlyph:{fontSize:23,color:C.accent},fileName:{flex:1,color:C.text,fontSize:14},
   detailText:{fontSize:13,color:C.text,lineHeight:20},
+  approvalDock:{marginHorizontal:12,marginBottom:4,padding:12,borderRadius:14,backgroundColor:C.surface2,borderColor:C.accent,borderWidth:1.5},
+  sectionHeader:{color:C.muted,fontSize:12,fontWeight:'700',marginTop:16,marginBottom:8,paddingHorizontal:2},
+  sessionHot:{borderColor:C.accent,borderWidth:1.2},
+  toolCard:{backgroundColor:C.surface2,borderRadius:10,borderWidth:1,borderColor:C.line,padding:10,marginTop:8},
+  toolCardError:{borderColor:C.red},
+  toolCardTitle:{color:C.text,fontSize:13,lineHeight:19},
+  toolDetailLabel:{color:C.muted,fontSize:11,fontWeight:'700',marginTop:8},
+  toolDetail:{color:C.text,fontSize:12,lineHeight:18},
 
 });
