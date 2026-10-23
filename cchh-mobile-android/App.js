@@ -13,7 +13,8 @@ import { splitFences } from './messageText.mjs';
 import { isForegroundResume, reconnectDelayMs } from './mobileRecovery.mjs';
 import { endpoint } from './connectionUtils.mjs';
 import { LEGAL_LINKS } from './legalLinks.mjs';
-import { WORKSPACE_TABS, projectRootOf, terminalEntriesFromHistory, safeModelChoices } from './mobileWorkbench.mjs';
+import { WORKSPACE_TABS, projectRootOf, terminalEntriesFromHistory } from './mobileWorkbench.mjs';
+import { parseProviders, parseModels, parseCurrent, parseEffort, sameModel, slotsForModel } from './modelCatalog.mjs';
 import { groupSessions } from './sessionGroups.mjs';
 import { toolCardsFromContent, toolCardSummary } from './toolCards.mjs';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
@@ -133,9 +134,12 @@ function Main() {
   const [taskLoading, setTaskLoading] = useState(false);
   const [modelInfo, setModelInfo] = useState(null);
   const [modelChoices, setModelChoices] = useState([]);
-  const [modelPicker, setModelPicker] = useState(false);
+  const [providerState, setProviderState] = useState({ activeId: null, providers: [] });
   const [effortInfo, setEffortInfo] = useState(null);
-  const [effortPicker, setEffortPicker] = useState(false);
+  const [modelPanel, setModelPanel] = useState(false);
+  const [modelError, setModelError] = useState('');
+  const [modelSyncAt, setModelSyncAt] = useState('');
+  const [modelBusy, setModelBusy] = useState(false);
   const wsRef = useRef(null);
   const reconnectRef = useRef(null);
   const pingRef = useRef(null);
@@ -303,7 +307,7 @@ function Main() {
     if(!config || !selected) return;
 let cancelled = false, tries = 0, handshake = null, previousAppState = AppState.currentState;
     setHistory([]); setHistoryReady(false); setCursor(null); setApprovals([]); setStream('');
-    setTerminalEvents([]); setModelPicker(false); setEffortPicker(false); setModelInfo(null); setEffortInfo(null);
+    setTerminalEvents([]); setModelPanel(false); setModelInfo(null); setEffortInfo(null);
     setTaskItems([]);setTaskError('');keepScroll.current=false;
     setTurnBusy(false); sendLock.current = true; setDraft('');
     setSocketState('连接中'); loadHistory(selected);
@@ -398,12 +402,13 @@ function schedule() {
 
   useEffect(() => {
     const handler=BackHandler.addEventListener('hardwareBackPress', () => {
+      if(modelPanel) { setModelPanel(false); return true; }
       if(selected && tab !== 'chat') { setTab('chat'); return true; }
       if(selected) { setSelected(null); setError(''); setExpandedTools({}); return true; }
       return false;
     });
     return () => handler.remove();
-  },[selected,tab]);
+  },[selected,tab,modelPanel]);
 
   function sendPacket(packet) {
     const ws=wsRef.current;
@@ -438,40 +443,87 @@ function schedule() {
     setQueued(prev=>prev.filter(x=>x.id!==item.id));
     setTab('chat');
   }
+  // Read the desktop's whole model configuration through its own APIs: all
+// providers with their slot bindings, the active provider's catalog, the
+// current model and the effort levels. No local catalog, no filtering.
+  async function loadModelState() {
+    if(!config) return;
+    setModelError('');
+    try {
+      const [providers, models, current, effort] = await Promise.all([
+        getJson(config,'/api/providers'),
+        getJson(config,'/api/models').catch(()=>null),
+        getJson(config,'/api/models/current').catch(()=>null),
+        getJson(config,'/api/effort').catch(()=>null),
+      ]);
+      setProviderState(parseProviders(providers));
+      setModelChoices(parseModels(models));
+      setModelInfo(parseCurrent(current));
+      setEffortInfo(parseEffort(effort));
+      setModelSyncAt(new Date().toLocaleTimeString('zh-CN',{hour12:false}));
+    } catch(e) {
+      setModelError('读取电脑模型配置失败：'+(e.message||'不支持'));
+    }
+  }
   useEffect(()=>{
     if(!config || !selected) return;
     let active=true;
-    Promise.allSettled([getJson(config,'/api/models/current'),getJson(config,'/api/effort')])
-      .then(([m,e])=>{
-        if(!active)return;
-        setModelInfo(m.status==='fulfilled'?m.value.model:null);
-        setEffortInfo(e.status==='fulfilled'?e.value:null);
-      });
-    return ()=>{active=false;};
+    void loadModelState();
+    // The desktop can change its own model at any time; a light poll keeps the
+    // phone's view truthful while a session is open.
+    const timer=setInterval(()=>{if(active)void loadModelState();},30000);
+    return ()=>{active=false;clearInterval(timer);};
   },[config,selected?.id]);
-  async function openModelPicker() {
-    setEffortPicker(false);
-    if(modelPicker){setModelPicker(false);return;}
-    try {
-      const data=await getJson(config,'/api/models');
-      setModelChoices(safeModelChoices(data));setModelPicker(true);
-    } catch(e){setError('无法读取电脑模型列表：'+(e.message||'不支持'));}
+  async function openModelPanel() {
+    setModelPanel(v=>!v);
+    if(!modelPanel) await loadModelState();
   }
-  function changeDefaultModel(item) {
+  async function activateProvider(provider) {
+    if(turnBusy){Alert.alert('任务执行中','请等待当前任务完成再切换服务商。');return;}
+    if(provider.isActive) return;
+    Alert.alert('切换服务商','将把电脑 CCHH 的激活服务商切换为「'+provider.name+'」，立即生效。',[{text:'取消',style:'cancel'},
+      {text:'确认切换',onPress:async()=>{
+        setModelBusy(true);setModelError('');
+        try{
+          await putJson(config,'/api/providers/'+encodeURIComponent(provider.id)+'/activate');
+          await loadModelState();
+          // Verify against a fresh read rather than trusting the write.
+          const after=parseProviders(await getJson(config,'/api/providers'));
+          if(after.activeId!==provider.id) throw new Error('电脑回读的激活服务商与请求不一致（当前：'+(after.providers.find(p=>p.isActive)?.name||after.activeId||'未知')+'）');
+        }catch(e){setModelError('服务商切换失败：'+(e.message||'未知错误'));}
+        finally{setModelBusy(false);}
+      }}]);
+  }
+  async function changeDefaultModel(item) {
     if(turnBusy){Alert.alert('任务执行中','请等待当前任务完成再切换模型。');return;}
     Alert.alert('切换电脑默认模型','这会修改当前配对电脑的 CCHH 默认模型，并非仅修改手机显示。',[{text:'取消',style:'cancel'},
       {text:'确认切换',onPress:async()=>{
-        try{await putJson(config,'/api/models/current',{modelId:item.id});
-          setModelInfo({id:item.id,name:item.name});setModelPicker(false);setError('');}
-        catch(e){setError(e.message||'模型切换失败');}
+        setModelBusy(true);setModelError('');
+        try{
+          await putJson(config,'/api/models/current',{modelId:item.id});
+          // Read back: the server may normalize the id; only the server's
+          // answer proves the desktop actually switched.
+          const actual=parseCurrent(await getJson(config,'/api/models/current'));
+          if(!actual || !sameModel(actual.id,item.id)) {
+            throw new Error('电脑回读的模型与请求不一致（请求 '+item.id+'，实际 '+(actual?.id||'未知')+'）');
+          }
+          await loadModelState();
+        }catch(e){setModelError('模型切换失败：'+(e.message||'未知错误'));}
+        finally{setModelBusy(false);}
       }}]);
   }
   function changeEffort(level) {
     if(turnBusy){Alert.alert('任务执行中','请等待当前任务完成再修改思考等级。');return;}
     Alert.alert('修改思考等级','将更改当前电脑 CCHH 的默认思考设置。',[{text:'取消',style:'cancel'},
       {text:'确认',onPress:async()=>{
-        try{await putJson(config,'/api/effort',{level});setEffortInfo(prev=>({...prev,level}));setEffortPicker(false);setError('');}
-        catch(e){setError(e.message||'思考等级设置失败');}
+        setModelBusy(true);setModelError('');
+        try{
+          await putJson(config,'/api/effort',{level});
+          const actual=parseEffort(await getJson(config,'/api/effort'));
+          if(actual.level!==level) throw new Error('电脑回读的思考等级与请求不一致（实际 '+(actual.level||'未知')+'）');
+          setEffortInfo(actual);
+        }catch(e){setModelError('思考等级设置失败：'+(e.message||'未知错误'));}
+        finally{setModelBusy(false);}
       }}]);
   }
   async function loadTaskItems(){
@@ -490,7 +542,7 @@ function schedule() {
     finally{if(taskSeq.current===seq&&selectedId.current===sessionId)setTaskLoading(false);}
   }
   function changeTab(next) {
-    setTab(next);setModelPicker(false);setEffortPicker(false);
+    setTab(next);setModelPanel(false);
     if(next==='tasks')void loadTaskItems();
   }
 
@@ -672,24 +724,50 @@ function schedule() {
             <Btn label="本次批准" onPress={()=>decision(approvals[0],true)} /></View>
         </View>}
         <View style={styles.modelLine}>
-          <Pressable accessibilityRole="button" onPress={()=>void openModelPicker()} style={styles.modelChip}>
+          <Pressable accessibilityRole="button" onPress={()=>void openModelPanel()} style={styles.modelChip}>
             <Text style={styles.modelText} numberOfLines={1}>{modelInfo?.name||'电脑模型不可读'}  ⌄</Text>
           </Pressable>
-          <Pressable accessibilityRole="button" onPress={()=>{setModelPicker(false);setEffortPicker(v=>!v);}} style={styles.effortChip}>
+          <Pressable accessibilityRole="button" onPress={()=>void openModelPanel()} style={styles.effortChip}>
             <Text style={styles.modelText}>思考：{effortInfo?.level||'未读取'} ⌄</Text>
           </Pressable>
         </View>
-        {modelPicker && <ScrollView style={styles.settingPicker} nestedScrollEnabled>
-          <Text style={styles.settingTitle}>电脑默认模型 · 点击后需确认</Text>
-          {modelChoices.map(m=><Pressable key={m.id} style={styles.settingItem} onPress={()=>changeDefaultModel(m)}>
-            <Text style={styles.settingText}>{m.name}</Text><Text style={styles.mini}>{m.id}</Text>
-          </Pressable>)}
-        </ScrollView>}
-        {effortPicker && <View style={styles.settingPicker}>
-          <Text style={styles.settingTitle}>思考等级 · 将影响电脑默认配置</Text>
-          <View style={styles.effortChoices}>{(effortInfo?.available||[]).map(level=>
-            <Pressable key={level} style={styles.effortOption} onPress={()=>changeEffort(level)}><Text style={styles.settingText}>{level}</Text></Pressable>)}</View>
-          {(!effortInfo?.available?.length) && <Text style={styles.muted}>当前连接无法读取可用等级</Text>}
+        {modelPanel && <View style={styles.settingPicker}>
+          <View style={styles.modelPanelHead}>
+            <Text style={styles.settingTitle}>电脑模型配置</Text>
+            <View style={{flexDirection:'row',gap:12,alignItems:'center'}}>
+              <Pressable accessibilityRole="button" onPress={()=>void loadModelState()}><Text style={styles.actionLink}>{modelBusy?'同步中…':'刷新'}</Text></Pressable>
+              <Pressable accessibilityRole="button" onPress={()=>setModelPanel(false)}><Text style={styles.actionLink}>关闭</Text></Pressable>
+            </View>
+          </View>
+          <Text style={styles.mini}>与电脑 CCHH 共用同一份配置 · 上次同步 {modelSyncAt||'—'} · 费用以电脑端配置为准，不影响切换</Text>
+          {!!modelError && <Text style={styles.err}>{modelError}</Text>}
+          <ScrollView style={{maxHeight:380}} nestedScrollEnabled>
+            <Text style={styles.modelSection}>当前</Text>
+            <Text style={styles.settingText}>{modelInfo?.name||'未读取'}{modelInfo?.id&&modelInfo.id!==modelInfo.name?' · '+modelInfo.id:''}</Text>
+
+            <Text style={styles.modelSection}>服务商 · 全部 {providerState.providers.length} 个</Text>
+            {providerState.providers.map(p=><Pressable key={p.id} accessibilityRole="button"
+              style={[styles.providerRow, p.isActive&&styles.providerRowActive]} onPress={()=>void activateProvider(p)}>
+              <View style={{flex:1}}>
+                <Text style={styles.settingText}>{p.name}{p.isActive?' · 使用中':''}</Text>
+                <Text style={styles.mini} numberOfLines={1}>{p.apiFormat||'未知协议'} · 主模型 {p.slots.main||'未设置'}</Text>
+              </View>
+              {!p.isActive && <Text style={styles.providerSwitch}>{modelBusy?'…':'切换'}</Text>}
+            </Pressable>)}
+
+            <Text style={styles.modelSection}>模型 · 当前服务商共 {modelChoices.length} 个</Text>
+            {modelChoices.map(m=><Pressable key={m.id} style={styles.settingItem} onPress={()=>void changeDefaultModel(m)}>
+              <Text style={styles.settingText}>{m.name}{sameModel(modelInfo?.id,m.id)?' ✓':''}</Text>
+              <Text style={styles.mini} numberOfLines={2}>{m.id}{m.context?' · 上下文 '+m.context:''}{m.description?' · '+m.description:''}</Text>
+              {(() => { const active=providerState.providers.find(p=>p.isActive); const slots=slotsForModel(active,m.id); return slots.length?<Text style={styles.slotTags}>{slots.join(' / ')}</Text>:null; })()}
+            </Pressable>)}
+
+            <Text style={styles.modelSection}>思考等级</Text>
+            <View style={styles.effortChoices}>{(effortInfo?.available||[]).map(level=>
+              <Pressable key={level} style={[styles.effortOption,effortInfo?.level===level&&styles.effortOptionActive]}
+                onPress={()=>changeEffort(level)}><Text style={styles.settingText}>{level}</Text></Pressable>)}</View>
+            {(!effortInfo?.available?.length) && <Text style={styles.muted}>当前连接无法读取可用等级</Text>}
+          </ScrollView>
         </View>}
         <View style={styles.composer}>
           <Pressable accessibilityRole="button" accessibilityLabel="加入本机待发送队列" disabled={!draft.trim()} onPress={addToQueue}
@@ -796,12 +874,19 @@ const styles=StyleSheet.create({
   modelLine:{flexDirection:'row',alignItems:'center',paddingHorizontal:14,paddingVertical:7,gap:10},
   modelChip:{maxWidth:'55%',paddingHorizontal:11,paddingVertical:7,borderRadius:18,backgroundColor:'#F8F7FB'},
   effortChip:{paddingHorizontal:8,paddingVertical:7},modelText:{fontSize:13,color:'#686370'},
-  settingPicker:{maxHeight:230,backgroundColor:C.bg,borderTopColor:C.line,borderTopWidth:1,padding:10},
+  settingPicker:{maxHeight:460,backgroundColor:C.bg,borderTopColor:C.line,borderTopWidth:1,padding:10},
   settingTitle:{color:C.muted,fontSize:12,fontWeight:'700',marginBottom:8},
   settingItem:{paddingVertical:10,borderBottomWidth:1,borderColor:C.line},
   settingText:{color:C.text,fontSize:14,fontWeight:'600'},
   effortChoices:{flexDirection:'row',flexWrap:'wrap',gap:8},
   effortOption:{padding:8,backgroundColor:C.surface,borderRadius:10},
+  effortOptionActive:{borderColor:C.accent,borderWidth:1.5},
+  modelPanelHead:{flexDirection:"row",justifyContent:"space-between",alignItems:"center",marginBottom:4},
+  modelSection:{color:C.muted,fontSize:11,fontWeight:"700",marginTop:14,marginBottom:6},
+  providerRow:{flexDirection:"row",alignItems:"center",paddingVertical:10,borderBottomWidth:1,borderColor:C.line},
+  providerRowActive:{backgroundColor:C.surface2,borderRadius:10,paddingHorizontal:8},
+  providerSwitch:{color:C.accent,fontSize:13,fontWeight:"700"},
+  slotTags:{color:C.accent,fontSize:11,marginTop:3},
   queuePlus:{height:44,width:43,alignItems:'center',justifyContent:'center'},
   plusText:{fontSize:31,fontWeight:'300',color:'#67646C'},
   sendButton:{width:48,height:48,borderRadius:16,backgroundColor:C.accent,alignItems:'center',justifyContent:'center'},
