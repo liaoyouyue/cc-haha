@@ -17,6 +17,7 @@ export function toolCardsFromContent(content) {
         input: block.input ?? {},
         output: '',
         isError: false,
+        images: [],
         complete: false,
       };
       indexByUseId.set(card.toolUseId, cards.length);
@@ -25,11 +26,28 @@ export function toolCardsFromContent(content) {
       const idx = indexByUseId.get(String(block.tool_use_id));
       if (idx === undefined) continue;
       cards[idx].output = textOf(block.content);
+      cards[idx].images = imageUrisOf(block.content);
       cards[idx].isError = Boolean(block.is_error);
       cards[idx].complete = true;
     }
   }
   return cards.filter((c) => c.complete);
+}
+
+function imageUrisOf(content) {
+  if (!Array.isArray(content)) return [];
+  return content
+    .filter((b) => b && typeof b === 'object' && b.type === 'image' && b.source)
+    .map((b) => {
+      if (b.source.type === 'base64' && typeof b.source.data === 'string' && b.source.data) {
+        return `data:${b.source.media_type || 'image/png'};base64,${b.source.data}`;
+      }
+      if (b.source.type === 'url' && typeof b.source.url === 'string' && /^https?:\/\//.test(b.source.url)) {
+        return b.source.url;
+      }
+      return null;
+    })
+    .filter(Boolean);
 }
 
 function textOf(content) {

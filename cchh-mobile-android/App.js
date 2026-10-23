@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator, Alert, AppState, BackHandler, FlatList, SectionList,
+  ActivityIndicator, Alert, AppState, BackHandler, FlatList, Image, SectionList,
   KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView,
   StyleSheet, Text, TextInput, View
 } from 'react-native';
@@ -9,7 +9,6 @@ import CookieManager from '@preeternal/react-native-cookie-manager';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { createPublicPairing, claimPublicPairing, publicSessionActive, parsePairingText } from './remotePairing.mjs';
 import { parsePrivatePairingQr } from './privatePairing.mjs';
-import { splitFences } from './messageText.mjs';
 import { isForegroundResume, reconnectDelayMs } from './mobileRecovery.mjs';
 import { endpoint } from './connectionUtils.mjs';
 import { LEGAL_LINKS } from './legalLinks.mjs';
@@ -17,6 +16,8 @@ import { WORKSPACE_TABS, projectRootOf, terminalEntriesFromHistory } from './mob
 import { parseProviders, parseModels, parseCurrent, parseEffort, sameModel, slotsForModel } from './modelCatalog.mjs';
 import { groupSessions } from './sessionGroups.mjs';
 import { toolCardsFromContent, toolCardSummary } from './toolCards.mjs';
+import { parseMarkdown, parseInline, looksLikeDiff } from './markdown.mjs';
+import { parseAskUserQuestion, buildAnswers, withAnswers } from './approvalAnswers.mjs';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 
@@ -60,17 +61,71 @@ function textFromContent(value) {
   return value.filter(v => v && v.type === 'text' && typeof v.text === 'string')
     .map(v => v.text).join('\n');
 }
+function thinkingFromContent(value) {
+  if (!Array.isArray(value)) return '';
+  return value.filter(v => v && v.type === 'thinking' && typeof v.thinking === 'string')
+    .map(v => v.thinking).join('\n');
+}
+function imageUri(source) {
+  if (!source || typeof source !== 'object') return null;
+  if (source.type === 'base64' && typeof source.data === 'string' && source.data) {
+    return `data:${source.media_type || 'image/png'};base64,${source.data}`;
+  }
+  if (source.type === 'url' && typeof source.url === 'string' && /^https?:\/\//.test(source.url)) {
+    return source.url;
+  }
+  return null;
+}
+function imagesFromContent(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter(v => v && v.type === 'image').map(v => imageUri(v.source)).filter(Boolean);
+}
 function messagesFromHistory(payload) {
   return (payload.messages || []).filter(m => m.type === 'user' || m.type === 'assistant')
     .map(m => ({
       id: String(m.id), role: m.type, text: textFromContent(m.content),
       timestamp: m.timestamp || '',
+      thinking: m.type === 'assistant' ? thinkingFromContent(m.content) : '',
+      images: imagesFromContent(m.content),
       toolCards: m.type === 'assistant' ? toolCardsFromContent(m.content) : []
-    })).filter(m => m.text || (m.toolCards && m.toolCards.length));
+    })).filter(m => m.text || m.thinking || m.images.length || (m.toolCards && m.toolCards.length));
 }
-function MessageBody({text}) {
-  return splitFences(text).map((part,index) => <Text key={index} selectable
-    style={part.code?styles.codeText:styles.bubbleText}>{part.text}</Text>);
+function InlineText({text}) {
+  return parseInline(text).map((part, index) => (
+    <Text key={index}
+      onPress={part.link ? () => Linking.openURL(part.link).catch(() => {}) : undefined}
+      style={[
+        part.bold && {fontWeight:'700'},
+        part.italic && {fontStyle:'italic'},
+        part.code && styles.mdInlineCode,
+        part.link && {color:C.accent, textDecorationLine:'underline'},
+      ]}>{part.text}</Text>
+  ));
+}
+function MarkdownBody({text}) {
+  return parseMarkdown(text).map((block, index) => {
+    if (block.type === 'hr') return <View key={index} style={styles.mdRule} />;
+    if (block.type === 'code') return <View key={index} style={styles.mdCode}>
+      <Text style={styles.mdCodeLang}>{block.lang || '代码'}</Text>
+      <Text selectable style={styles.mdCodeText}>{block.text}</Text>
+    </View>;
+    if (block.type === 'ul' || block.type === 'ol') return <View key={index} style={{marginVertical:3}}>
+      {block.items.map((item, i) => <Text key={i} selectable style={styles.bubbleText}>
+        {(block.type === 'ol' ? `${i + 1}. ` : '• ')}<InlineText text={item} />
+      </Text>)}
+    </View>;
+    const style = block.type === 'h1' ? styles.mdH1 : block.type === 'h2' ? styles.mdH2
+      : block.type === 'h3' ? styles.mdH3 : block.type === 'quote' ? styles.mdQuote : styles.bubbleText;
+    return <Text key={index} selectable style={style}><InlineText text={block.text} /></Text>;
+  });
+}
+function ThinkingBlock({text, open, onToggle}) {
+  const brief = text.replace(/\s+/g, ' ').trim();
+  return <Pressable accessibilityRole="button" onPress={onToggle} style={styles.thinkingBlock}>
+    <Text style={styles.thinkingTitle} numberOfLines={open ? 40 : 2}>
+      {open ? '▼ ' : '▶ '}思考 · {brief.slice(0, open ? 4000 : 90)}
+    </Text>
+  </Pressable>;
 }
 function ToolCard({card, open, onToggle}) {
   const brief = toolCardSummary(card);
@@ -84,8 +139,16 @@ function ToolCard({card, open, onToggle}) {
       <Text style={styles.toolDetail} selectable>{JSON.stringify(card.input||{},null,2)}</Text>
       {!!card.output && <>
         <Text style={styles.toolDetailLabel}>{card.isError?'错误输出':'输出'}</Text>
-        <Text style={[styles.toolDetail, card.isError && {color:C.red}]} selectable>{card.output}</Text>
+        {looksLikeDiff(card.output)
+          ? <View style={styles.mdCode}>{card.output.split('\n').map((line, i) => (
+              <Text key={i} selectable style={[styles.mdCodeText,
+                /^\+/.test(line) && !/^\+\+\+/.test(line) && {color:'#18794E'},
+                /^-/.test(line) && !/^---/.test(line) && {color:'#B42318'}]}>{line || ' '}</Text>
+            ))}</View>
+          : <Text style={[styles.toolDetail, card.isError && {color:C.red}]} selectable>{card.output}</Text>}
       </>}
+      {!!(card.images||[]).length && card.images.map((uri, i) =>
+        <Image key={i} source={{uri}} style={styles.toolImage} resizeMode="contain" />)}
     </>}
   </Pressable>;
 }
@@ -124,9 +187,12 @@ function Main() {
   const [stream, setStream] = useState('');
   const [turnBusy, setTurnBusy] = useState(false);
   const [approvals, setApprovals] = useState([]);
+  const [liveStatus, setLiveStatus] = useState({});
+  const [askSelections, setAskSelections] = useState({});
+  const [askFreeTexts, setAskFreeTexts] = useState({});
   const [search, setSearch] = useState('');
   const [expandedTools, setExpandedTools] = useState({});
-  const [tab, setTab] = useState('chat');
+  const [tab, setTab] = useState('home');
   const [queued, setQueued] = useState([]); // unsent local drafts, never replay automatically
   const [terminalEvents, setTerminalEvents] = useState([]);
   const [taskItems, setTaskItems] = useState([]);
@@ -172,6 +238,22 @@ function Main() {
     finally { setLoading(false); }
   }
   useEffect(() => { if(config && !selected) listSessions(config); }, [config, selected?.id]);
+  // Live activity badges (GET /api/sessions/live-status on 0.7.4).
+  useEffect(()=>{
+    if(!config || selected) return;
+    let alive=true;
+    const pull=()=>getJson(config,"/api/sessions/live-status").then(data=>{
+      if(!alive) return;
+      const map={};
+      for(const row of (Array.isArray(data?.sessions)?data.sessions:[])) {
+        if(row && typeof row.id==="string") map[row.id]=String(row.activityState||"");
+      }
+      setLiveStatus(map);
+    }).catch(()=>{});
+    void pull();
+    const timer=setInterval(pull, 15000);
+    return ()=>{alive=false;clearInterval(timer);};
+  },[config,selected?.id]);
 
   const connect = async () => {
     if(loading) return;
@@ -261,7 +343,7 @@ function Main() {
       setQueued([]);setTerminalEvents([]);
       setTaskItems([]);setTaskError('');taskSeq.current++;
       setModelInfo(null);setModelChoices([]);setEffortInfo(null);
-      setTab('chat');
+      setTab('home');
       setUrl('');setToken('');setPairSecret('');setPairing(null);
       setPairNotice('');setMode('private');setNetworkType('lan');
       setScanning(false);setError('');
@@ -403,8 +485,7 @@ function schedule() {
   useEffect(() => {
     const handler=BackHandler.addEventListener('hardwareBackPress', () => {
       if(modelPanel) { setModelPanel(false); return true; }
-      if(selected && tab !== 'chat') { setTab('chat'); return true; }
-      if(selected) { setSelected(null); setError(''); setExpandedTools({}); return true; }
+      if(selected) { setSelected(null); setTab('sessions'); setError(''); setExpandedTools({}); return true; }
       return false;
     });
     return () => handler.remove();
@@ -429,6 +510,35 @@ function schedule() {
       setApprovals(prev => prev.filter(p => p.requestId !== request.requestId));
     }
   }
+  function toggleAskOption(requestId, questionIndex, label, multiSelect) {
+    setAskSelections(prev => {
+      const all = prev[requestId] || [];
+      const picked = all[questionIndex] || [];
+      const next = multiSelect
+        ? (picked.includes(label) ? picked.filter(v=>v!==label) : [...picked, label])
+        : [label];
+      const copy = all.slice();
+      copy[questionIndex] = next;
+      return {...prev, [requestId]: copy};
+    });
+  }
+  function setAskFreeText(requestId, questionIndex, value) {
+    setAskFreeTexts(prev => ({...prev, [requestId]: {...(prev[requestId]||{}), [questionIndex]: value}}));
+  }
+  function submitAsk(request) {
+    const questions = parseAskUserQuestion(request.input);
+    const selections = askSelections[request.requestId] || [];
+    const freeMap = askFreeTexts[request.requestId] || {};
+    const freeTexts = questions.map((_, i) => freeMap[i] || '');
+    const {answers, missing} = buildAnswers(questions, selections, freeTexts);
+    if (missing.length) { Alert.alert('还有问题未回答', '请为每个问题选择或填写答案。'); return; }
+    const updatedInput = withAnswers(request.input, answers);
+    if (sendPacket({type:'permission_response', requestId:request.requestId, allowed:true, updatedInput})) {
+      setApprovals(prev => prev.filter(p => p.requestId !== request.requestId));
+      setAskSelections(prev => { const c={...prev}; delete c[request.requestId]; return c; });
+      setAskFreeTexts(prev => { const c={...prev}; delete c[request.requestId]; return c; });
+    }
+  }
 
   const activeQueue = queued.filter(item => item.sessionId === selected?.id);
   function addToQueue() {
@@ -441,7 +551,6 @@ function schedule() {
     if(draft.trim()) {Alert.alert('输入框里还有内容','先发送或保存当前文字，再选择队列内容。');return;}
     setDraft(item.text);
     setQueued(prev=>prev.filter(x=>x.id!==item.id));
-    setTab('chat');
   }
   // Read the desktop's whole model configuration through its own APIs: all
 // providers with their slot bindings, the active provider's catalog, the
@@ -466,7 +575,7 @@ function schedule() {
     }
   }
   useEffect(()=>{
-    if(!config || !selected) return;
+    if(!config) return;
     let active=true;
     void loadModelState();
     // The desktop can change its own model at any time; a light poll keeps the
@@ -550,6 +659,43 @@ function schedule() {
     Linking.openURL(url).catch(() => Alert.alert('无法打开链接', url));
   }
 
+  // Shared by the chat sheet and the full model page: same data, same actions.
+  const modelPanelContent = <>
+    <Text style={styles.mini}>与电脑 CCHH 共用同一份配置 · 上次同步 {modelSyncAt||'—'} · 费用以电脑端配置为准，不影响切换</Text>
+    {!!modelError && <Text style={styles.err}>{modelError}</Text>}
+    <Text style={styles.modelSection}>当前</Text>
+    <Text style={styles.settingText}>{modelInfo?.name||'未读取'}{modelInfo?.id&&modelInfo.id!==modelInfo.name?' · '+modelInfo.id:''}</Text>
+    <Text style={styles.modelSection}>服务商 · 全部 {providerState.providers.length} 个</Text>
+    {providerState.providers.map(p=><Pressable key={p.id} accessibilityRole="button"
+      style={[styles.providerRow, p.isActive&&styles.providerRowActive]} onPress={()=>void activateProvider(p)}>
+      <View style={{flex:1}}>
+        <Text style={styles.settingText}>{p.name}{p.isActive?' · 使用中':''}</Text>
+        <Text style={styles.mini} numberOfLines={1}>{p.apiFormat||'未知协议'} · 主模型 {p.slots.main||'未设置'}</Text>
+      </View>
+      {!p.isActive && <Text style={styles.providerSwitch}>{modelBusy?'…':'切换'}</Text>}
+    </Pressable>)}
+    <Text style={styles.modelSection}>模型 · 当前服务商共 {modelChoices.length} 个</Text>
+    {modelChoices.map(m=><Pressable key={m.id} style={styles.settingItem} onPress={()=>void changeDefaultModel(m)}>
+      <Text style={styles.settingText}>{m.name}{sameModel(modelInfo?.id,m.id)?' ✓':''}</Text>
+      <Text style={styles.mini} numberOfLines={2}>{m.id}{m.context?' · 上下文 '+m.context:''}{m.description?' · '+m.description:''}</Text>
+      {(() => { const active=providerState.providers.find(p=>p.isActive); const slots=slotsForModel(active,m.id); return slots.length?<Text style={styles.slotTags}>{slots.join(' / ')}</Text>:null; })()}
+    </Pressable>)}
+    <Text style={styles.modelSection}>思考等级</Text>
+    <View style={styles.effortChoices}>{(effortInfo?.available||[]).map(level=>
+      <Pressable key={level} style={[styles.effortOption,effortInfo?.level===level&&styles.effortOptionActive]}
+        onPress={()=>changeEffort(level)}><Text style={styles.settingText}>{level}</Text></Pressable>)}</View>
+    {(!effortInfo?.available?.length) && <Text style={styles.muted}>当前连接无法读取可用等级</Text>}
+  </>;
+  const modelPanelHead = (onClose) => (
+    <View style={styles.modelPanelHead}>
+      <Text style={styles.settingTitle}>电脑模型配置</Text>
+      <View style={{flexDirection:'row',gap:12,alignItems:'center'}}>
+        <Pressable accessibilityRole="button" onPress={()=>void loadModelState()}><Text style={styles.actionLink}>{modelBusy?'同步中…':'刷新'}</Text></Pressable>
+        {!!onClose && <Pressable accessibilityRole="button" onPress={onClose}><Text style={styles.actionLink}>关闭</Text></Pressable>}
+      </View>
+    </View>
+  );
+
   if(restoring) return <View style={styles.center}><ActivityIndicator color={C.accent} /></View>;
   if(showAbout) return <SafeAreaView style={styles.flex}><StatusBar style="dark" />
     <View style={styles.header}>
@@ -558,7 +704,7 @@ function schedule() {
     </View>
     <ScrollView contentContainerStyle={styles.aboutContent}>
       <Text style={styles.aboutTitle}>CCHH Mobile</Text>
-      <Text style={styles.aboutText}>版本 0.2.0 (Build 2)</Text>
+      <Text style={styles.aboutText}>版本 0.3.0 (Build 3)</Text>
       <Text style={styles.aboutText}>包名: com.cchh.mobile.client</Text>
       <Text style={styles.aboutText}>基于 CCHH v0.7.4</Text>
       <Text style={styles.aboutText}>非官方客户端，不代表上游认可或背书。</Text>
@@ -634,36 +780,132 @@ function schedule() {
     </ScrollView>
   </SafeAreaView>;
 
-  if(!selected) return <SafeAreaView style={styles.flex}><StatusBar style="dark" />
-    <View style={styles.header}>
-      <Text style={styles.title}>CCHH Mobile</Text>
-      <View style={styles.headerActions}>
-        <Pressable accessibilityRole="button" onPress={()=>setShowAbout(true)}><Text style={styles.actionLink}>关于</Text></Pressable>
-        <Pressable accessibilityRole="button" onPress={logout}><Text style={styles.actionLink}>解除配对</Text></Pressable>
+  if(!selected) {
+    const activeRows = sessions.filter(s => liveStatus[s.id] === 'running' || liveStatus[s.id] === 'waiting');
+    const runningCount = sessions.filter(s => liveStatus[s.id] === 'running').length;
+    const waitingCount = sessions.filter(s => liveStatus[s.id] === 'waiting').length;
+    const activeProvider = providerState.providers.find(p => p.isActive);
+    return <SafeAreaView style={styles.flex}><StatusBar style="dark" />
+      {tab==='home' && <>
+        <View style={styles.header}>
+          <Text style={styles.title}>CCHH Mobile</Text>
+          <View style={styles.headerActions}>
+            <Pressable accessibilityRole="button" onPress={()=>setShowAbout(true)}><Text style={styles.actionLink}>关于</Text></Pressable>
+          </View>
+        </View>
+        <ScrollView contentContainerStyle={styles.page}>
+          {!!error && <Text style={styles.err}>{error}</Text>}
+          <View style={styles.card}>
+            <Text style={styles.cardHeading}>连接</Text>
+            <Text style={styles.stateBig}>{config.mode==='public'?'公网已配对':'局域网已配对'}</Text>
+            <Text style={styles.muted} numberOfLines={1}>{config.baseUrl}</Text>
+            <Text style={styles.mini}>凭据保存在系统安全存储，重启 APP 无需重新扫码</Text>
+          </View>
+          <View style={styles.card}>
+            <Text style={styles.cardHeading}>电脑当前模型</Text>
+            <Text style={styles.stateBig}>{modelInfo?.name||'未读取'}</Text>
+            <Text style={styles.muted} numberOfLines={2}>{activeProvider?.name||'服务商未读取'} · 思考 {effortInfo?.level||'—'}</Text>
+            <Btn label="管理模型与服务商" outline onPress={()=>setTab('models')} />
+          </View>
+          <View style={styles.card}>
+            <Text style={styles.cardHeading}>运行中 · {runningCount} · 等待你 · {waitingCount}</Text>
+            {sessions.slice(0,5).map(s=><Pressable key={s.id} style={styles.sessionRow}
+              onPress={()=>{setError('');setSelected(s);}}>
+              <Text style={styles.settingText} numberOfLines={1}>{s.title||'未命名会话'}</Text>
+              <Text style={styles.mini} numberOfLines={1}>
+                {liveStatus[s.id]==='running'?'运行中 · ':liveStatus[s.id]==='waiting'?'等待你 · ':''}{projectRootOf(s)||'默认项目'}
+              </Text>
+            </Pressable>)}
+            {(!sessions.length) && <Text style={styles.muted}>还没有会话。在电脑 CCHH 中创建后会自动出现在这里。</Text>}
+          </View>
+        </ScrollView>
+      </>}
+      {tab==='sessions' && <>
+        <View style={styles.header}>
+          <Text style={styles.title}>会话</Text>
+          <View style={styles.headerActions}>
+            <Pressable accessibilityRole="button" onPress={()=>void listSessions()}><Text style={styles.actionLink}>刷新</Text></Pressable>
+          </View>
+        </View>
+        <TextInput style={styles.search} value={search} onChangeText={setSearch} placeholder="搜索会话或项目" placeholderTextColor={C.muted} />
+        {!!error && <Text style={styles.err}>{error}</Text>}
+        <SectionList
+          sections={groupSessions(sessions, { search }).map(g => ({
+            key: g.key, title: g.label,
+            data: g.sessions.map(s => ({...s, __hot: g.key === 'attention'}))
+          }))}
+          keyExtractor={s=>s.id} contentContainerStyle={styles.list}
+          refreshing={loading} onRefresh={() => listSessions()}
+          ListEmptyComponent={<Text style={styles.muted}>暂无会话，请在电脑 CCHH 中创建或打开会话。</Text>}
+          renderSectionHeader={({section}) => <Text style={styles.sectionHeader}>{section.title}</Text>}
+          renderItem={({item})=><Pressable style={[styles.session, item.__hot && styles.sessionHot]} onPress={()=>{setError('');setSelected(item);}}>
+            <Text style={styles.sessionTitle} numberOfLines={1}>{item.title||'未命名会话'}</Text>
+            <Text style={styles.muted} numberOfLines={1}>{projectRootOf(item)||'默认项目'}</Text>
+            <Text style={styles.sessionMeta}>{item.messageCount||0} 条记录{item.__hot?' · 需要你':''}{liveStatus[item.id]==='running'?' · 运行中':liveStatus[item.id]==='waiting'?' · 等待你':''}</Text>
+          </Pressable>}/>
+      </>}
+      {tab==='tasks' && <>
+        <View style={styles.header}><Text style={styles.title}>任务</Text></View>
+        <ScrollView contentContainerStyle={styles.page}>
+          <View style={styles.card}>
+            <Text style={styles.cardHeading}>电脑状态</Text>
+            <Text style={styles.stateBig}>{runningCount?'● 有任务在运行':'○ 空闲'}</Text>
+            <Text style={styles.muted}>运行中 {runningCount} · 等待你 {waitingCount}</Text>
+          </View>
+          <Text style={styles.sectionHeader}>需要你处理的会话</Text>
+          {activeRows.map(s=><Pressable key={s.id} style={styles.session}
+            onPress={()=>{setError('');setSelected(s);}}>
+            <Text style={styles.sessionTitle} numberOfLines={1}>{s.title||'未命名会话'}</Text>
+            <Text style={styles.sessionMeta}>{liveStatus[s.id]==='running'?'运行中':'等待你的审批或回答'} · 点击进入</Text>
+          </Pressable>)}
+          {(!activeRows.length) && <Text style={styles.muted}>当前没有运行中或等待处理的会话。打开一个会话即可发送任务、审批和停止。</Text>}
+        </ScrollView>
+      </>}
+      {tab==='models' && <>
+        <View style={styles.header}><Text style={styles.title}>模型</Text></View>
+        <ScrollView contentContainerStyle={styles.page}>
+          {modelPanelHead(null)}
+          {modelPanelContent}
+        </ScrollView>
+      </>}
+      {tab==='settings' && <>
+        <View style={styles.header}><Text style={styles.title}>设置</Text></View>
+        <ScrollView contentContainerStyle={styles.page}>
+          <View style={styles.card}>
+            <Text style={styles.cardHeading}>连接</Text>
+            <Text style={styles.stateBig}>{config.mode==='public'?'公网 ngrok':'局域网 / Tailscale'}</Text>
+            <Text style={styles.muted} numberOfLines={2}>{config.baseUrl}</Text>
+            <Text style={styles.mini}>访问令牌已保存在系统安全存储，不在此显示 · 重启无需重新配对</Text>
+          </View>
+          <View style={styles.card}>
+            <Text style={styles.cardHeading}>模型与服务商</Text>
+            <Text style={styles.muted} numberOfLines={2}>{activeProvider?.name||'未读取'} · {modelInfo?.name||'—'} · 思考 {effortInfo?.level||'—'}</Text>
+            <Text style={styles.mini}>上次同步 {modelSyncAt||'—'}</Text>
+            <Btn label="打开模型管理" outline onPress={()=>setTab('models')} />
+          </View>
+          <View style={styles.card}>
+            <Text style={styles.cardHeading}>关于</Text>
+            <Btn label="关于 / 法律 / 许可证" outline onPress={()=>setShowAbout(true)} />
+          </View>
+          <Btn label="解除配对" danger outline onPress={logout} />
+          <Text style={styles.credit}>非官方客户端 · Based on cc-haha © 2026 cc-haha</Text>
+        </ScrollView>
+      </>}
+      <View style={styles.tabbar}>
+        {WORKSPACE_TABS.map(t=><Pressable key={t.id} accessibilityRole="tab" accessibilityState={{selected:tab===t.id}}
+          onPress={()=>changeTab(t.id)} style={styles.tabItem}>
+          <Text style={[styles.tabGlyph,tab===t.id&&styles.tabActive]}>{t.symbol}</Text>
+          <Text style={[styles.tabLabel,tab===t.id&&styles.tabActive]}>{t.label}</Text>
+          {tab===t.id&&<View style={styles.tabUnderline}/>}
+        </Pressable>)}
       </View>
-    </View>
-    <TextInput style={styles.search} value={search} onChangeText={setSearch} placeholder="搜索会话或项目" placeholderTextColor={C.muted} />
-    {!!error && <Text style={styles.err}>{error}</Text>}
-    <SectionList
-      sections={groupSessions(sessions, { search }).map(g => ({
-        key: g.key, title: g.label,
-        data: g.sessions.map(s => ({...s, __hot: g.key === 'attention'}))
-      }))}
-      keyExtractor={s=>s.id} contentContainerStyle={styles.list}
-      refreshing={loading} onRefresh={() => listSessions()}
-      ListEmptyComponent={<Text style={styles.muted}>暂无会话，请在电脑 CCHH 中创建或打开会话。</Text>}
-      renderSectionHeader={({section}) => <Text style={styles.sectionHeader}>{section.title}</Text>}
-      renderItem={({item})=><Pressable style={[styles.session, item.__hot && styles.sessionHot]} onPress={()=>{setError('');setTab('chat');setSelected(item);}}>
-        <Text style={styles.sessionTitle} numberOfLines={1}>{item.title||'未命名会话'}</Text>
-        <Text style={styles.muted} numberOfLines={1}>{projectRootOf(item)||'默认项目'}</Text>
-        <Text style={styles.sessionMeta}>{item.messageCount||0} 条记录{item.__hot?' · 需要你':''}</Text>
-      </Pressable>}/>
-  </SafeAreaView>;
+    </SafeAreaView>;
+  }
 
   return <SafeAreaView style={styles.flex}><StatusBar style="dark" />
     <View style={styles.workbenchHeader}>
       <Pressable accessibilityRole="button" accessibilityLabel="切换会话" style={styles.avatarCircle}
-        onPress={()=>{setSelected(null);setTab('chat');setError('');}}>
+        onPress={()=>{setSelected(null);setTab('sessions');setError('');}}>
         <Text style={styles.avatarText}>C</Text>
       </Pressable>
       <View style={styles.workbenchHeading}>
@@ -671,22 +913,14 @@ function schedule() {
         <Text style={styles.workbenchSubtitle} numberOfLines={1}>{selected.title||'当前会话'} · {socketState}</Text>
       </View>
       <Pressable accessibilityRole="button" accessibilityLabel="历史会话" style={styles.historyButton}
-        onPress={()=>{setSelected(null);setTab('chat');setError('');}}>
+        onPress={()=>{setSelected(null);setTab('sessions');setError('');}}>
         <Text style={styles.historyGlyph}>◷</Text>
       </Pressable>
     </View>
     {!!error && <Pressable accessibilityRole="button" onPress={()=>setError('')} style={styles.errorBar}>
       <Text style={styles.err}>{error} · 点击关闭</Text>
     </Pressable>}
-    {tab==='tasks' && approvals.length>0 && <View style={styles.approval}>
-      <Text style={styles.approvalTitle}>等待你的批准 · {approvals.length}</Text>
-      <Text style={styles.muted} numberOfLines={3}>{approvals[0].displayName||approvals[0].toolName||'工具操作'}</Text>
-      <Text style={styles.mini} numberOfLines={3}>{JSON.stringify(approvals[0].input||{}).slice(0,700)}</Text>
-      <View style={styles.actions}><Btn label="拒绝" danger outline onPress={()=>decision(approvals[0],false)} />
-        <Btn label="本次批准" onPress={()=>decision(approvals[0],true)} /></View>
-    </View>}
-
-    {tab==='chat' && <>
+    <>
       <FlatList ref={chatList} data={history} keyExtractor={x=>x.id}
         contentContainerStyle={styles.messages}
         onContentSizeChange={()=>{
@@ -698,7 +932,11 @@ function schedule() {
         ListHeaderComponent={cursor?<Pressable onPress={()=>loadHistory(selected,true)}><Text style={styles.actionLink}>加载更早记录</Text></Pressable>:null}
         renderItem={({item})=><View style={[styles.bubble,item.role==='user'?styles.mine:styles.theirs]}>
           <Text style={styles.bubbleWho}>{item.pending?'你 · 等待服务端确认':item.role==='user'?'你':'CCHH'}</Text>
-          <MessageBody text={item.text} />
+          {!!item.thinking && <ThinkingBlock text={item.thinking}
+            open={!!expandedTools['think:'+item.id]}
+            onToggle={()=>setExpandedTools(prev=>({...prev,['think:'+item.id]:!prev['think:'+item.id]}))} />}
+          <MarkdownBody text={item.text} />
+          {(item.images||[]).map((uri, i) => <Image key={i} source={{uri}} style={styles.bubbleImage} resizeMode="contain" />)}
           {!!(item.toolCards||[]).length && item.toolCards.map(card =>
             <ToolCard key={card.toolUseId} card={card}
               open={!!expandedTools[card.toolUseId]}
@@ -717,11 +955,43 @@ function schedule() {
       </View>}
       <KeyboardAvoidingView behavior={Platform.OS==='ios'?'padding':undefined}>
         {tab==='chat' && approvals.length>0 && <View style={styles.approvalDock}>
-          <Text style={styles.approvalTitle}>需要批准 · {approvals.length} 项</Text>
-          <Text style={styles.muted} numberOfLines={2}>{approvals[0].displayName||approvals[0].toolName||'工具操作'}</Text>
-          <Text style={styles.mini} numberOfLines={3}>{JSON.stringify(approvals[0].input||{}).slice(0,700)}</Text>
-          <View style={styles.actions}><Btn label="拒绝" danger outline onPress={()=>decision(approvals[0],false)} />
-            <Btn label="本次批准" onPress={()=>decision(approvals[0],true)} /></View>
+          {approvals[0].toolName==='AskUserQuestion' ? (() => {
+            const request = approvals[0];
+            const questions = parseAskUserQuestion(request.input);
+            const reqId = request.requestId;
+            return <>
+              <Text style={styles.approvalTitle}>需要你的回答 · {questions.length} 个问题</Text>
+              <ScrollView style={{maxHeight:280}} nestedScrollEnabled>
+                {questions.map((q, qi) => {
+                  const picked = (askSelections[reqId]||[])[qi] || [];
+                  return <View key={qi} style={{marginBottom:10}}>
+                    <Text style={styles.settingText}>{q.header?q.header+' · ':''}{q.question}{q.multiSelect?'（可多选）':''}</Text>
+                    <View style={styles.effortChoices}>{q.options.map(o =>
+                      <Pressable key={o.label} accessibilityRole="button"
+                        style={[styles.effortOption, picked.includes(o.label)&&styles.effortOptionActive]}
+                        onPress={()=>toggleAskOption(reqId, qi, o.label, q.multiSelect)}>
+                        <Text style={styles.settingText}>{o.label}</Text>
+                        {!!o.description && <Text style={styles.mini}>{o.description}</Text>}
+                      </Pressable>)}
+                    </View>
+                    <TextInput style={styles.askInput} value={(askFreeTexts[reqId]||{})[qi]||''}
+                      onChangeText={v=>setAskFreeText(reqId,qi,v)}
+                      placeholder={q.options.length?'或输入自定义答案':'输入答案'} placeholderTextColor={C.muted}/>
+                  </View>;
+                })}
+              </ScrollView>
+              <View style={styles.actions}>
+                <Btn label="拒绝" danger outline onPress={()=>decision(request,false)} />
+                <Btn label="提交回答" onPress={()=>submitAsk(request)} />
+              </View>
+            </>;
+          })() : <>
+            <Text style={styles.approvalTitle}>需要批准 · {approvals.length} 项</Text>
+            <Text style={styles.muted} numberOfLines={2}>{approvals[0].displayName||approvals[0].toolName||'工具操作'}</Text>
+            <Text style={styles.mini} numberOfLines={3}>{JSON.stringify(approvals[0].input||{}).slice(0,700)}</Text>
+            <View style={styles.actions}><Btn label="拒绝" danger outline onPress={()=>decision(approvals[0],false)} />
+              <Btn label="本次批准" onPress={()=>decision(approvals[0],true)} /></View>
+          </>}
         </View>}
         <View style={styles.modelLine}>
           <Pressable accessibilityRole="button" onPress={()=>void openModelPanel()} style={styles.modelChip}>
@@ -732,41 +1002,9 @@ function schedule() {
           </Pressable>
         </View>
         {modelPanel && <View style={styles.settingPicker}>
-          <View style={styles.modelPanelHead}>
-            <Text style={styles.settingTitle}>电脑模型配置</Text>
-            <View style={{flexDirection:'row',gap:12,alignItems:'center'}}>
-              <Pressable accessibilityRole="button" onPress={()=>void loadModelState()}><Text style={styles.actionLink}>{modelBusy?'同步中…':'刷新'}</Text></Pressable>
-              <Pressable accessibilityRole="button" onPress={()=>setModelPanel(false)}><Text style={styles.actionLink}>关闭</Text></Pressable>
-            </View>
-          </View>
-          <Text style={styles.mini}>与电脑 CCHH 共用同一份配置 · 上次同步 {modelSyncAt||'—'} · 费用以电脑端配置为准，不影响切换</Text>
-          {!!modelError && <Text style={styles.err}>{modelError}</Text>}
+          {modelPanelHead(()=>setModelPanel(false))}
           <ScrollView style={{maxHeight:380}} nestedScrollEnabled>
-            <Text style={styles.modelSection}>当前</Text>
-            <Text style={styles.settingText}>{modelInfo?.name||'未读取'}{modelInfo?.id&&modelInfo.id!==modelInfo.name?' · '+modelInfo.id:''}</Text>
-
-            <Text style={styles.modelSection}>服务商 · 全部 {providerState.providers.length} 个</Text>
-            {providerState.providers.map(p=><Pressable key={p.id} accessibilityRole="button"
-              style={[styles.providerRow, p.isActive&&styles.providerRowActive]} onPress={()=>void activateProvider(p)}>
-              <View style={{flex:1}}>
-                <Text style={styles.settingText}>{p.name}{p.isActive?' · 使用中':''}</Text>
-                <Text style={styles.mini} numberOfLines={1}>{p.apiFormat||'未知协议'} · 主模型 {p.slots.main||'未设置'}</Text>
-              </View>
-              {!p.isActive && <Text style={styles.providerSwitch}>{modelBusy?'…':'切换'}</Text>}
-            </Pressable>)}
-
-            <Text style={styles.modelSection}>模型 · 当前服务商共 {modelChoices.length} 个</Text>
-            {modelChoices.map(m=><Pressable key={m.id} style={styles.settingItem} onPress={()=>void changeDefaultModel(m)}>
-              <Text style={styles.settingText}>{m.name}{sameModel(modelInfo?.id,m.id)?' ✓':''}</Text>
-              <Text style={styles.mini} numberOfLines={2}>{m.id}{m.context?' · 上下文 '+m.context:''}{m.description?' · '+m.description:''}</Text>
-              {(() => { const active=providerState.providers.find(p=>p.isActive); const slots=slotsForModel(active,m.id); return slots.length?<Text style={styles.slotTags}>{slots.join(' / ')}</Text>:null; })()}
-            </Pressable>)}
-
-            <Text style={styles.modelSection}>思考等级</Text>
-            <View style={styles.effortChoices}>{(effortInfo?.available||[]).map(level=>
-              <Pressable key={level} style={[styles.effortOption,effortInfo?.level===level&&styles.effortOptionActive]}
-                onPress={()=>changeEffort(level)}><Text style={styles.settingText}>{level}</Text></Pressable>)}</View>
-            {(!effortInfo?.available?.length) && <Text style={styles.muted}>当前连接无法读取可用等级</Text>}
+            {modelPanelContent}
           </ScrollView>
         </View>}
         <View style={styles.composer}>
@@ -781,41 +1019,8 @@ function schedule() {
                 disabled={!historyReady||!draft.trim()||socketState!=='已连接'} onPress={send}><Text style={styles.sendText}>↑</Text></Pressable>}
         </View>
       </KeyboardAvoidingView>
-    </>}
+    </>
 
-    {tab==='tasks' && <ScrollView style={styles.panelScroll} contentContainerStyle={styles.panelContent}>
-      <Text style={styles.panelTitle}>任务</Text>
-      <Text style={styles.panelSubtitle}>当前会话的实时状态、待审批任务和真实任务清单</Text>
-      <View style={styles.infoCard}><Text style={styles.cardHeading}>当前执行</Text>
-        <Text style={styles.stateBig}>{turnBusy?'● 正在执行':socketState==='已连接'?'✓ 等待新指令':'◌ '+socketState}</Text>
-        <Text style={styles.muted}>待审批 {approvals.length} 项 · 本机待发送 {activeQueue.length} 条</Text>
-        {turnBusy && <Btn label="停止当前生成" danger outline disabled={socketState!=='已连接'}
-          onPress={()=>sendPacket({type:'stop_generation'})}/>}
-      </View>
-      <View style={styles.taskSectionHeader}><Text style={styles.cardHeading}>当前会话任务清单</Text>
-        <Pressable accessibilityRole="button" onPress={()=>void loadTaskItems()}><Text style={styles.actionLink}>{taskLoading?'加载中':'刷新'}</Text></Pressable></View>
-      {!!taskError && <Text style={styles.err}>{taskError}</Text>}
-      {taskItems.map(t=><View key={t.taskListId+'-'+t.id} style={styles.infoCard}>
-        <Text style={styles.taskText}>{t.status==='completed'?'✓ ':t.status==='in_progress'?'● ':'○ '}{t.subject||'未命名任务'}</Text>
-        <Text style={styles.muted}>{t.status==='completed'?'已完成':t.status==='in_progress'?'执行中':'等待执行'}{t.owner?' · '+t.owner:''}</Text>
-        {!!t.description && <Text style={styles.mini} numberOfLines={4}>{t.description}</Text>}
-      </View>)}
-      {!taskLoading&&!taskItems.length&&!taskError&&<Text style={styles.muted}>当前会话尚无独立任务清单，下面显示聊天指令记录。</Text>}
-      <Text style={styles.cardHeading}>最近发送的指令</Text>
-      {history.filter(m=>m.role==='user'&&!m.pending).slice(-12).reverse().map(m=>
-        <View key={m.id} style={styles.infoCard}><Text style={styles.taskText} numberOfLines={5}>{m.text}</Text>
-          <Text style={styles.mini}>{m.timestamp||'已记录在 CCHH 会话历史'}</Text></View>)}
-      {!history.some(m=>m.role==='user') && <Text style={styles.muted}>这段会话暂无已记录的指令。</Text>}
-    </ScrollView>}
-
-    <View style={styles.tabbar}>
-      {WORKSPACE_TABS.map(t=><Pressable key={t.id} accessibilityRole="tab" accessibilityState={{selected:tab===t.id}}
-        onPress={()=>changeTab(t.id)} style={styles.tabItem}>
-        <Text style={[styles.tabGlyph,tab===t.id&&styles.tabActive]}>{t.symbol}</Text>
-        <Text style={[styles.tabLabel,tab===t.id&&styles.tabActive]}>{t.label}</Text>
-        {tab===t.id&&<View style={styles.tabUnderline}/>}
-      </Pressable>)}
-    </View>
   </SafeAreaView>;
 }
 export default function App() { return <SafeAreaProvider><Main /></SafeAreaProvider>; }
@@ -887,6 +1092,25 @@ const styles=StyleSheet.create({
   providerRowActive:{backgroundColor:C.surface2,borderRadius:10,paddingHorizontal:8},
   providerSwitch:{color:C.accent,fontSize:13,fontWeight:"700"},
   slotTags:{color:C.accent,fontSize:11,marginTop:3},
+  page:{padding:16,paddingBottom:30},
+  card:{backgroundColor:C.surface,borderRadius:14,padding:14,marginBottom:12,borderWidth:1,borderColor:C.line},
+  cardHeading:{color:C.muted,fontSize:12,fontWeight:'700',marginBottom:6},
+  stateBig:{color:C.text,fontSize:18,fontWeight:'700',marginBottom:3},
+  sessionRow:{paddingVertical:10,borderBottomWidth:1,borderColor:C.line},
+  mdH1:{color:C.text,fontSize:20,fontWeight:'800',marginVertical:6},
+  mdH2:{color:C.text,fontSize:17,fontWeight:'800',marginVertical:5},
+  mdH3:{color:C.text,fontSize:15,fontWeight:'700',marginVertical:4},
+  mdQuote:{color:C.muted,fontSize:14,lineHeight:21,borderLeftWidth:3,borderLeftColor:C.line,paddingLeft:10,marginVertical:4},
+  mdRule:{height:1,backgroundColor:C.line,marginVertical:10},
+  mdCode:{backgroundColor:C.surface2,borderRadius:9,padding:10,marginVertical:5},
+  mdCodeLang:{color:C.muted,fontSize:10,fontWeight:'700',marginBottom:5},
+  mdCodeText:{fontFamily:Platform.select({ios:'Menlo',android:'monospace'}),fontSize:12,lineHeight:18,color:C.text},
+  mdInlineCode:{fontFamily:Platform.select({ios:'Menlo',android:'monospace'}),fontSize:13,color:C.text,backgroundColor:C.surface2},
+  thinkingBlock:{backgroundColor:C.surface,borderRadius:9,padding:9,marginBottom:7,borderWidth:1,borderColor:C.line},
+  thinkingTitle:{color:C.muted,fontSize:12,lineHeight:18},
+  bubbleImage:{width:'100%',height:180,borderRadius:9,marginTop:6},
+  toolImage:{width:'100%',height:180,borderRadius:8,marginTop:6},
+  askInput:{backgroundColor:C.surface,borderColor:C.line,borderWidth:1,borderRadius:9,padding:9,color:C.text,fontSize:13,marginTop:6},
   queuePlus:{height:44,width:43,alignItems:'center',justifyContent:'center'},
   plusText:{fontSize:31,fontWeight:'300',color:'#67646C'},
   sendButton:{width:48,height:48,borderRadius:16,backgroundColor:C.accent,alignItems:'center',justifyContent:'center'},

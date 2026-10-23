@@ -54,19 +54,19 @@ jobs:
           test -s "$APK"
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
           if "$APKSIGNER" verify "$APK" >/dev/null 2>&1; then
-            cp "$APK" artifacts/CCHH-Mobile-v0.2.0.apk
+            cp "$APK" artifacts/CCHH-Mobile-v0.3.0.apk
           else
             keytool -genkeypair -keystore /tmp/cchh-test.jks -alias cchh -storepass changeit -keypass changeit -dname "CN=CCHH Mobile Test" -keyalg RSA -keysize 3072 -validity 3650 -noprompt
-            "$APKSIGNER" sign --ks /tmp/cchh-test.jks --ks-key-alias cchh --ks-pass pass:changeit --key-pass pass:changeit --out artifacts/CCHH-Mobile-v0.2.0.apk "$APK"
+            "$APKSIGNER" sign --ks /tmp/cchh-test.jks --ks-key-alias cchh --ks-pass pass:changeit --key-pass pass:changeit --out artifacts/CCHH-Mobile-v0.3.0.apk "$APK"
             rm -f /tmp/cchh-test.jks
           fi
-          "$APKSIGNER" verify artifacts/CCHH-Mobile-v0.2.0.apk
-          sha256sum artifacts/CCHH-Mobile-v0.2.0.apk > artifacts/SHA256SUMS.txt
+          "$APKSIGNER" verify artifacts/CCHH-Mobile-v0.3.0.apk
+          sha256sum artifacts/CCHH-Mobile-v0.3.0.apk > artifacts/SHA256SUMS.txt
           cp UPSTREAM_LICENSE.txt THIRD_PARTY_NOTICES.md COMMUNITY_BETA.md artifacts/
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
-          name: CCHH-Mobile-v0.2.0-Android-APK
+          name: CCHH-Mobile-v0.3.0-Android-APK
           path: |
             cchh-mobile-android/artifacts/*.apk
             cchh-mobile-android/artifacts/SHA256SUMS.txt

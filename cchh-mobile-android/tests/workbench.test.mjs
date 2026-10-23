@@ -4,7 +4,7 @@ import {WORKSPACE_TABS, projectRootOf, withinProjectRoot,
   terminalEntriesFromHistory, safeModelChoices} from '../mobileWorkbench.mjs';
 
 test('five workspaces reflect the native reference while preserving CCHH branding', () => {
-  assert.deepEqual(WORKSPACE_TABS.map(t => t.label),['聊天','任务']);
+  assert.deepEqual(WORKSPACE_TABS.map(t => t.label),['首页','会话','任务','模型','设置']);
 });
 test('filesystem navigation stays within the selected project', () => {
   assert.equal(projectRootOf({projectPath:'D:\\sample'}),'D:\\sample');

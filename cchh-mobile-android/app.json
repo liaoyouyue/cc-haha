@@ -2,12 +2,12 @@
   "expo": {
     "name": "CCHH Mobile",
     "slug": "cchh-mobile",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "android": {
       "package": "com.cchh.mobile.client",
-      "versionCode": 2,
+      "versionCode": 3,
       "permissions": [
         "INTERNET"
       ],

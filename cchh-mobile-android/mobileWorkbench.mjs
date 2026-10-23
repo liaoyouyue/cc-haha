@@ -1,8 +1,10 @@
-// Core workflow tabs only. Terminal, file browsing and the desktop
-// placeholder are out of scope for the free LAN-first client.
+// Five top-level pages: home, sessions, tasks, models, settings.
 export const WORKSPACE_TABS = [
-  {id:'chat',label:'聊天',symbol:'◉'},
+  {id:'home',label:'首页',symbol:'⌂'},
+  {id:'sessions',label:'会话',symbol:'◉'},
   {id:'tasks',label:'任务',symbol:'☑'},
+  {id:'models',label:'模型',symbol:'◈'},
+  {id:'settings',label:'设置',symbol:'⚙'},
 ];
 
 export function projectRootOf(session) {
