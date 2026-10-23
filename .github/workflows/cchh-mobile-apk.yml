@@ -5,6 +5,7 @@ on:
       - feat/cchh-mobile-android-build-20261019
       - feat/cchh-mobile-community-pairing-20261019
       - feat/cchh-mobile-loopii-ui-20261021
+      - feat/cchh-mobile-h5-ui-20261023
     paths:
       - 'cchh-mobile-android/**'
       - '.github/workflows/cchh-mobile-apk.yml'
