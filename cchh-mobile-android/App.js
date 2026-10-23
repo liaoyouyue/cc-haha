@@ -797,7 +797,7 @@ function schedule() {
           {!!error && <Text style={styles.err}>{error}</Text>}
           <View style={styles.card}>
             <Text style={styles.cardHeading}>连接</Text>
-            <Text style={styles.stateBig}>{config.mode==='public'?'公网已配对':'局域网已配对'}</Text>
+            <Text style={styles.stateBig}>{config.baseUrl.startsWith('https://')?'公网 HTTPS 已配对':'局域网已配对'}</Text>
             <Text style={styles.muted} numberOfLines={1}>{config.baseUrl}</Text>
             <Text style={styles.mini}>凭据保存在系统安全存储，重启 APP 无需重新扫码</Text>
           </View>
@@ -873,7 +873,7 @@ function schedule() {
         <ScrollView contentContainerStyle={styles.page}>
           <View style={styles.card}>
             <Text style={styles.cardHeading}>连接</Text>
-            <Text style={styles.stateBig}>{config.mode==='public'?'公网 ngrok':'局域网 / Tailscale'}</Text>
+            <Text style={styles.stateBig}>{config.baseUrl.startsWith('https://')?'公网 HTTPS / 隧道':'局域网 / Tailscale'}</Text>
             <Text style={styles.muted} numberOfLines={2}>{config.baseUrl}</Text>
             <Text style={styles.mini}>访问令牌已保存在系统安全存储，不在此显示 · 重启无需重新配对</Text>
           </View>
