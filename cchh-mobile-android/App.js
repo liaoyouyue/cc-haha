@@ -13,7 +13,7 @@ import { splitFences } from './messageText.mjs';
 import { isForegroundResume, reconnectDelayMs } from './mobileRecovery.mjs';
 import { endpoint } from './connectionUtils.mjs';
 import { LEGAL_LINKS } from './legalLinks.mjs';
-import { WORKSPACE_TABS, projectRootOf, withinProjectRoot, terminalEntriesFromHistory, safeModelChoices } from './mobileWorkbench.mjs';
+import { WORKSPACE_TABS, projectRootOf, terminalEntriesFromHistory, safeModelChoices } from './mobileWorkbench.mjs';
 import { groupSessions } from './sessionGroups.mjs';
 import { toolCardsFromContent, toolCardSummary } from './toolCards.mjs';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
@@ -136,19 +136,12 @@ function Main() {
   const [modelPicker, setModelPicker] = useState(false);
   const [effortInfo, setEffortInfo] = useState(null);
   const [effortPicker, setEffortPicker] = useState(false);
-  const [filesDir, setFilesDir] = useState('');
-  const [fileEntries, setFileEntries] = useState([]);
-  const [filesError, setFilesError] = useState('');
-  const [filesLoading, setFilesLoading] = useState(false);
-  const [desktopInfo, setDesktopInfo] = useState(null);
-  const [desktopError, setDesktopError] = useState('');
   const wsRef = useRef(null);
   const reconnectRef = useRef(null);
   const pingRef = useRef(null);
   const pongRef = useRef(null);
   const sendLock = useRef(false);
   const selectedId = useRef(null);
-  const browseSeq = useRef(0);
   const taskSeq = useRef(0);
   const chatList = useRef(null);
   const keepScroll = useRef(false);
@@ -261,10 +254,10 @@ function Main() {
       await SecureStore.deleteItemAsync(STORE_KEY);
       setSelected(null);setConfig(null);setSessions([]);
       setHistory([]);setApprovals([]);setStream('');
-      setQueued([]);setTerminalEvents([]);setFileEntries([]);setFilesDir('');
-      setTaskItems([]);setTaskError('');browseSeq.current++;taskSeq.current++;
+      setQueued([]);setTerminalEvents([]);
+      setTaskItems([]);setTaskError('');taskSeq.current++;
       setModelInfo(null);setModelChoices([]);setEffortInfo(null);
-      setDesktopInfo(null);setDesktopError('');setTab('chat');
+      setTab('chat');
       setUrl('');setToken('');setPairSecret('');setPairing(null);
       setPairNotice('');setMode('private');setNetworkType('lan');
       setScanning(false);setError('');
@@ -481,23 +474,6 @@ function schedule() {
         catch(e){setError(e.message||'思考等级设置失败');}
       }}]);
   }
-  async function browseFiles(requestPath) {
-    const activeId=selected?.id;
-    const seq=++browseSeq.current;
-    const root=projectRootOf(selected);
-    if(!root){setFilesError('当前会话没有可用的项目路径');setFileEntries([]);return;}
-    if(!withinProjectRoot(root,requestPath)){setFilesError('只能浏览当前会话的项目目录');return;}
-    setFilesLoading(true);setFilesError('');
-    setFileEntries([]);setFilesDir(requestPath);
-    try{
-      const data=await getJson(config,'/api/filesystem/browse?path='+encodeURIComponent(requestPath)+'&includeFiles=true&maxResults=100');
-      if(browseSeq.current!==seq || selectedId.current!==activeId)return;
-      if(!withinProjectRoot(root,data.currentPath||requestPath))throw new Error('服务器返回了项目以外的路径');
-      setFilesDir(data.currentPath||requestPath);
-      setFileEntries((data.entries||[]).filter(x=>withinProjectRoot(root,x.path)));
-    }catch(e){if(browseSeq.current===seq && selectedId.current===activeId){setFilesError(e.message||'文件浏览不可用');setFileEntries([]);}}
-    finally{if(browseSeq.current===seq && selectedId.current===activeId)setFilesLoading(false);}
-  }
   async function loadTaskItems(){
     if(!selected?.id || !config)return;
     const sessionId=selected.id,seq=++taskSeq.current;
@@ -513,16 +489,9 @@ function schedule() {
     }catch(e){if(taskSeq.current===seq&&selectedId.current===sessionId){setTaskItems([]);setTaskError(e.message||'任务列表不可用');}}
     finally{if(taskSeq.current===seq&&selectedId.current===sessionId)setTaskLoading(false);}
   }
-  async function refreshDesktop(){
-    setDesktopError('');
-    try{setDesktopInfo(await getJson(config,'/api/status'));}
-    catch(e){setDesktopInfo(null);setDesktopError(e.message||'无法读取电脑服务状态');}
-  }
   function changeTab(next) {
     setTab(next);setModelPicker(false);setEffortPicker(false);
     if(next==='tasks')void loadTaskItems();
-    if(next==='files')void browseFiles(projectRootOf(selected));
-    if(next==='desktop')void refreshDesktop();
   }
 
   function openLegal(url) {
@@ -759,60 +728,6 @@ function schedule() {
         <View key={m.id} style={styles.infoCard}><Text style={styles.taskText} numberOfLines={5}>{m.text}</Text>
           <Text style={styles.mini}>{m.timestamp||'已记录在 CCHH 会话历史'}</Text></View>)}
       {!history.some(m=>m.role==='user') && <Text style={styles.muted}>这段会话暂无已记录的指令。</Text>}
-    </ScrollView>}
-
-    {tab==='terminal' && <ScrollView style={styles.panelScroll} contentContainerStyle={styles.panelContent}>
-      <Text style={styles.panelTitle}>终端</Text>
-      <Text style={styles.panelSubtitle}>来自电脑 CCHH 会话的真实命令与输出 · 只读</Text>
-      {terminalEvents.map((ev,i)=><View key={ev.id+'-'+i} style={styles.terminalCard}>
-        <Text style={styles.terminalLabel}>{ev.kind==='command'?'$ '+ev.label:'↳ '+ev.label}</Text>
-        <Text selectable style={styles.terminalText}>{ev.text}</Text>
-      </View>)}
-      {terminalEvents.length===0 && <View style={styles.infoCard}><Text style={styles.muted}>
-        当前已加载历史中没有可识别的终端调用。这里不会伪造终端画面，也不会直接执行电脑命令。
-      </Text></View>}
-    </ScrollView>}
-
-    {tab==='files' && <ScrollView style={styles.panelScroll} contentContainerStyle={styles.panelContent}>
-      <Text style={styles.panelTitle}>文件</Text>
-      <Text style={styles.panelSubtitle}>仅浏览当前项目，路径由电脑 CCHH 接口返回</Text>
-      <View style={styles.infoCard}>
-        <Text selectable style={styles.pathText}>{filesDir||projectRootOf(selected)||'当前会话未提供项目路径'}</Text>
-        <View style={styles.fileActions}>
-          {withinProjectRoot(projectRootOf(selected),filesDir)&&filesDir!==projectRootOf(selected)&&
-            <Btn label="上一级" outline onPress={()=>{const sep=filesDir.includes('\\')?'\\':'/';
-              const parent=filesDir.slice(0,filesDir.lastIndexOf(sep));
-              if(withinProjectRoot(projectRootOf(selected),parent))void browseFiles(parent);}}/>}
-          <Btn label={filesLoading?'加载中…':'刷新文件'} outline onPress={()=>void browseFiles(filesDir||projectRootOf(selected))}/>
-        </View>
-        {!!filesError && <Text style={styles.err}>{filesError}</Text>}
-      </View>
-      {fileEntries.map(item=><Pressable key={item.path} accessibilityRole="button" style={styles.fileItem}
-        onPress={()=>item.isDirectory ? void browseFiles(item.path)
-          : Alert.alert('项目文件',item.name+'\n当前版本支持安全浏览；普通文件编辑和读取待核实 CCHH 接口。')}>
-        <Text style={styles.fileGlyph}>{item.isDirectory?'▣':'▤'}</Text>
-        <Text style={styles.fileName} numberOfLines={1}>{item.name}</Text>
-        {item.isDirectory&&<Text style={styles.muted}>›</Text>}
-      </Pressable>)}
-      {fileEntries.length===0&&!filesLoading&&!filesError && <Text style={styles.muted}>目录里暂无可展示的文件。</Text>}
-    </ScrollView>}
-
-    {tab==='desktop' && <ScrollView style={styles.panelScroll} contentContainerStyle={styles.panelContent}>
-      <Text style={styles.panelTitle}>桌面</Text>
-      <Text style={styles.panelSubtitle}>你自己电脑的 CCHH 连接状态</Text>
-      <View style={styles.infoCard}><Text style={styles.cardHeading}>电脑连接</Text>
-        <Text style={styles.stateBig}>{desktopInfo?.status==='ok'?'● 服务在线':'◌ 状态待确认'}</Text>
-        <Text style={styles.detailText}>连接地址：{config.baseUrl}</Text>
-        <Text style={styles.detailText}>连接模式：{config.mode==='public'?'公网 HTTPS':'私人网络'}</Text>
-        <Text style={styles.detailText}>服务版本：{desktopInfo?.version||'未读取'}</Text>
-        <Text style={styles.detailText}>当前项目：{projectRootOf(selected)||'未提供'}</Text>
-        {!!desktopError && <Text style={styles.err}>{desktopError}</Text>}
-        <Btn label="刷新电脑状态" outline onPress={()=>void refreshDesktop()}/>
-      </View>
-      <View style={styles.infoCard}><Text style={styles.cardHeading}>远程桌面画面</Text>
-        <Text style={styles.muted}>当前 CCHH Mobile 尚未实现真实桌面视频与控制协议，因此不展示虚假的电脑桌面。已有聊天、审批和文件浏览可继续使用。</Text>
-        <Btn label="返回聊天" outline onPress={()=>changeTab('chat')}/>
-      </View>
     </ScrollView>}
 
     <View style={styles.tabbar}>

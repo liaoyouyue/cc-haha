@@ -5,7 +5,7 @@
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
     "start": "expo start",
-    "android": "expo start --android",
+    "android": "expo run:android",
     "build:prebuild": "expo prebuild --platform android --clean --no-install",
     "test": "node --test ./tests/*.test.mjs"
   },
