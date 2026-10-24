@@ -3601,6 +3601,8 @@ export const zh: Record<TranslationKey, string> = {
   'agentTeams.progressLabel': '团队任务进度',
   'agentTeams.followingLive': '跟随实时',
   'agentTeams.reviewHistory': '回看历史',
+  'agentTeams.stopTeam': '停止团队',
+  'agentTeams.stoppingTeam': '正在停止团队…',
   'agentTeams.older': '更早的工作台状态',
   'agentTeams.newer': '更新的工作台状态',
   'agentTeams.backToLive': '回到实时',

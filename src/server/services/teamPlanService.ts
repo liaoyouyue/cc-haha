@@ -114,13 +114,24 @@ export class TeamPlanService {
       this.approving.delete(current.planId)
     }
   }
-  async action(teamName: string, kind: 'return' | 'cancel' | 'retry', action: TeamPlanAction): Promise<TeamPlanRecord> {
+  async action(teamName: string, kind: 'return' | 'cancel' | 'retry' | 'stop', action: TeamPlanAction): Promise<TeamPlanRecord> {
     if (kind === 'retry') {
       const plan = await mutateTeamPlan(teamName, action, current => {
         if (current.state !== 'launch_failed') throw new TeamPlanError('Only failed launches can retry')
         return { ...current, state: 'review_pending', approvedSnapshot: undefined, launch: undefined }
       })
       return plan
+    }
+    if (kind === 'stop') {
+      const current = await readTeamPlan(teamName)
+      if (!current) throw new TeamPlanError('Plan not found', 404)
+      if (current.state !== 'running' && current.state !== 'launching') throw new TeamPlanError('Only a running team can be stopped')
+      await this.runtime.stop(current.planId)
+      return mutateTeamPlan(teamName, action, latest => (
+        latest.state === 'running' || latest.state === 'launching'
+          ? { ...latest, state: 'interrupted', launch: { ...latest.launch, status: 'failed', error: 'The team was stopped.' } }
+          : latest
+      ))
     }
     const plan = await mutateTeamPlan(teamName, action, current => {
       if (kind === 'return' && current.state !== 'draft' && current.state !== 'review_pending') throw new TeamPlanError('Only a pending plan can return to planning')

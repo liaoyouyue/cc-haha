@@ -127,6 +127,6 @@ describe('translateCliMessage golden output', () => {
     // quietly growing as new subtypes are added to a 612-line switch. Shrink this
     // list by adding a scenario; never by deleting the assertion.
     const uncovered = [...new Set(branchSubtypes)].filter((subtype) => !covered.has(subtype)).sort()
-    expect(uncovered).toEqual(['memory_saved', 'session_state_changed'])
+    expect(uncovered).toEqual(['memory_loaded', 'memory_saved', 'session_state_changed'])
   })
 })

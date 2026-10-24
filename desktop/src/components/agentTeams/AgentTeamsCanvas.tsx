@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useTranslation, type TranslationKey } from '../../i18n'
 import type {
   TeamMember,
@@ -7,6 +7,8 @@ import type {
   TeamWorkbenchTask,
 } from '../../types/team'
 import { MEMBER_AVATARS, memberAccentColor } from './agentTeamsAvatars'
+import { sessionsApi } from '../../api/sessions'
+import { deriveSessionUsageMetrics, formatCompactTokens } from '../../lib/sessionUsageMetrics'
 import {
   currentTaskForMember,
   getMemberAvatarKey,
@@ -74,6 +76,10 @@ type FlightRoute = {
 }
 
 const CANVAS_MIN_WIDTH = 1280
+const MIN_ZOOM = 0.2
+const MAX_ZOOM = 4
+const ZOOM_STEP = 1.15
+const MEMBER_USAGE_POLL_MS = 3000
 const FORMATION_TITLE_X = 14
 const FORMATION_TITLE_Y = 12
 const TASKS_TITLE_Y = 388
@@ -495,6 +501,7 @@ function MemberNode({
   waitingDependency,
   leadStatus,
   leadModel,
+  tokenLabel,
   onSelect,
   t,
 }: {
@@ -504,6 +511,7 @@ function MemberNode({
   waitingDependency?: string
   leadStatus?: string
   leadModel?: string
+  tokenLabel?: string
   onSelect: () => void
   t: TranslationFn
 }) {
@@ -621,6 +629,12 @@ function MemberNode({
         ) : null}
       </span>
 
+      {!isLead && tokenLabel ? (
+        <span className="mt-0.5 font-mono text-[11px] font-medium text-[var(--color-text-tertiary)]">
+          {tokenLabel}
+        </span>
+      ) : null}
+
       {!isLead ? (
         <>
           <span className="mt-1.5 block h-1 w-[150px] overflow-hidden rounded-full bg-[var(--color-surface-container-high)]">
@@ -719,7 +733,7 @@ function TaskCard({
       }}
     >
       <span className="flex items-center justify-between gap-1.5">
-        <span data-task-id={task.id} className="shrink-0 font-mono text-[11px] font-medium text-[var(--color-text-tertiary)]">
+        <span data-task-id={task.id} className="shrink-0 font-mono text-[13px] font-semibold text-[var(--color-text-secondary)]">
           #{task.id}
         </span>
         <span
@@ -801,6 +815,83 @@ export function AgentTeamsCanvas({
   const t = useTranslation()
   const [hoveredTaskId, setHoveredTaskId] = useState<string | null>(null)
   const [keyboardFocusedTaskId, setKeyboardFocusedTaskId] = useState<string | null>(null)
+  const viewportRef = useRef<HTMLDivElement>(null)
+  const dragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null)
+  const [view, setView] = useState({ zoom: 1, x: 0, y: 0 })
+  const [dragging, setDragging] = useState(false)
+
+  const handleWheel = (event: React.WheelEvent) => {
+    const rect = viewportRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const mx = event.clientX - rect.left
+    const my = event.clientY - rect.top
+    const factor = event.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP
+    setView(previous => {
+      const zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, previous.zoom * factor))
+      const ratio = zoom / previous.zoom
+      return {
+        zoom,
+        x: mx - (mx - previous.x) * ratio,
+        y: my - (my - previous.y) * ratio,
+      }
+    })
+  }
+
+  const handleMouseDown = (event: React.MouseEvent) => {
+    const target = event.target as HTMLElement
+    if (target.closest('button')) return
+    event.preventDefault()
+    dragRef.current = { startX: event.clientX, startY: event.clientY, origX: view.x, origY: view.y }
+    setDragging(true)
+  }
+
+  const handleMouseMove = (event: React.MouseEvent) => {
+    if (!dragRef.current || !dragging) return
+    // Resolve the delta before the updater runs: React may invoke the updater
+    // after endDrag has already cleared the ref, and reading the ref inside a
+    // lazy updater throws "Cannot read properties of null".
+    const drag = dragRef.current
+    setView(previous => ({
+      ...previous,
+      x: drag.origX + (event.clientX - drag.startX),
+      y: drag.origY + (event.clientY - drag.startY),
+    }))
+  }
+
+  const endDrag = () => {
+    dragRef.current = null
+    setDragging(false)
+  }
+
+  const [memberUsageTokens, setMemberUsageTokens] = useState<Record<string, number>>({})
+
+  useEffect(() => {
+    const targets = snapshot.team.members
+      .filter((member): member is TeamMember & { sessionId: string } => Boolean(member.sessionId))
+      .map(member => ({ agentId: member.agentId, sessionId: member.sessionId }))
+    if (targets.length === 0) return
+    let cancelled = false
+    const poll = async () => {
+      const next: Record<string, number> = {}
+      await Promise.all(targets.map(async ({ agentId, sessionId }) => {
+        try {
+          const response = await sessionsApi.getSessionUsage(sessionId)
+          if (response.usage) {
+            next[agentId] = deriveSessionUsageMetrics(response.usage).totalTokens
+          }
+        } catch {
+          // Transient failure — keep the last known value.
+        }
+      }))
+      if (!cancelled) setMemberUsageTokens(next)
+    }
+    void poll()
+    const timer = setInterval(poll, MEMBER_USAGE_POLL_MS)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [snapshot.team.members])
   const uniqueMembers = useMemo(
     () => Array.from(new Map(snapshot.team.members.map(member => [member.agentId, member])).values()),
     [snapshot.team.members],
@@ -911,12 +1002,25 @@ export function AgentTeamsCanvas({
   return (
     <div
       data-testid="agent-teams-canvas-viewport"
-      className="h-full min-h-0 min-w-0 overflow-auto bg-[var(--color-background)] text-[var(--color-text-primary)]"
+      ref={viewportRef}
+      onWheel={handleWheel}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={endDrag}
+      onMouseLeave={endDrag}
+      className="h-full min-h-0 min-w-0 overflow-hidden bg-[var(--color-background)] text-[var(--color-text-primary)]"
+      style={{ cursor: dragging ? 'grabbing' : 'grab' }}
     >
       <div
         data-testid="agent-teams-canvas"
         className="relative"
-        style={{ width: layout.width, minWidth: naturalWidth, height: layout.height }}
+        style={{
+          width: layout.width,
+          minWidth: naturalWidth,
+          height: layout.height,
+          transformOrigin: '0 0',
+          transform: `translate(${view.x}px, ${view.y}px) scale(${view.zoom})`,
+        }}
       >
         <div
           data-testid="agent-teams-formation-layer"
@@ -1120,6 +1224,10 @@ export function AgentTeamsCanvas({
               getWorkbenchTaskState(task, new Map(snapshot.tasks.map(entry => [entry.id, entry]))) === 'blocked'
             ))
           const waitingDependency = blockedTask?.blockedBy.find(id => snapshot.tasks.find(task => task.id === id)?.status !== 'completed')
+          const usageTokens = memberUsageTokens[position.member.agentId]
+          const tokenLabel = !position.isLead && usageTokens !== undefined
+            ? `${formatCompactTokens(usageTokens)} tok`
+            : undefined
           return (
             <MemberNode
               key={position.member.agentId}
@@ -1129,6 +1237,7 @@ export function AgentTeamsCanvas({
               waitingDependency={waitingDependency}
               leadStatus={position.isLead ? leadStatusLabel(snapshot, t) : undefined}
               leadModel={leadModel}
+              tokenLabel={tokenLabel}
               onSelect={() => onSelectMember(position.member, position.isLead)}
               t={t}
             />

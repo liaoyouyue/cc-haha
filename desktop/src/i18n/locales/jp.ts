@@ -3603,6 +3603,8 @@ export const jp: Record<TranslationKey, string> = {
   'agentTeams.progressLabel': 'チームタスクの進捗',
   'agentTeams.followingLive': 'リアルタイム追従',
   'agentTeams.reviewHistory': '履歴を見る',
+  'agentTeams.stopTeam': 'チームを停止',
+  'agentTeams.stoppingTeam': 'チームを停止しています…',
   'agentTeams.older': '以前のワークベンチ状態',
   'agentTeams.newer': '新しいワークベンチ状態',
   'agentTeams.backToLive': 'リアルタイムへ戻る',

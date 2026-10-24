@@ -4799,6 +4799,19 @@ export function createMemorySavedMessage(
   }
 }
 
+export function createMemoryLoadedMessage(
+  loadedPaths: string[],
+): SystemMemorySavedMessage {
+  return {
+    type: 'system',
+    subtype: 'memory_loaded',
+    writtenPaths: loadedPaths,
+    timestamp: new Date().toISOString(),
+    uuid: randomUUID(),
+    isMeta: false,
+  }
+}
+
 export function createAgentsKilledMessage(): SystemAgentsKilledMessage {
   return {
     type: 'system',

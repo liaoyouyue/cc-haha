@@ -6006,6 +6006,24 @@ export const useChatStore = create<ChatStore>((setState, get) => {
             }))
           }
         }
+        if (msg.subtype === 'memory_loaded') {
+          const files = normalizeMemoryEventFiles(msg.data).map((f) => ({ ...f, action: 'loaded' as const }))
+          if (files.length > 0) {
+            update((session) => ({
+              messages: [
+                ...session.messages,
+                {
+                  id: nextId(),
+                  type: 'memory_event',
+                  event: 'loaded',
+                  files,
+                  message: msg.message,
+                  timestamp: Date.now(),
+                },
+              ],
+            }))
+          }
+        }
         if (msg.subtype === 'goal_event') {
           const goalEvent = normalizeGoalEventData(msg.data, msg.message)
           if (goalEvent) {
@@ -8198,6 +8216,21 @@ export function mapHistoryMessagesToUiMessages(
               ? (msg.content as { message: string }).message
               : undefined,
             teamCount: normalizeMemoryTeamCount(msg.content),
+            timestamp,
+          })
+        }
+      }
+      if (subtype === 'memory_loaded') {
+        const files = normalizeMemoryEventFiles(msg.content).map((f) => ({ ...f, action: 'loaded' as const }))
+        if (files.length > 0) {
+          uiMessages.push({
+            id: msg.id || nextId(),
+            type: 'memory_event',
+            event: 'loaded',
+            files,
+            message: typeof (msg.content as { message?: unknown }).message === 'string'
+              ? (msg.content as { message: string }).message
+              : undefined,
             timestamp,
           })
         }

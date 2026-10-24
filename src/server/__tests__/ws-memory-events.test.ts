@@ -204,6 +204,32 @@ describe('WebSocket memory events', () => {
       },
     ])
   })
+
+  it('forwards CLI memory_loaded system messages to the desktop client', () => {
+    const messages = translateCliMessage(
+      {
+        type: 'system',
+        subtype: 'memory_loaded',
+        writtenPaths: [
+          '/Users/test/.claude/projects/example/memory/MEMORY.md',
+        ],
+      },
+      'session-1',
+    )
+
+    expect(messages).toEqual([
+      {
+        type: 'system_notification',
+        subtype: 'memory_loaded',
+        message: undefined,
+        data: {
+          writtenPaths: [
+            '/Users/test/.claude/projects/example/memory/MEMORY.md',
+          ],
+        },
+      },
+    ])
+  })
 })
 
 describe('WebSocket AskUserQuestion events', () => {

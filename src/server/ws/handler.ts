@@ -4291,6 +4291,16 @@ export function translateCliMessage(cliMsg: any, sessionId: string): ServerMessa
           },
         }]
       }
+      if (subtype === 'memory_loaded') {
+        return [{
+          type: 'system_notification',
+          subtype: 'memory_loaded',
+          message: cliMsg.message,
+          data: {
+            writtenPaths: Array.isArray(cliMsg.writtenPaths) ? cliMsg.writtenPaths : [],
+          },
+        }]
+      }
       if (subtype === 'status') {
         if (cliMsg.status === 'compacting') {
           const outputChars = cliMsg.compact_progress?.output_chars

@@ -3602,6 +3602,8 @@ Row 9, all 8 cells: continuing from straight down, turning left through lower-le
   'agentTeams.progressLabel': 'Team task progress',
   'agentTeams.followingLive': 'Following live',
   'agentTeams.reviewHistory': 'Review history',
+  'agentTeams.stopTeam': 'Stop team',
+  'agentTeams.stoppingTeam': 'Stopping team…',
   'agentTeams.older': 'Older workbench state',
   'agentTeams.newer': 'Newer workbench state',
   'agentTeams.backToLive': 'Back to live',

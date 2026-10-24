@@ -132,7 +132,7 @@ import { getGlobalConfig, saveGlobalConfig, getGlobalConfigWriteCount } from '..
 import { hasConsoleBillingAccess } from '../utils/billing.js';
 import { logEvent, type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from 'src/services/analytics/index.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js';
-import { textForResubmit, handleMessageFromStream, type StreamingToolUse, type StreamingThinking, isCompactBoundaryMessage, getMessagesAfterCompactBoundary, getContentText, createUserMessage, createAssistantMessage, createTurnDurationMessage, createAgentsKilledMessage, createApiMetricsMessage, createSystemMessage, createCommandInputMessage, formatCommandInputTags } from '../utils/messages.js';
+import { textForResubmit, handleMessageFromStream, type StreamingToolUse, type StreamingThinking, isCompactBoundaryMessage, getMessagesAfterCompactBoundary, getContentText, createUserMessage, createAssistantMessage, createTurnDurationMessage, createAgentsKilledMessage, createMemoryLoadedMessage, createApiMetricsMessage, createSystemMessage, createCommandInputMessage, formatCommandInputTags } from '../utils/messages.js';
 import { generateSessionTitle } from '../utils/sessionTitle.js';
 import { BASH_INPUT_TAG, COMMAND_MESSAGE_TAG, COMMAND_NAME_TAG, LOCAL_COMMAND_STDOUT_TAG } from '../constants/xml.js';
 import { escapeXml } from '../utils/xml.js';
@@ -1967,6 +1967,9 @@ export function REPL({
   // readFileState is a 100-entry LRU; once it evicts a CLAUDE.md path,
   // the next discovery cycle re-injects it. Cleared in clearConversation.
   const loadedNestedMemoryPathsRef = useRef(new Set<string>());
+  /** One-shot latch: the memory_loaded notice fires once per session, on the
+   *  first query that actually injects auto/team memory into user context. */
+  const memoryLoadedNotifiedRef = useRef(false);
 
   // Helper to restore read file state from messages (used for resume flows)
   // This allows Claude to edit files that were read in previous sessions
@@ -2783,6 +2786,19 @@ export function REPL({
       } : {})
     };
     queryCheckpoint('query_context_loading_end');
+    // Memory-loaded signal: surface which auto/team memory entrypoints were
+    // injected into this turn's user context. Memoized getMemoryFiles shares
+    // its cache with getUserContext above, so no extra disk reads here.
+    // First turn only — the cache keeps later turns identical, and repeating
+    // the notice would spam the transcript on every message.
+    {
+      const memoryFiles = await getMemoryFiles();
+      const loadedPaths = memoryFiles.filter(f => f.type === 'AutoMem' || f.type === 'TeamMem').map(f => f.path);
+      if (loadedPaths.length > 0 && !memoryLoadedNotifiedRef.current) {
+        memoryLoadedNotifiedRef.current = true;
+        toolUseContext.appendSystemMessage?.(createMemoryLoadedMessage(loadedPaths));
+      }
+    }
     const systemPrompt = buildEffectiveSystemPrompt({
       mainThreadAgentDefinition,
       toolUseContext,

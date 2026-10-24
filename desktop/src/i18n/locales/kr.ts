@@ -3605,6 +3605,8 @@ export const kr: Record<TranslationKey, string> = {
   'agentTeams.progressLabel': '팀 작업 진행률',
   'agentTeams.followingLive': '실시간 팔로우 중',
   'agentTeams.reviewHistory': '기록 돌아보기',
+  'agentTeams.stopTeam': '팀 중지',
+  'agentTeams.stoppingTeam': '팀 중지 중…',
   'agentTeams.older': '이전 워크벤치 상태',
   'agentTeams.newer': '다음 워크벤치 상태',
   'agentTeams.backToLive': '실시간으로 돌아가기',

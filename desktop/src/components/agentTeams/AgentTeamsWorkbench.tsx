@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/Button'
 import { IconButton } from '@/components/ui/IconButton'
 import { useTranslation, type TranslationKey } from '../../i18n'
 import { useChatStore } from '../../stores/chatStore'
+import { teamPlansApi } from '../../api/teamPlans'
 import { useTeamStore } from '../../stores/teamStore'
 import { useTabStore } from '../../stores/tabStore'
 import type {
@@ -138,6 +139,8 @@ export function AgentTeamsWorkbench({ sessionId }: { sessionId: string }) {
   const [feedFocusedTaskId, setFeedFocusedTaskId] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const seenMessageIdsRef = useRef<Set<string> | null>(null)
+  const [planState, setPlanState] = useState<string | null>(null)
+  const [stopping, setStopping] = useState(false)
 
   const snapshots = timeline?.snapshots ?? []
   const latestIndex = snapshots.length - 1
@@ -160,6 +163,38 @@ export function AgentTeamsWorkbench({ sessionId }: { sessionId: string }) {
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
     return () => window.clearInterval(timer)
   }, [followingLive])
+
+  // The plan record is the only place that knows whether the team is still
+  // running, which is what gates the stop control.
+  const leadSessionId = snapshot?.team.leadSessionId ?? sessionId
+  useEffect(() => {
+    if (!followingLive) return
+    let cancelled = false
+    const load = () => {
+      void teamPlansApi.get(leadSessionId)
+        .then(({ plan }) => { if (!cancelled) setPlanState(plan?.state ?? null) })
+        .catch(() => { if (!cancelled) setPlanState(null) })
+    }
+    load()
+    const timer = window.setInterval(load, 5000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [followingLive, leadSessionId])
+
+  const stopTeam = async () => {
+    if (stopping) return
+    setStopping(true)
+    try {
+      const { plan } = await teamPlansApi.get(leadSessionId)
+      if (plan) await teamPlansApi.act(plan, 'stop', crypto.randomUUID())
+    } catch (error) {
+      console.error('[AgentTeamsWorkbench] cannot stop the team', error)
+    } finally {
+      setStopping(false)
+    }
+  }
 
   const visibleMessageIds = useMemo(
     () => snapshot?.messages.map(message => message.id) ?? [],
@@ -375,6 +410,18 @@ export function AgentTeamsWorkbench({ sessionId }: { sessionId: string }) {
               <Button variant="secondary" size="sm" className="shrink-0 whitespace-nowrap" onClick={enterReplay}>
                 {t('agentTeams.reviewHistory')}
               </Button>
+              {planState === 'running' || planState === 'launching' ? (
+                <Button
+                  data-testid="agent-teams-stop-team"
+                  variant="danger-outline"
+                  size="sm"
+                  className="shrink-0 whitespace-nowrap"
+                  disabled={stopping}
+                  onClick={() => void stopTeam()}
+                >
+                  {stopping ? t('agentTeams.stoppingTeam') : t('agentTeams.stopTeam')}
+                </Button>
+              ) : null}
               <div className="shrink-0 border-l border-[var(--color-border)] pl-3.5">
                 <TimelineStat label={t('agentTeams.live.elapsed')} value={formatDuration(elapsed)} />
               </div>

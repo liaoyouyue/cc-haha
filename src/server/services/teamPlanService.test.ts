@@ -214,3 +214,15 @@ test('a running team whose owner was lost is re-owned instead of being marked in
   })
   expect((await unrecoverable.getForSession('session'))?.state).toBe('interrupted')
 })
+
+test('stopping a running team stops its runtime and marks the plan interrupted', async () => {
+  const plan = await ready()
+  const stopped: string[] = []
+  const service = new TeamPlanService({ validate: async item => item, launch: async () => ({ memberIds: { worker: 'child-1' } }), stop: async id => { stopped.push(id) } })
+  await service.approve('review', identity(plan))
+  const running = await settle('running')
+  const result = await service.action('review', 'stop', identity(running))
+  expect(stopped).toEqual([plan.planId])
+  expect(result.state).toBe('interrupted')
+  await expect(service.action('review', 'stop', identity(result))).rejects.toThrow('Only a running team can be stopped')
+})
