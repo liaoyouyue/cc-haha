@@ -15,6 +15,7 @@ import {
   estimateCostUSD,
   isBillableUsageRecord,
   resolveModelCosts,
+  usageCarriesTokens,
   usageRecordKey,
 } from './usageAccounting.js'
 import { jsonParse } from './slowOperations.js'
@@ -447,7 +448,7 @@ async function processSessionFiles(
       // same complete `usage`. Scoped per transcript, matching how the local index reducer keys
       // its own deduplication, so both paths produce identical totals.
       const countedUsageKeys = new Set<string>()
-      const claimUsage = (message: TranscriptMessage, suffix = ''): boolean => {
+      const claimUsage = (message: TranscriptMessage, suffix = '', usage?: unknown): boolean => {
         const record = message as unknown as Record<string, unknown>
         const identity = {
           version: record.version,
@@ -457,6 +458,9 @@ async function processSessionFiles(
           forkedFrom: record.forkedFrom,
         }
         if (!isBillableUsageRecord(identity)) return false
+        // An all-zero usage (streaming placeholder block lines) must not claim the dedup key —
+        // recording it is a no-op and would block the final line carrying the real counts.
+        if (usage !== undefined && !usageCarriesTokens(usage as never)) return false
         const key = usageRecordKey(identity, suffix)
         if (key === null) return true
         if (countedUsageKeys.has(key)) return false
@@ -516,7 +520,7 @@ async function processSessionFiles(
               continue
             }
 
-            if (!claimUsage(message)) {
+            if (!claimUsage(message, '', usage)) {
               continue
             }
 

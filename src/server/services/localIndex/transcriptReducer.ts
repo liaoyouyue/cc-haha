@@ -6,6 +6,7 @@ import {
   activeGapMs,
   estimateCostUSD,
   isBillableUsageRecord,
+  usageCarriesTokens,
   usageRecordKey,
 } from '../../../utils/usageAccounting.js'
 import type {
@@ -523,6 +524,13 @@ function applyActivityEntry(state: ReducerState, entry: ReducerEntry): void {
   const model = entry.message?.model || 'unknown'
   if (!usage || model === SYNTHETIC_MODEL) return
   if (!isBillableUsageRecord(usageIdentity(entry))) return
+  // An all-zero usage (streaming placeholder block lines) must not claim the dedup key —
+  // recording it is a no-op and would block the final line that carries the real counts.
+  // It is still accumulated so a reply whose every block line is zero keeps its model row.
+  if (!usageCarriesTokens(usage)) {
+    accumulateUsage(state, timestamp.date, model, usage)
+    return
+  }
   // Every content-block line of this reply carries the same usage; bill only the first one.
   if (!claimUsageRecord(state, entry)) return
   accumulateUsage(state, timestamp.date, model, usage)

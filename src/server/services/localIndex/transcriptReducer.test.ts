@@ -623,6 +623,125 @@ describe('reduceTranscript activity usage', () => {
     expect(result.activity?.messageCount).toBe(2)
   })
 
+  it('bills the real usage of streaming placeholder lines whose usage is all zeros', () => {
+    // Magpie-style streaming: every block line before the final one carries usage all zeros;
+    // only the last line of the reply carries the real counts.
+    const zeroUsage = {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+    }
+    const chunks = completeChunks([
+      ...assistantBlockLines({
+        messageId: 'msg_stream',
+        requestId: 'req_stream',
+        timestamp: '2026-01-01T10:00:00.000Z',
+        model: 'glm-5.3',
+        usage: zeroUsage,
+        blocks: [{ type: 'thinking', thinking: 'hmm' }],
+      }),
+      ...assistantBlockLines({
+        messageId: 'msg_stream',
+        requestId: 'req_stream',
+        timestamp: '2026-01-01T10:00:01.000Z',
+        model: 'glm-5.3',
+        usage: { input_tokens: 1330, output_tokens: 542, cache_read_input_tokens: 60_800 },
+        blocks: [{ type: 'text', text: 'real' }],
+      }),
+    ])
+
+    const result = reduceTranscript(chunks, initialProjection())
+    expect(result.activity?.models).toHaveLength(1)
+    expect(result.activity?.models[0]).toMatchObject({
+      model: 'glm-5.3',
+      inputTokens: 1330,
+      outputTokens: 542,
+      cacheReadInputTokens: 60_800,
+    })
+  })
+
+  it('keeps counting a reply whose every block line has zero usage as zero, not missing', () => {
+    const zeroUsage = {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+    }
+    const chunks = completeChunks([
+      ...assistantBlockLines({
+        messageId: 'msg_all_zero',
+        requestId: 'req_all_zero',
+        timestamp: '2026-01-01T10:00:00.000Z',
+        model: 'glm-5.3',
+        usage: zeroUsage,
+        blocks: [{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }],
+      }),
+    ])
+
+    const result = reduceTranscript(chunks, initialProjection())
+    expect(result.activity?.models).toHaveLength(1)
+    expect(result.activity?.models[0]).toMatchObject({
+      model: 'glm-5.3',
+      inputTokens: 0,
+      outputTokens: 0,
+    })
+  })
+
+  it('bills repeated non-zero block lines once and does not double-count later updates', () => {
+    // Native Anthropic replies repeat one identical usage per block line: still billed once.
+    const chunks = completeChunks([
+      ...assistantBlockLines({
+        messageId: 'msg_native',
+        requestId: 'req_native',
+        timestamp: '2026-01-01T10:00:00.000Z',
+        usage: STANDARD_USAGE,
+        blocks: [{ type: 'text', text: 'one' }, { type: 'text', text: 'two' }],
+      }),
+      // A later content-block line repeating the same message id must not add again.
+      ...assistantBlockLines({
+        messageId: 'msg_native',
+        requestId: 'req_native',
+        timestamp: '2026-01-01T10:00:02.000Z',
+        usage: { input_tokens: 999_999, output_tokens: 888_888 },
+        blocks: [{ type: 'text', text: 'late block' }],
+      }),
+    ])
+
+    const result = reduceTranscript(chunks, initialProjection())
+    expect(result.activity?.models).toHaveLength(1)
+    expect(result.activity?.models[0]).toMatchObject({
+      inputTokens: 1000,
+      outputTokens: 200,
+    })
+  })
+
+  it('bills each distinct message id separately across requests', () => {
+    const chunks = completeChunks([
+      ...assistantBlockLines({
+        messageId: 'msg_a',
+        requestId: 'req_1',
+        timestamp: '2026-01-01T10:00:00.000Z',
+        usage: { input_tokens: 100, output_tokens: 10 },
+        blocks: [{ type: 'text', text: 'a' }],
+      }),
+      ...assistantBlockLines({
+        messageId: 'msg_b',
+        requestId: 'req_2',
+        timestamp: '2026-01-01T10:01:00.000Z',
+        usage: { input_tokens: 200, output_tokens: 20 },
+        blocks: [{ type: 'text', text: 'b' }],
+      }),
+    ])
+
+    const result = reduceTranscript(chunks, initialProjection())
+    expect(result.activity?.models).toHaveLength(1)
+    expect(result.activity?.models[0]).toMatchObject({
+      inputTokens: 300,
+      outputTokens: 30,
+    })
+  })
+
   it('estimates cost for Claude models and leaves third-party models unpriced', () => {
     const chunks = completeChunks([
       ...assistantBlockLines({

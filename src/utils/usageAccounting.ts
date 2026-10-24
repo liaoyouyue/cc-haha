@@ -166,6 +166,32 @@ export function isBillableUsageRecord(identity: UsageRecordIdentity): boolean {
 }
 
 /**
+ * Whether a `usage` object carries any tokens at all. Streaming gateways (Magpie and several
+ * OpenAI-compatible bridges) emit placeholder block lines whose usage is all zeros and only fill
+ * in the real counts on the final line of the reply. An all-zero line must not claim the
+ * deduplication key — otherwise it bills nothing and blocks the real usage from ever being counted.
+ */
+export function usageCarriesTokens(usage: {
+  input_tokens?: number
+  output_tokens?: number
+  cache_read_input_tokens?: number
+  cache_creation_input_tokens?: number
+  cache_creation?: {
+    ephemeral_5m_input_tokens?: number
+    ephemeral_1h_input_tokens?: number
+  } | null
+  server_tool_use?: { web_search_requests?: number } | null
+}): boolean {
+  if ((usage.input_tokens ?? 0) > 0) return true
+  if ((usage.output_tokens ?? 0) > 0) return true
+  if ((usage.cache_read_input_tokens ?? 0) > 0) return true
+  if ((usage.cache_creation_input_tokens ?? 0) > 0) return true
+  if ((usage.cache_creation?.ephemeral_5m_input_tokens ?? 0) > 0) return true
+  if ((usage.cache_creation?.ephemeral_1h_input_tokens ?? 0) > 0) return true
+  return false
+}
+
+/**
  * Conversation branches copy the selected prefix into a new transcript so the fork keeps its
  * context. Those lines retain their original usage and carry this provenance marker; the API calls
  * belong to the source session and must not be attributed to the fork a second time.
