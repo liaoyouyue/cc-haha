@@ -8227,6 +8227,21 @@ export function mapHistoryMessagesToUiMessages(
           })
         }
       }
+      if (subtype === 'memory_loaded') {
+        const files = normalizeMemoryEventFiles(msg.content).map((f) => ({ ...f, action: 'loaded' as const }))
+        if (files.length > 0) {
+          uiMessages.push({
+            id: msg.id || nextId(),
+            type: 'memory_event',
+            event: 'loaded',
+            files,
+            message: typeof (msg.content as { message?: unknown }).message === 'string'
+              ? (msg.content as { message: string }).message
+              : undefined,
+            timestamp,
+          })
+        }
+      }
     }
   }
   return uiMessages
@@ -8249,21 +8264,6 @@ function extractLastTodoWriteFromHistory(messages: MessageEntry[]): Array<{ cont
             foundIndex = i
             break
           }
-        }
-      }
-      if (subtype === 'memory_loaded') {
-        const files = normalizeMemoryEventFiles(msg.content).map((f) => ({ ...f, action: 'loaded' as const }))
-        if (files.length > 0) {
-          uiMessages.push({
-            id: msg.id || nextId(),
-            type: 'memory_event',
-            event: 'loaded',
-            files,
-            message: typeof (msg.content as { message?: unknown }).message === 'string'
-              ? (msg.content as { message: string }).message
-              : undefined,
-            timestamp,
-          })
         }
       }
       if (todos) break

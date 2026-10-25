@@ -24,7 +24,7 @@ const stats = {
   streaks: { currentStreak: 2, longestStreak: 3, currentStreakStart: null, longestStreakStart: null, longestStreakEnd: null },
   dailyActivity: [], dailyModelTokens: [], longestSession: null, modelUsage: {}, toolUsage: {}, skillUsage: {},
   firstSessionDate: null, lastSessionDate: null, peakActivityDay: null, peakActivityHour: null, totalSpeculationTimeSavedMs: 0,
-} as ActivityStatsResponse
+} as unknown as ActivityStatsResponse
 
 const models: RankedModel[] = [
   { id: 'a', label: 'Alpha', series: 1, total: 900, fresh: 100, cached: 800, costUSD: 1, unpriced: false },

@@ -20,7 +20,11 @@ import {
 } from './usageModel'
 
 function statsWith(overrides: Partial<ActivityStatsResponse>): ActivityStatsResponse {
-  return {
+  return ({
+    hourCounts: null,
+    dailyModelUsage: null,
+    projectUsage: null,
+    sessionUsage: null,
     range: 'all',
     generatedAt: '2026-10-17T12:00:00.000Z',
     totalSessions: 0,
@@ -40,7 +44,7 @@ function statsWith(overrides: Partial<ActivityStatsResponse>): ActivityStatsResp
     peakActivityHour: null,
     totalSpeculationTimeSavedMs: 0,
     ...overrides,
-  }
+  }) as unknown as ActivityStatsResponse
 }
 
 const usage = (input: number, cacheRead = 0) => ({ inputTokens: input, outputTokens: 0, cacheReadInputTokens: cacheRead })

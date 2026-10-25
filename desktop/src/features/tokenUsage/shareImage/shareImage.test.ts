@@ -140,7 +140,7 @@ describe('buildShareImageData', () => {
     streaks: { currentStreak: 10, longestStreak: 31, currentStreakStart: null, longestStreakStart: null, longestStreakEnd: null },
     dailyActivity: [], dailyModelTokens: [], longestSession: null, modelUsage: {}, toolUsage: {}, skillUsage: {},
     firstSessionDate: null, lastSessionDate: null, peakActivityDay: null, peakActivityHour: null, totalSpeculationTimeSavedMs: 0,
-  } as ActivityStatsResponse
+  } as unknown as ActivityStatsResponse
   const ranked: RankedModel[] = [
     { id: 'a', label: 'A', series: 1, total: 900, fresh: 100, cached: 800, costUSD: 0, unpriced: true },
     { id: 'b', label: 'B', series: 2, total: 100, fresh: 100, cached: 0, costUSD: 2.5, unpriced: false },

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { teamPlansApi } from '../../api/teamPlans'
 import { ChevronLeft, ChevronRight, Pause, Play, Radio, X } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { IconButton } from '@/components/ui/IconButton'
@@ -138,6 +139,8 @@ export function AgentTeamsWorkbench({ sessionId }: { sessionId: string }) {
   const [feedFocusedTaskId, setFeedFocusedTaskId] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const seenMessageIdsRef = useRef<Set<string> | null>(null)
+  const [planState, setPlanState] = useState<string | null>(null)
+  const [stopping, setStopping] = useState(false)
 
   const snapshots = timeline?.snapshots ?? []
   const latestIndex = snapshots.length - 1
@@ -161,20 +164,7 @@ export function AgentTeamsWorkbench({ sessionId }: { sessionId: string }) {
     return () => window.clearInterval(timer)
   }, [followingLive])
 
-  const stopTeam = async () => {
-    if (stopping) return
-    setStopping(true)
-    try {
-      const { plan } = await teamPlansApi.get(leadSessionId)
-      if (plan) await teamPlansApi.act(plan, 'stop', crypto.randomUUID())
-    } catch (error) {
-      console.error('[AgentTeamsWorkbench] cannot stop the team', error)
-    } finally {
-      setStopping(false)
-    }
-  }
-
-const visibleMessageIds = useMemo(
+  const visibleMessageIds = useMemo(
     () => snapshot?.messages.map(message => message.id) ?? [],
     [snapshot?.messages],
   )
@@ -272,6 +262,36 @@ const visibleMessageIds = useMemo(
     ? 100
     : Math.max(0, Math.min(100, (timelineValue / timelineExtent) * 100))
 
+  // running, which is what gates the stop control.
+  const leadSessionId = snapshot?.team.leadSessionId ?? sessionId
+  useEffect(() => {
+    if (!followingLive) return
+    let cancelled = false
+    const load = () => {
+      void teamPlansApi.get(leadSessionId)
+        .then(({ plan }) => { if (!cancelled) setPlanState(plan?.state ?? null) })
+        .catch(() => { if (!cancelled) setPlanState(null) })
+    }
+    load()
+    const timer = window.setInterval(load, 5000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [followingLive, leadSessionId])
+
+  const stopTeam = async () => {
+    if (stopping) return
+    setStopping(true)
+    try {
+      const { plan } = await teamPlansApi.get(leadSessionId)
+      if (plan) await teamPlansApi.act(plan, 'stop', crypto.randomUUID())
+    } catch (error) {
+      console.error('[AgentTeamsWorkbench] cannot stop the team', error)
+    } finally {
+      setStopping(false)
+    }
+  }
   const enterReplay = () => {
     setPlaying(false)
     setHistoryIndex(sessionId, Math.max(0, selectedIndex))
@@ -389,7 +409,6 @@ const visibleMessageIds = useMemo(
                 {t('agentTeams.reviewHistory')}
               </Button>
               {planState === 'running' || planState === 'launching' ? (
-  const [stopping, setStopping] = useState(false)
                 <Button
                   data-testid="agent-teams-stop-team"
                   variant="danger-outline"
