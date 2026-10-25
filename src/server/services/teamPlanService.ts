@@ -125,11 +125,6 @@ export class TeamPlanService {
       })
       return plan
     }
-    const plan = await mutateTeamPlan(teamName, action, current => {
-      if (kind === 'return' && current.state !== 'draft' && current.state !== 'review_pending') throw new TeamPlanError('Only a pending plan can return to planning')
-      if (kind === 'cancel' && current.state === 'running') throw new TeamPlanError('Use the running team stop control')
-      return { ...current, state: kind === 'cancel' ? 'cancelled' : 'draft', feedback: action.feedback }
-    })
     if (kind === 'stop') {
       const current = await readTeamPlan(teamName)
       if (!current) throw new TeamPlanError('Plan not found', 404)
@@ -147,17 +142,6 @@ export class TeamPlanService {
       return { ...current, state: kind === 'cancel' ? 'cancelled' : 'draft', feedback: action.feedback }
     })
     if (kind === 'cancel') await this.runtime.stop(plan.planId)
-    try {
-      await this.runtime.notifyLeader?.(plan, kind === 'cancel' ? 'cancelled' : 'returned')
-    } catch (error) {
-      // The control transition already committed. Preserve the delivery failure
-      // on the durable draft instead of inviting a duplicate control action.
-      return mutateTeamPlan(teamName, { ...plan, expectedRevision: plan.revision }, current => ({ ...current, controlDeliveryError: error instanceof Error ? error.message : String(error) }))
-    }
-    return plan
-  }
-}
-export const teamPlanService = new TeamPlanService()    if (kind === 'cancel') await this.runtime.stop(plan.planId)
     try {
       await this.runtime.notifyLeader?.(plan, kind === 'cancel' ? 'cancelled' : 'returned')
     } catch (error) {
