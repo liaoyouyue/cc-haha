@@ -343,6 +343,9 @@ async function listLiveMarketSkills(params: MarketListParams): Promise<MarketLis
     merged = merged.filter((item) => item.securityStatus === params.security)
   }
   if (params.installed && params.installed !== 'all') {
+    if (params.installed === 'installed' && isFirstPage && !params.q) {
+      merged = await withLocallyInstalled(merged)
+    }
     merged = merged.filter((item) =>
       params.installed === 'installed'
         ? item.installState === 'installed'
@@ -351,6 +354,37 @@ async function listLiveMarketSkills(params: MarketListParams): Promise<MarketLis
   }
 
   return { scope: 'market', items: merged, nextCursor: encodeCursor(nextCursor), sources }
+}
+
+/**
+ * The live market only lists the first ~100 entries per source, so a locally
+ * installed skill that has fallen off that page would make the "installed"
+ * filter show an empty list. When the first unfiltered page is showing, walk
+ * the skills directory and hydrate the installed skills the page is missing
+ * from the providers' detail endpoints (cached). Skills whose details cannot
+ * be fetched are skipped — they stay visible through their local metadata
+ * elsewhere, and a half card is worse than none.
+ */
+async function withLocallyInstalled(page: NormalizedSkill[]): Promise<NormalizedSkill[]> {
+  let dirs: string[]
+  try {
+    dirs = await fs.readdir(getMarketSkillsDir())
+  } catch {
+    return page
+  }
+  const onPage = new Set(page.map((item) => item.id))
+  const hydrated: NormalizedSkill[] = []
+  for (const dirName of dirs) {
+    const meta = await readMarketMeta(dirName)
+    if (!meta || onPage.has(meta.id)) continue
+    try {
+      const { skill } = await getMarketSkillDetail(meta.source, meta.slug)
+      hydrated.push(skill as unknown as NormalizedSkill)
+    } catch {
+      // Offline or the skill was removed upstream; skip rather than show a stub.
+    }
+  }
+  return [...page, ...hydrated]
 }
 
 /**
