@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite'
 import { getEventListeners } from 'node:events'
 import { appendFile, chmod, mkdir, mkdtemp, open, readdir, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { openLocalIndexDatabase, type LocalIndexDatabase } from './database.js'
 import {
   createLocalIndexCoordinator,
@@ -45,6 +45,22 @@ async function createTempDir(label: string): Promise<string> {
   return directory
 }
 
+/**
+ * Bun's fs/promises ignores rm's maxRetries/retryDelay, and Windows releases SQLite file
+ * handles asynchronously, so a plain rm right after a close hits EBUSY.
+ */
+async function removeTempDir(directory: string): Promise<void> {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    try {
+      await rm(directory, { recursive: true, force: true })
+      return
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EBUSY' || attempt === 9) throw error
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+  }
+}
+
 function restoreEnvironment(name: EnvironmentName): void {
   const value = originalEnvironment[name]
   if (value === undefined) delete process.env[name]
@@ -55,9 +71,7 @@ afterEach(async () => {
   for (const name of ['HOME', 'CLAUDE_CONFIG_DIR', 'CC_HAHA_LOCAL_INDEX'] as const) {
     restoreEnvironment(name)
   }
-  await Promise.all(tempDirs.splice(0).map(directory =>
-    rm(directory, { recursive: true, force: true }),
-  ))
+  await Promise.all(tempDirs.splice(0).map(removeTempDir))
 })
 
 function rememberEnvironment(): void {
@@ -407,9 +421,12 @@ describe('local index coordinator', () => {
     const outside = join(configDir, 'outside.jsonl')
     const linked = join(configDir, 'projects', '-repo', 'linked.jsonl')
     await writeFile(outside, await Bun.file(second.path).text())
-    await symlink(outside, linked)
-    await watcherOptions.onBatch({ paths: [linked], fullSweep: false })
-    expect(coordinator.listSessions({ limit: 10 }).total).toBe(2)
+    // Windows only lets an elevated or developer-mode process create symlinks.
+    const symlinksUsable = await symlink(outside, linked).then(() => true, () => false)
+    if (symlinksUsable) {
+      await watcherOptions.onBatch({ paths: [linked], fullSweep: false })
+      expect(coordinator.listSessions({ limit: 10 }).total).toBe(2)
+    }
 
     await rm(first.path)
     await watcherOptions.onBatch({ paths: [first.path], fullSweep: false })
@@ -2383,7 +2400,7 @@ describe('discoverActivityTranscriptSources', () => {
 
     const result = await discoverActivityTranscriptSources(root, new AbortController().signal)
 
-    const names = result.candidates.map(candidate => candidate.path.split('/').pop()).sort()
+    const names = result.candidates.map(candidate => basename(candidate.path)).sort()
     // agent-wf.jsonl lives at subagents/workflows/<wf_id>/ — the level that used to be skipped
     // entirely, leaving every workflow agent's tokens and tool calls out of the stats.
     expect(names).toEqual([

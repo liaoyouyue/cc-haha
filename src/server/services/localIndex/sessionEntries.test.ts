@@ -506,13 +506,16 @@ describe('targeted session entry reads', () => {
       })).toBeNull()
 
       const link = join(root, 'projects', '-tmp-project', 'linked.jsonl')
-      await symlink(outside, link)
-      expect(await readSessionEntriesByLocator({
-        transcriptPath: link,
-        projectsRoot: join(root, 'projects'),
-        expectedProjectDir: '-tmp-project',
-        page: { ...page, source: { ...page.source, path: link } },
-      })).toBeNull()
+      // Windows only lets an elevated or developer-mode process create symlinks.
+      const symlinksUsable = await symlink(outside, link).then(() => true, () => false)
+      if (symlinksUsable) {
+        expect(await readSessionEntriesByLocator({
+          transcriptPath: link,
+          projectsRoot: join(root, 'projects'),
+          expectedProjectDir: '-tmp-project',
+          page: { ...page, source: { ...page.source, path: link } },
+        })).toBeNull()
+      }
     } finally {
       database.close()
     }

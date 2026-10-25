@@ -3,6 +3,7 @@ import { Database } from 'bun:sqlite'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { fileURLToPath } from 'node:url'
 import {
   commitSearchContentSpool,
   getSearchCommitWorkerForTests,
@@ -135,9 +136,12 @@ test('inline SQLite commit worker survives bun --compile without external worker
   directories.push(directory)
   const script = join(directory, 'entry.ts')
   const binary = join(directory, 'compiled-search')
-  const databaseModule = new URL('./searchContentDatabase.ts', import.meta.url).pathname
-  const indexModule = new URL('./searchContentIndex.ts', import.meta.url).pathname
-  const projectorModule = new URL('./searchContentProjector.ts', import.meta.url).pathname
+  // `.pathname` yields `/C:/...` on Windows, which Bun's resolver cannot open.
+  const modulePath = (relative: string) =>
+    fileURLToPath(new URL(relative, import.meta.url))
+  const databaseModule = modulePath('./searchContentDatabase.ts')
+  const indexModule = modulePath('./searchContentIndex.ts')
+  const projectorModule = modulePath('./searchContentProjector.ts')
   await writeFile(script, `
     import { writeFile } from 'node:fs/promises'
     import { join } from 'node:path'

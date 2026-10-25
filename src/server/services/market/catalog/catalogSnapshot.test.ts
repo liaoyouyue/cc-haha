@@ -72,8 +72,11 @@ describe('buildCatalogSnapshot', () => {
     const { snapshot, problems } = buildCatalogSnapshot(curation, reads, shipped.generatedAt)
 
     expect(problems).toEqual([])
-    // Byte-for-byte: the refresh script writes exactly this serialization.
-    expect(`${JSON.stringify(snapshot, null, 1)}\n`).toBe(await fs.readFile(path.join(import.meta.dir, 'skills.json'), 'utf-8'))
+    // Byte-for-byte: the refresh script writes exactly this serialization. The checkout may
+    // have normalized the committed file to CRLF (core.autocrlf on Windows), which is not a
+    // content difference, so compare with line endings folded.
+    const shippedText = await fs.readFile(path.join(import.meta.dir, 'skills.json'), 'utf-8')
+    expect(`${JSON.stringify(snapshot, null, 1)}\n`).toBe(shippedText.replace(/\r\n/g, '\n'))
   })
 
   it('drops duplicates, unknown categories, missing reads, malicious and unexplained suspicious entries', () => {
