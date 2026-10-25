@@ -112,3 +112,28 @@ describe('capability mention model text readers', () => {
     expect(deriveTitle(`${skillText} 写周报`)).toBe('/quoted"name 写周报')
   })
 })
+
+
+test('lean discovery hides known fork, MCP and plugin containers while preserving inline skills', () => {
+  const owner = plugin('fixture', { mcpServers: { remote: { type: 'http', url: 'https://example.invalid' } } })
+  const result = buildCapabilityMentions({ agentProfile: 'lean', enabledPlugins: [owner], commands: [
+    skill('inline'), skill('forked', { context: 'fork' }), skill('remote', { source: 'mcp' }),
+    pluginSkill('fixture:inline', owner),
+  ] })
+  expect(result.skills.map(item => item.name).sort()).toEqual(['fixture:inline', 'inline'])
+  expect(result.plugins).toEqual([])
+})
+
+test('lean discovery offers the compatible same-named skill the lean runtime would invoke', () => {
+  // Lean SkillTool filters incompatible commands before resolving a name, so a
+  // forked bundled skill cannot shadow a same-named inline disk skill there.
+  const forked = skill('review', { source: 'bundled', loadedFrom: 'bundled', context: 'fork', description: 'Forked built-in' })
+  const inline = skill('review', { description: 'Inline personal skill' })
+  const lean = buildCapabilityMentions({ agentProfile: 'lean', enabledPlugins: [], commands: [forked, inline] })
+  expect(lean.skills).toHaveLength(1)
+  expect(lean.skills[0]).toMatchObject({ name: 'review', source: 'userSettings', description: 'Inline personal skill' })
+  // Standard discovery keeps the first command, like the standard runtime lookup.
+  const standard = buildCapabilityMentions({ enabledPlugins: [], commands: [forked, inline] })
+  expect(standard.skills).toHaveLength(1)
+  expect(standard.skills[0]).toMatchObject({ name: 'review', source: 'bundled' })
+})

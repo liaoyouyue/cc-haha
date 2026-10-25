@@ -47,11 +47,12 @@ export function useKeyboardShortcuts() {
       }
 
       const meta = e.metaKey || e.ctrlKey
+      // Cmd alone on macOS, Ctrl alone elsewhere.
+      const primaryChord = detectPlatform() === 'mac' ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey
 
       // Cmd+N — what the sidebar's "New session" item does (it shows ⌘N).
       // Cmd only on macOS: Ctrl+N is "next line" in a macOS text field.
-      const newSessionChord = detectPlatform() === 'mac' ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey
-      if (newSessionChord && e.key.toLowerCase() === 'n' && !e.shiftKey && !e.altKey) {
+      if (primaryChord && e.key.toLowerCase() === 'n' && !e.shiftKey && !e.altKey) {
         e.preventDefault()
         useUIStore.getState().requestNewSession()
       }
@@ -62,8 +63,10 @@ export function useKeyboardShortcuts() {
         openModal('globalSearch')
       }
 
-      // Ctrl+F — Open find-in-page bar
-      if (meta && e.key === 'f') {
+      // Cmd+F (Ctrl+F off macOS) — Open find-in-page bar. Only the bare chord:
+      // ⌃⌘F is the macOS View menu's fullscreen accelerator, and the menu never
+      // sees a key this handler has already prevented.
+      if (primaryChord && e.key === 'f') {
         e.preventDefault()
         openModal('findInPage')
       }

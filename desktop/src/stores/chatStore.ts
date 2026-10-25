@@ -89,6 +89,13 @@ export type RepositoryLaunchDraftState = {
   workDir: string
   branch: string | null
   useWorktree: boolean
+  /**
+   * `branch` is one the launch controls chose on their own, not the user's pick.
+   * The controls are mounted again whenever the user returns to the chat, so
+   * this is what lets them keep following the checkout instead of launching a
+   * branch that has gone stale. Memory only, like the rest of the draft.
+   */
+  branchAutomatic?: boolean
 }
 
 export type QueuedUserMessage = {
@@ -8220,21 +8227,6 @@ export function mapHistoryMessagesToUiMessages(
           })
         }
       }
-      if (subtype === 'memory_loaded') {
-        const files = normalizeMemoryEventFiles(msg.content).map((f) => ({ ...f, action: 'loaded' as const }))
-        if (files.length > 0) {
-          uiMessages.push({
-            id: msg.id || nextId(),
-            type: 'memory_event',
-            event: 'loaded',
-            files,
-            message: typeof (msg.content as { message?: unknown }).message === 'string'
-              ? (msg.content as { message: string }).message
-              : undefined,
-            timestamp,
-          })
-        }
-      }
     }
   }
   return uiMessages
@@ -8257,6 +8249,21 @@ function extractLastTodoWriteFromHistory(messages: MessageEntry[]): Array<{ cont
             foundIndex = i
             break
           }
+        }
+      }
+      if (subtype === 'memory_loaded') {
+        const files = normalizeMemoryEventFiles(msg.content).map((f) => ({ ...f, action: 'loaded' as const }))
+        if (files.length > 0) {
+          uiMessages.push({
+            id: msg.id || nextId(),
+            type: 'memory_event',
+            event: 'loaded',
+            files,
+            message: typeof (msg.content as { message?: unknown }).message === 'string'
+              ? (msg.content as { message: string }).message
+              : undefined,
+            timestamp,
+          })
         }
       }
       if (todos) break

@@ -337,7 +337,6 @@ describe('Electron application menu service', () => {
     const onceHandlers = new Map<string, (...args: never[]) => void>()
     const window = {
       isFullScreen: () => true,
-      isSimpleFullScreen: () => false,
       once: vi.fn((event: string, handler: (...args: never[]) => void) => {
         onceHandlers.set(event, handler)
       }),
@@ -369,11 +368,11 @@ describe('Electron application menu service', () => {
     expect(appHide).toHaveBeenCalledTimes(1)
   })
 
-  it('installs fullscreen as simple fullscreen on macOS instead of native Spaces', async () => {
+  it('installs fullscreen as a native macOS fullscreen Space', async () => {
     const window = {
-      isSimpleFullScreen: () => false,
+      isSimpleFullScreen: vi.fn(),
       setSimpleFullScreen: vi.fn(),
-      isFullScreen: vi.fn(),
+      isFullScreen: () => false,
       setFullScreen: vi.fn(),
       webContents: { send: vi.fn() },
     }
@@ -391,8 +390,8 @@ describe('Electron application menu service', () => {
       .find(item => item.label === 'Toggle Full Screen')
 
     fullScreenItem?.click?.({} as never, {} as never, {} as never)
-    expect(window.setSimpleFullScreen).toHaveBeenCalledWith(true)
-    expect(window.setFullScreen).not.toHaveBeenCalled()
+    expect(window.setFullScreen).toHaveBeenCalledWith(true)
+    expect(window.setSimpleFullScreen).not.toHaveBeenCalled()
   })
 })
 

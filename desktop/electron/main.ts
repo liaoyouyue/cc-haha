@@ -96,6 +96,7 @@ import {
   readCustomPetSourceImage,
 } from './services/pets'
 import {
+  installFullScreenKey,
   installWindowLifecycle,
   readWindowState,
   refreshWindowsDragHitTest,
@@ -961,6 +962,7 @@ async function createMainWindow() {
     window: mainWindow,
     shouldQuit: () => isQuitting,
   })
+  installFullScreenKey(mainWindow, process.platform)
 
   const window = mainWindow
   const diagnosticsFile = electronHostDiagnosticsFile(process.env)

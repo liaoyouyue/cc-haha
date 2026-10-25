@@ -1786,6 +1786,179 @@ describe('ProviderService', () => {
     })
   })
 
+  // ─── checkAuthStatus(providerId) ─────────────────────────────────────────
+
+  describe('checkAuthStatus for an explicitly selected provider', () => {
+    let originalApiKey: string | undefined
+    let originalAuthToken: string | undefined
+
+    beforeEach(() => {
+      originalApiKey = process.env.ANTHROPIC_API_KEY
+      originalAuthToken = process.env.ANTHROPIC_AUTH_TOKEN
+      delete process.env.ANTHROPIC_API_KEY
+      delete process.env.ANTHROPIC_AUTH_TOKEN
+    })
+
+    afterEach(() => {
+      if (originalApiKey === undefined) delete process.env.ANTHROPIC_API_KEY
+      else process.env.ANTHROPIC_API_KEY = originalApiKey
+      if (originalAuthToken === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN
+      else process.env.ANTHROPIC_AUTH_TOKEN = originalAuthToken
+    })
+
+    async function writeGrant(file: string, value: Record<string, unknown>) {
+      await fs.mkdir(path.join(tmpDir, 'cc-haha'), { recursive: true })
+      await fs.writeFile(path.join(tmpDir, 'cc-haha', file), JSON.stringify(value), 'utf-8')
+    }
+
+    async function writeOriginalSettingsAuth() {
+      await fs.writeFile(
+        path.join(tmpDir, 'settings.json'),
+        JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: 'fake-original-settings-token' } }),
+        'utf-8',
+      )
+    }
+
+    test('a saved provider with its own key has auth while the global default has none', async () => {
+      const svc = new ProviderService()
+      const provider = await svc.addProvider(sampleInput())
+
+      // Global default: Claude Official without OAuth or ambient credentials.
+      await expect(svc.checkAuthStatus()).resolves.toEqual({ hasAuth: false, source: 'none' })
+      await expect(svc.checkAuthStatus(provider.id)).resolves.toEqual({
+        hasAuth: true,
+        source: 'cc-haha-provider',
+        activeProvider: 'Test Provider',
+      })
+    })
+
+    test('a saved provider without its own key ignores ambient credentials', async () => {
+      const svc = new ProviderService()
+      const keyless = await svc.addProvider(sampleInput({ name: 'Keyless', apiKey: '' }))
+      process.env.ANTHROPIC_API_KEY = 'fake-ambient-env-key'
+      await writeOriginalSettingsAuth()
+
+      // The global check keeps its historical fallback to ambient credentials.
+      await expect(svc.checkAuthStatus()).resolves.toEqual({ hasAuth: true, source: 'env' })
+      // A session pinned to this provider runs on the provider's own env.
+      await expect(svc.checkAuthStatus(keyless.id)).resolves.toEqual({
+        hasAuth: false,
+        source: 'none',
+        activeProvider: 'Keyless',
+      })
+
+      await svc.activateProvider(keyless.id)
+      await expect(svc.checkAuthStatus()).resolves.toEqual({ hasAuth: true, source: 'env' })
+      delete process.env.ANTHROPIC_API_KEY
+      await expect(svc.checkAuthStatus()).resolves.toEqual({ hasAuth: true, source: 'original-settings' })
+      await expect(svc.checkAuthStatus(keyless.id)).resolves.toEqual({
+        hasAuth: false,
+        source: 'none',
+        activeProvider: 'Keyless',
+      })
+    })
+
+    test('claude-official counts its desktop OAuth, then the settings file its CLI reads, never inherited env or the active provider key', async () => {
+      const svc = new ProviderService()
+      const provider = await svc.addProvider(sampleInput())
+      await svc.activateProvider(provider.id)
+      await expect(svc.checkAuthStatus()).resolves.toMatchObject({ hasAuth: true, source: 'cc-haha-provider' })
+
+      await expect(svc.checkAuthStatus('claude-official')).resolves.toEqual({ hasAuth: false, source: 'none' })
+      // An expired grant that cannot be refreshed is not a credential.
+      await writeGrant('oauth.json', {
+        accessToken: 'fake-expired-access',
+        refreshToken: '',
+        expiresAt: Date.now() - 60 * 60_000,
+        scopes: [],
+      })
+      await expect(svc.checkAuthStatus('claude-official')).resolves.toEqual({ hasAuth: false, source: 'none' })
+
+      // The CLI started for this pick runs without the server's inherited
+      // ANTHROPIC_* variables, so they would only end in "Not logged in".
+      for (const name of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'] as const) {
+        process.env[name] = 'fake-ambient-env-credential'
+        await expect(svc.checkAuthStatus('claude-official')).resolves.toEqual({ hasAuth: false, source: 'none' })
+        delete process.env[name]
+      }
+      // The original settings file is applied by that CLI itself, so it counts.
+      await writeOriginalSettingsAuth()
+      await expect(svc.checkAuthStatus('claude-official')).resolves.toEqual({ hasAuth: true, source: 'original-settings' })
+
+      await writeGrant('oauth.json', {
+        accessToken: 'fake-claude-access',
+        refreshToken: 'fake-claude-refresh',
+        expiresAt: Date.now() + 60 * 60_000,
+        scopes: [],
+        subscriptionType: 'pro',
+      })
+      await expect(svc.checkAuthStatus('claude-official')).resolves.toEqual({
+        hasAuth: true,
+        source: 'claude-oauth',
+        activeProvider: 'Claude Official',
+      })
+    })
+
+    test('an explicit claude-official pick drops the env fallback the Claude Official global default keeps', async () => {
+      const svc = new ProviderService()
+      for (const name of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'] as const) {
+        process.env[name] = 'fake-ambient-env-credential'
+        // The global default (activeId null) keeps its historical answer.
+        await expect(svc.checkAuthStatus()).resolves.toEqual({ hasAuth: true, source: 'env' })
+        await expect(svc.checkAuthStatus('claude-official')).resolves.toEqual({ hasAuth: false, source: 'none' })
+        delete process.env[name]
+      }
+
+      await writeOriginalSettingsAuth()
+      await expect(svc.checkAuthStatus()).resolves.toEqual({ hasAuth: true, source: 'original-settings' })
+      await expect(svc.checkAuthStatus('claude-official')).resolves.toEqual({ hasAuth: true, source: 'original-settings' })
+    })
+
+    test('built-in account providers count only their own grant files', async () => {
+      const svc = new ProviderService()
+      const provider = await svc.addProvider(sampleInput())
+      await svc.activateProvider(provider.id)
+      process.env.ANTHROPIC_API_KEY = 'fake-ambient-env-key'
+      await writeOriginalSettingsAuth()
+
+      const builtIns = [
+        ['openai-official', 'ChatGPT Official', 'openai-oauth'],
+        ['grok-official', 'Grok Official', 'grok-oauth'],
+        ['deepseek-account', 'DeepSeek Account', 'deepseek-oauth'],
+      ] as const
+      for (const [id, name] of builtIns) {
+        await expect(svc.checkAuthStatus(id)).resolves.toEqual({ hasAuth: false, source: 'none', activeProvider: name })
+      }
+
+      const expiresAt = Date.now() + 60 * 60_000
+      await writeGrant('openai-oauth.json', {
+        accessToken: 'fake-openai-access', refreshToken: 'fake-openai-refresh', expiresAt,
+        email: 'user@example.com', accountId: 'acct_fixture',
+      })
+      await writeGrant('grok-oauth.json', {
+        accessToken: 'fake-grok-access', refreshToken: 'fake-grok-refresh', expiresAt,
+        email: 'grok@example.com', clientId: 'grok-client',
+      })
+      await writeGrant('deepseek-oauth.json', {
+        token: 'dsh_fake_account_token', issuer: 'https://platform.deepseek.com', deviceId: 'device-fixture',
+      })
+      for (const [id, name, source] of builtIns) {
+        await expect(svc.checkAuthStatus(id)).resolves.toEqual({ hasAuth: true, source, activeProvider: name })
+      }
+    })
+
+    test('an unknown provider id has no auth and is not echoed back', async () => {
+      const svc = new ProviderService()
+      const provider = await svc.addProvider(sampleInput())
+      await svc.activateProvider(provider.id)
+      process.env.ANTHROPIC_API_KEY = 'fake-ambient-env-key'
+
+      for (const id of ['missing-provider', '../providers.json', 'x'.repeat(4096)]) {
+        await expect(svc.checkAuthStatus(id)).resolves.toEqual({ hasAuth: false, source: 'none' })
+      }
+    })
+  })
+
   // ─── getProviderForProxy ─────────────────────────────────────────────────
 
   describe('getProviderForProxy', () => {
@@ -3664,6 +3837,64 @@ describe('Providers API', () => {
     expect((await list()).deepSeekAccountModels).toEqual(saved)
   })
 
+  // ─── GET /api/providers/auth-status ──────────────────────────────────────
+
+  test('GET /api/providers/auth-status scopes the check to providerId and never returns keys', async () => {
+    const originalApiKey = process.env.ANTHROPIC_API_KEY
+    const originalAuthToken = process.env.ANTHROPIC_AUTH_TOKEN
+    delete process.env.ANTHROPIC_API_KEY
+    delete process.env.ANTHROPIC_AUTH_TOKEN
+    try {
+      const svc = new ProviderService()
+      const keyed = await svc.addProvider(sampleInput({ name: 'Keyed', apiKey: 'sk-fixture-secret-123' }))
+      const keyless = await svc.addProvider(sampleInput({ name: 'Keyless', apiKey: '' }))
+      await svc.activateProvider(keyed.id)
+      // Every explicit pick below is judged beside an inherited server credential,
+      // which no CLI started for an explicit provider receives.
+      process.env.ANTHROPIC_API_KEY = 'fake-server-env-key'
+      const authStatus = async (query: string) => {
+        const { req, url, segments } = makeRequest('GET', `/api/providers/auth-status${query}`)
+        const res = await handleProvidersApi(req, url, segments)
+        expect(res.status).toBe(200)
+        const text = await res.text()
+        for (const secret of ['sk-fixture-secret-123', 'fake-server-env-key', 'fake-settings-token']) {
+          expect(text).not.toContain(secret)
+        }
+        return JSON.parse(text) as Record<string, unknown>
+      }
+      const globalDefault = { hasAuth: true, source: 'cc-haha-provider', activeProvider: 'Keyed' }
+
+      // Without (or with a blank) providerId the global default is evaluated as before.
+      expect(await authStatus('')).toEqual(globalDefault)
+      expect(await authStatus('?providerId=')).toEqual(globalDefault)
+      expect(await authStatus('?providerId=%20%20')).toEqual(globalDefault)
+
+      const keylessStatus = { hasAuth: false, source: 'none', activeProvider: 'Keyless' }
+      expect(await authStatus(`?providerId=${encodeURIComponent(keyless.id)}`)).toEqual(keylessStatus)
+      expect(await authStatus(`?providerId=${encodeURIComponent(` ${keyless.id} `)}`)).toEqual(keylessStatus)
+      expect(await authStatus(`?providerId=${encodeURIComponent(keyed.id)}`)).toEqual(globalDefault)
+      expect(await authStatus('?providerId=claude-official')).toEqual({ hasAuth: false, source: 'none' })
+      expect(await authStatus('?providerId=openai-official')).toEqual({
+        hasAuth: false, source: 'none', activeProvider: 'ChatGPT Official',
+      })
+      expect(await authStatus('?providerId=not-a-provider')).toEqual({ hasAuth: false, source: 'none' })
+
+      // The original settings file is read by the Claude Official CLI itself.
+      await fs.writeFile(
+        path.join(tmpDir, 'settings.json'),
+        JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: 'fake-settings-token' } }),
+        'utf-8',
+      )
+      expect(await authStatus('?providerId=claude-official')).toEqual({ hasAuth: true, source: 'original-settings' })
+      expect(await authStatus(`?providerId=${encodeURIComponent(keyless.id)}`)).toEqual(keylessStatus)
+    } finally {
+      if (originalApiKey === undefined) delete process.env.ANTHROPIC_API_KEY
+      else process.env.ANTHROPIC_API_KEY = originalApiKey
+      if (originalAuthToken === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN
+      else process.env.ANTHROPIC_AUTH_TOKEN = originalAuthToken
+    }
+  })
+
   // ─── POST /api/providers ─────────────────────────────────────────────────
 
   test('POST /api/providers should create a provider', async () => {
@@ -4198,6 +4429,16 @@ describe('OpenCode Go preset request contract', () => {
           usage: { input_tokens: 3, output_tokens: 1 },
         })
       }
+      const geminiResponse = {
+        candidates: [{ content: { role: 'model', parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
+        usageMetadata: { promptTokenCount: 3, candidatesTokenCount: 1, totalTokenCount: 4 },
+      }
+      if (url.endsWith(':generateContent')) return Response.json(geminiResponse)
+      if (url.endsWith(':streamGenerateContent?alt=sse')) {
+        return new Response(`data: ${JSON.stringify(geminiResponse)}\r\n\r\n`, {
+          headers: { 'Content-Type': 'text/event-stream' },
+        })
+      }
       return Response.json({ error: 'Wrong request endpoint' }, { status: 404 })
     }) as typeof fetch
     return () => { globalThis.fetch = originalFetch }
@@ -4261,7 +4502,7 @@ describe('OpenCode Go preset request contract', () => {
     const calls: UpstreamCall[] = []
     const restore = stubUpstream(calls)
     try {
-      for (const model of ['glm-5.3', 'minimax-m3', 'grok-4.6']) {
+      for (const model of ['glm-5.3', 'minimax-m3', 'grok-4.6', 'gemini-4-argon-contributor']) {
         calls.length = 0
         const response = await proxy(provider.id, {
           model, max_tokens: 32, messages: [{ role: 'user', content: 'hello' }],
@@ -4275,6 +4516,151 @@ describe('OpenCode Go preset request contract', () => {
       }
     } finally {
       restore()
+    }
+  })
+
+  // The gateway rejects Gemini on every OpenAI and Anthropic path with
+  // `ModelProtocolUnsupported`; it serves it only over Google generateContent,
+  // which lives outside /zen/go/v1.
+  test('serves Gemini over Google generateContent with the Gemini credential header', async () => {
+    const { provider } = await createProvider()
+    const calls: UpstreamCall[] = []
+    const restore = stubUpstream(calls)
+    try {
+      // The id as the CLI sends it for a 1M-context slot.
+      const response = await proxy(provider.id, {
+        model: 'gemini-4-argon-contributor[1m]', max_tokens: 32, messages: [{ role: 'user', content: 'hello' }],
+      })
+      expect(response.status).toBe(200)
+      expect(await response.json()).toMatchObject({
+        type: 'message', model: 'gemini-4-argon-contributor', stop_reason: 'end_turn',
+        content: [{ type: 'text', text: 'ok' }],
+      })
+      expect(calls).toHaveLength(1)
+      expect(calls[0].url).toBe('https://opencode.ai/inference/go/google/v1beta/models/gemini-4-argon-contributor:generateContent')
+      expect(calls[0].headers.get('x-goog-api-key')).toBe(apiKey)
+      expect(calls[0].headers.get('authorization')).toBeNull()
+      expect(calls[0].headers.get('x-opencode-session')).toBe(SESSION_ID)
+      expect(calls[0].headers.get('user-agent')).toMatch(/^cc-haha\//)
+      expect(calls[0].body).toEqual({
+        contents: [{ role: 'user', parts: [{ text: 'hello' }] }],
+        generationConfig: { maxOutputTokens: 32 },
+      })
+    } finally {
+      restore()
+    }
+  })
+
+  test('streams Gemini and follows a response split across requests', async () => {
+    const { provider } = await createProvider()
+    const calls: UpstreamCall[] = []
+    const originalFetch = globalThis.fetch
+    const frames = [
+      { candidates: [{ content: { role: 'model', parts: [{ text: 'Hello' }] }, finishReason: 'CONTINUATION', continuationToken: 'token-1' }] },
+      { candidates: [{ content: { role: 'model', parts: [{ text: ' there' }] }, finishReason: 'STOP' }] },
+    ]
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(input), headers: new Headers(init?.headers), body: JSON.parse(String(init?.body)) })
+      return new Response(`data: ${JSON.stringify(frames[calls.length - 1])}\r\n\r\n`, {
+        headers: { 'Content-Type': 'text/event-stream' },
+      })
+    }) as typeof fetch
+    try {
+      const response = await proxy(provider.id, {
+        model: 'gemini-4-argon-contributor', max_tokens: 32, stream: true,
+        thinking: { type: 'adaptive' }, output_config: { effort: 'xhigh' },
+        messages: [{ role: 'user', content: 'hello' }],
+      })
+      expect(response.status).toBe(200)
+      const text = await response.text()
+      expect(text).toContain('"text":"Hello"')
+      expect(text).toContain('"text":" there"')
+      expect(text).toContain('"stop_reason":"end_turn"')
+      expect(text).toContain('event: message_stop')
+
+      expect(calls).toHaveLength(2)
+      expect(calls[0].url).toBe('https://opencode.ai/inference/go/google/v1beta/models/gemini-4-argon-contributor:streamGenerateContent?alt=sse')
+      expect(calls[0].body.generationConfig.thinkingConfig).toEqual({ includeThoughts: true, thinkingLevel: 'high' })
+      // The continuation is the same request plus the token, on the same session.
+      expect(calls[1].url).toBe(calls[0].url)
+      expect(calls[1].body).toEqual({ ...calls[0].body, continuationToken: 'token-1' })
+      expect(calls[1].headers.get('x-opencode-session')).toBe(SESSION_ID)
+      expect(calls[1].headers.get('x-goog-api-key')).toBe(apiKey)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('reports every Gemini failure to the CLI as an error, never as a reply', async () => {
+    const { provider } = await createProvider()
+    const originalFetch = globalThis.fetch
+    const sse = (chunk: unknown) => new Response(`data: ${JSON.stringify(chunk)}\r\n\r\n`, {
+      headers: { 'Content-Type': 'text/event-stream' },
+    })
+    const cases: Array<{
+      name: string
+      stream: boolean
+      upstream: Array<() => Response>
+      status: number
+      message: string
+    }> = [
+      {
+        name: 'quota exhausted',
+        stream: false,
+        upstream: [() => Response.json({ error: { code: 429, message: 'Resource exhausted', status: 'RESOURCE_EXHAUSTED' } }, { status: 429 })],
+        // The upstream status reaches the CLI so its rate-limit retry applies.
+        status: 429,
+        message: 'Upstream returned HTTP 429: {"error":{"code":429,"message":"Resource exhausted"',
+      },
+      {
+        name: 'connection failure',
+        stream: true,
+        upstream: [() => { throw new TypeError('fetch failed') }],
+        status: 502,
+        message: 'fetch failed',
+      },
+      {
+        name: 'stream without a body',
+        stream: true,
+        upstream: [() => new Response(null, { status: 200 })],
+        status: 502,
+        message: 'Upstream returned no body for stream',
+      },
+      {
+        name: 'safety stop with no output',
+        stream: false,
+        upstream: [() => Response.json({ candidates: [{ finishReason: 'SAFETY' }] })],
+        status: 502,
+        message: 'Gemini stopped with SAFETY',
+      },
+      {
+        name: 'refused continuation',
+        stream: true,
+        upstream: [
+          () => sse({ candidates: [{ content: { role: 'model', parts: [{ text: 'Partial' }] }, finishReason: 'CONTINUATION', continuationToken: 'token-1' }] }),
+          () => Response.json({ error: { code: 500, message: 'backend unavailable', status: 'INTERNAL' } }, { status: 500 }),
+        ],
+        // Headers were already sent; the failure arrives as the stream's error event.
+        status: 200,
+        message: 'Gemini continuation returned HTTP 500: backend unavailable',
+      },
+    ]
+    try {
+      for (const { name, stream, upstream, status, message } of cases) {
+        let call = 0
+        globalThis.fetch = (async () => upstream[call++]!()) as unknown as typeof fetch
+        const response = await proxy(provider.id, {
+          model: 'gemini-4-argon-contributor', max_tokens: 32, stream, messages: [{ role: 'user', content: 'hello' }],
+        })
+        expect(response.status, name).toBe(status)
+        const text = await response.text()
+        const reported = response.headers.get('content-type')?.includes('json') ? JSON.parse(text).error.message : text
+        expect(reported, name).toContain(message)
+        expect(text, name).not.toContain('message_stop')
+        expect(call, name).toBe(upstream.length)
+      }
+    } finally {
+      globalThis.fetch = originalFetch
     }
   })
 
@@ -4373,6 +4759,7 @@ describe('OpenCode Go preset request contract', () => {
         ['glm-5.3', '/chat/completions'],
         ['minimax-m3', '/messages'],
         ['grok-4.6', '/responses'],
+        ['gemini-4-argon-contributor', '/inference/go/google/v1beta/models/gemini-4-argon-contributor:generateContent'],
       ] as const) {
         calls.length = 0
         const result = await service.testProviderConfig({

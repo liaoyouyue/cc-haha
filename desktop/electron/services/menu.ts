@@ -195,7 +195,7 @@ export async function installApplicationMenu(
     },
     toggleFullScreen: () => {
       const window = getMainWindow()
-      if (window) toggleWindowFullScreen(window, platform)
+      if (window) toggleWindowFullScreen(window)
     },
   })
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))

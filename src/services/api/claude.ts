@@ -159,6 +159,7 @@ import {
   modelSupportsAdvisor,
 } from "src/utils/advisor.js";
 import { getAgentContext } from "src/utils/agentContext.js";
+import { getAgentProfile } from "src/utils/agentProfile.js";
 import { isClaudeAISubscriber } from "src/utils/auth.js";
 import {
   getToolSearchBetaHeader,
@@ -1248,7 +1249,7 @@ async function* queryModel(
   }
 
   let advisorModel: string | undefined;
-  if (isAgenticQuery && isAdvisorEnabled()) {
+  if (getAgentProfile() !== "lean" && isAgenticQuery && isAdvisorEnabled()) {
     let advisorOption = options.advisorModel;
 
     const advisorExperiment = getExperimentAdvisorModels();

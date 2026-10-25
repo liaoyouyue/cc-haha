@@ -4,7 +4,6 @@ import { Button } from '@/components/ui/Button'
 import { IconButton } from '@/components/ui/IconButton'
 import { useTranslation, type TranslationKey } from '../../i18n'
 import { useChatStore } from '../../stores/chatStore'
-import { teamPlansApi } from '../../api/teamPlans'
 import { useTeamStore } from '../../stores/teamStore'
 import { useTabStore } from '../../stores/tabStore'
 import type {
@@ -139,8 +138,6 @@ export function AgentTeamsWorkbench({ sessionId }: { sessionId: string }) {
   const [feedFocusedTaskId, setFeedFocusedTaskId] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const seenMessageIdsRef = useRef<Set<string> | null>(null)
-  const [planState, setPlanState] = useState<string | null>(null)
-  const [stopping, setStopping] = useState(false)
 
   const snapshots = timeline?.snapshots ?? []
   const latestIndex = snapshots.length - 1
@@ -164,25 +161,6 @@ export function AgentTeamsWorkbench({ sessionId }: { sessionId: string }) {
     return () => window.clearInterval(timer)
   }, [followingLive])
 
-  // The plan record is the only place that knows whether the team is still
-  // running, which is what gates the stop control.
-  const leadSessionId = snapshot?.team.leadSessionId ?? sessionId
-  useEffect(() => {
-    if (!followingLive) return
-    let cancelled = false
-    const load = () => {
-      void teamPlansApi.get(leadSessionId)
-        .then(({ plan }) => { if (!cancelled) setPlanState(plan?.state ?? null) })
-        .catch(() => { if (!cancelled) setPlanState(null) })
-    }
-    load()
-    const timer = window.setInterval(load, 5000)
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-    }
-  }, [followingLive, leadSessionId])
-
   const stopTeam = async () => {
     if (stopping) return
     setStopping(true)
@@ -196,7 +174,7 @@ export function AgentTeamsWorkbench({ sessionId }: { sessionId: string }) {
     }
   }
 
-  const visibleMessageIds = useMemo(
+const visibleMessageIds = useMemo(
     () => snapshot?.messages.map(message => message.id) ?? [],
     [snapshot?.messages],
   )
@@ -354,7 +332,7 @@ export function AgentTeamsWorkbench({ sessionId }: { sessionId: string }) {
   return (
     <section
       aria-label={t('agentTeams.title')}
-      className="relative flex h-full min-h-0 w-full flex-col overflow-hidden bg-[var(--color-surface)] text-[var(--color-text-primary)]"
+      className="relative flex h-full min-h-0 min-w-0 w-full flex-col overflow-hidden bg-[var(--color-surface)] text-[var(--color-text-primary)]"
     >
       {/* A narrow pane wraps the controls onto a row of their own instead of
           scrolling the header sideways; the team block and counters stay on
@@ -365,9 +343,9 @@ export function AgentTeamsWorkbench({ sessionId }: { sessionId: string }) {
             <div className="text-[11px] font-semibold text-[var(--color-text-tertiary)]">
               {t('agentTeams.name')} · {t('agentTeams.sharedTaskList')}
             </div>
-            <div className="mt-0.5 flex min-w-0 items-center gap-2">
+            <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-2">
               <span
-                className="max-w-[300px] truncate text-[15px] font-semibold"
+                className="min-w-0 max-w-full truncate text-[15px] font-semibold"
                 title={snapshot.team.name}
               >
                 {snapshot.team.name}
@@ -378,7 +356,7 @@ export function AgentTeamsWorkbench({ sessionId }: { sessionId: string }) {
             </div>
           </div>
 
-          <div className="flex shrink-0 items-center gap-[18px] border-l border-[var(--color-border)] pl-[18px]">
+          <div className="flex min-w-0 max-w-full flex-wrap items-center gap-x-[18px] gap-y-2 border-l border-[var(--color-border)] pl-[18px]">
             <div className="min-w-[74px]">
               <div className="text-[11px] font-semibold text-[var(--color-text-tertiary)]">
                 {t('agentTeams.stats.phase')}
@@ -411,6 +389,7 @@ export function AgentTeamsWorkbench({ sessionId }: { sessionId: string }) {
                 {t('agentTeams.reviewHistory')}
               </Button>
               {planState === 'running' || planState === 'launching' ? (
+  const [stopping, setStopping] = useState(false)
                 <Button
                   data-testid="agent-teams-stop-team"
                   variant="danger-outline"

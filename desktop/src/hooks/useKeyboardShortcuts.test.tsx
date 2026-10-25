@@ -278,3 +278,62 @@ describe('useKeyboardShortcuts new session', () => {
     expect(useUIStore.getState().newSessionRequest).toBe(0)
   })
 })
+
+describe('useKeyboardShortcuts find in page', () => {
+  const initialUiState = useUIStore.getInitialState()
+
+  beforeEach(() => {
+    useUIStore.setState({ activeModal: null })
+  })
+
+  afterEach(() => {
+    cleanup()
+    useUIStore.setState(initialUiState, true)
+  })
+
+  function press(init: KeyboardEventInit) {
+    const event = new KeyboardEvent('keydown', { key: 'f', bubbles: true, cancelable: true, ...init })
+    document.dispatchEvent(event)
+    return event
+  }
+
+  it('opens find on Cmd+F on macOS', () => {
+    setNavigatorPlatform('MacIntel')
+    render(<ShortcutHost />)
+
+    const event = press({ metaKey: true })
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(useUIStore.getState().activeModal).toBe('findInPage')
+  })
+
+  it('leaves Ctrl+Cmd+F to the View menu fullscreen accelerator on macOS', () => {
+    setNavigatorPlatform('MacIntel')
+    render(<ShortcutHost />)
+
+    const event = press({ metaKey: true, ctrlKey: true })
+
+    expect(event.defaultPrevented).toBe(false)
+    expect(useUIStore.getState().activeModal).toBeNull()
+  })
+
+  it('leaves Ctrl+F to the text field on macOS', () => {
+    setNavigatorPlatform('MacIntel')
+    render(<ShortcutHost />)
+
+    const event = press({ ctrlKey: true })
+
+    expect(event.defaultPrevented).toBe(false)
+    expect(useUIStore.getState().activeModal).toBeNull()
+  })
+
+  it('opens find on Ctrl+F on Windows and Linux', () => {
+    setNavigatorPlatform('Win32')
+    render(<ShortcutHost />)
+
+    const event = press({ ctrlKey: true })
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(useUIStore.getState().activeModal).toBe('findInPage')
+  })
+})

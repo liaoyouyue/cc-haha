@@ -25,6 +25,7 @@ import { useDismissable } from '@/hooks/useDismissable'
 import { useTranslation } from '../../i18n'
 import { getDesktopHost } from '../../lib/desktopHost'
 import { hasRunningBackgroundTasks } from '../../lib/backgroundTasks'
+import { useTeamRunningSessionIds } from '../../hooks/useTeamRunningSessionIds'
 import { collectAttentionIds, nextAttentionSessionId } from '../../lib/sessionAttention'
 import { SessionAttentionMark } from './SessionAttentionMark'
 import { TabAttentionJump } from './TabAttentionJump'
@@ -35,6 +36,7 @@ import { WorkspaceLayoutControls } from './WorkspaceLayoutControls'
 import { useWorkspaceHeaderHost } from './WorkspaceHeaderContext'
 import { ActionDialog } from '@/components/ui/ActionDialog'
 import { getMainSessionActivityModel, hasVisibleSessionActivity } from '../activity/sessionActivityModel'
+import { EMPTY_DELEGATED_SESSION_ROWS, useSessionDelegationStore } from '../../stores/sessionDelegationStore'
 import { SessionActivityButton } from '../activity/SessionActivityButton'
 import { useActivityPanelStore } from '../../stores/activityPanelStore'
 import { getSessionBrowsablePath } from '../../lib/sessionWorkspace'
@@ -122,6 +124,8 @@ export function TabBar() {
         (sessionState.chatState !== 'idle' || hasRunningBackgroundTasks(sessionState.backgroundAgentTasks))
     })
   ))
+  // A lead whose own turn is idle while its teammates still work (#1524).
+  const teamRunningSessionIds = useTeamRunningSessionIds(sessionTabIds)
   // Tabs that are stopped on a decision only the user can make. Read from the
   // outstanding requests rather than from `chatState` (see
   // `sessionNeedsAttention`), and `useShallow` for the same reason as above: a
@@ -188,6 +192,8 @@ export function TabBar() {
     activitySessionId ? state.sessions[activitySessionId]?.backgroundAgentTasks : undefined)
   const activityNotificationRecord = useChatStore((state) =>
     activitySessionId ? state.sessions[activitySessionId]?.agentTaskNotifications : undefined)
+  const activityDelegatedSessions = useSessionDelegationStore((state) =>
+    activitySessionId ? state.bySession[activitySessionId]?.rows ?? EMPTY_DELEGATED_SESSION_ROWS : EMPTY_DELEGATED_SESSION_ROWS)
   const hasVisibleActivity = useMemo(() => {
     if (!activitySessionId) return false
     const includeCliTasks = cliTasksSessionId === activitySessionId
@@ -202,10 +208,12 @@ export function TabBar() {
       dismissedBackgroundTaskKeys,
       agentNotifications: Object.values(activityNotificationRecord ?? {}),
       workflowRuns,
+      delegatedSessions: activityDelegatedSessions,
     }))
   }, [
     activeTeamStartedAt,
     activityBackgroundTaskRecord,
+    activityDelegatedSessions,
     activityMessages,
     activityNotificationRecord,
     activitySessionId,
@@ -258,8 +266,11 @@ export function TabBar() {
     for (const sessionId of activeChatSessionIds) {
       ids.add(sessionId)
     }
+    for (const sessionId of teamRunningSessionIds) {
+      ids.add(sessionId)
+    }
     return ids
-  }, [activeChatSessionIds, tabs])
+  }, [activeChatSessionIds, teamRunningSessionIds, tabs])
 
   const updateScrollState = useCallback(() => {
     const el = scrollRef.current

@@ -57,6 +57,7 @@ type ReducerEntry = {
   timestamp?: string
   customTitle?: unknown
   aiTitle?: unknown
+  agentProfile?: unknown
   permissionMode?: unknown
   requestId?: unknown
   version?: unknown
@@ -87,6 +88,7 @@ type ReducerState = {
   customTitle: string | null
   latestWorkDir: string | null
   latestCwd: string | null
+  agentProfile: 'standard' | 'lean'
   permissionMode: string | undefined
   runtimeProviderId: string | null | undefined
   runtimeModelId: string | undefined
@@ -267,6 +269,7 @@ function createInitialState(
     customTitle: null,
     latestWorkDir: null,
     latestCwd: null,
+    agentProfile: 'standard',
     permissionMode: undefined,
     runtimeProviderId: undefined,
     runtimeModelId: undefined,
@@ -560,6 +563,7 @@ function applyEntry(state: ReducerState, entry: ReducerEntry): void {
 
   const record = entry as Record<string, unknown>
   if (entry.type === 'session-meta') {
+    if (entry.agentProfile === 'standard' || entry.agentProfile === 'lean') state.agentProfile = entry.agentProfile
     if (typeof record.workDir === 'string') {
       state.latestWorkDir = normalizeDriveRootPathForPlatform(record.workDir)
     }
@@ -635,6 +639,7 @@ function summaryFromState(state: ReducerState): SessionListSummary {
     modifiedAt: state.semanticModifiedAt ?? state.fallbackModifiedAt,
     messageCount: state.messageCount,
     workDir: state.latestWorkDir || state.latestCwd || state.fallbackWorkDir,
+    agentProfile: state.agentProfile ?? 'standard',
     ...(state.permissionMode ? { permissionMode: state.permissionMode } : {}),
     ...(state.runtimeProviderId !== undefined
       ? { runtimeProviderId: state.runtimeProviderId }

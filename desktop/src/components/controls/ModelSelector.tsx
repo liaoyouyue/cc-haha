@@ -58,7 +58,7 @@ import {
   resolveModelReasoningProfile,
 } from '../../../../src/shared/modelReasoning'
 
-type ProviderChoice = {
+export type ModelProviderChoice = {
   providerId: string | null
   providerName: string
   isDefault: boolean
@@ -74,6 +74,8 @@ type Props = {
    * feature to prepend semantic choices such as an inherited model.
    */
   models?: ModelInfo[]
+  /** Server-authoritative catalog for delegation, without changing global provider state. */
+  runtimeChoices?: ModelProviderChoice[]
   ariaLabel?: string
   appearance?: 'toolbar' | 'field'
   runtimeSelection?: RuntimeSelection
@@ -127,7 +129,7 @@ function officialChoices(
   models: ModelInfo[],
   isDefault: boolean,
   officialName: string,
-): ProviderChoice {
+): ModelProviderChoice {
   return {
     providerId,
     providerName: officialName,
@@ -153,7 +155,7 @@ function deepSeekAccountChoice(
   labels: Record<ModelSlot, string>,
   availableModels: ModelInfo[],
   savedModels: ModelMapping,
-): ProviderChoice {
+): ModelProviderChoice {
   const provider = buildDeepSeekAccountProvider(savedModels)
   const isActive = activeId === DEEPSEEK_ACCOUNT_PROVIDER_ID
   const catalog = isActive && availableModels.length > 0
@@ -254,7 +256,7 @@ function buildProviderChoices(
   openAIOfficialLoggedIn: boolean,
   grokOfficialLoggedIn: boolean,
   deepSeekAccountLoggedIn: boolean,
-): ProviderChoice[] {
+): ModelProviderChoice[] {
   const claudeOfficialModels = activeId === null && availableModels.length > 0
     ? mergeOfficialModels(availableModels)
     : OFFICIAL_MODELS
@@ -265,7 +267,7 @@ function buildProviderChoices(
     ? availableModels
     : GROK_OFFICIAL_MODELS
 
-  const choices: ProviderChoice[] = []
+  const choices: ModelProviderChoice[] = []
 
   if (claudeOfficialLoggedIn) {
     choices.push(officialChoices(null, claudeOfficialModels, activeId === null, officialName))
@@ -311,6 +313,7 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
   value,
   onChange,
   models,
+  runtimeChoices,
   ariaLabel,
   appearance = 'toolbar',
   runtimeSelection: controlledRuntimeSelection,
@@ -382,6 +385,7 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
 
   useEffect(() => {
     if (
+      runtimeChoices !== undefined ||
       !isRuntimeScoped ||
       hasLoadedProviders ||
       providersLoading ||
@@ -389,10 +393,10 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
     ) return
     requestedProvidersRef.current = true
     void fetchProviders()
-  }, [fetchProviders, hasLoadedProviders, isRuntimeScoped, providersLoading])
+  }, [fetchProviders, hasLoadedProviders, isRuntimeScoped, providersLoading, runtimeChoices])
 
   useEffect(() => {
-    if (!isRuntimeScoped || !open || requestedOAuthStatusRef.current) return
+    if (runtimeChoices !== undefined || !isRuntimeScoped || !open || requestedOAuthStatusRef.current) return
     requestedOAuthStatusRef.current = true
     void fetchClaudeOAuthStatus()
     void fetchOpenAIOAuthStatus()
@@ -404,6 +408,7 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
     fetchGrokOAuthStatus,
     fetchOpenAIOAuthStatus,
     isRuntimeScoped,
+    runtimeChoices,
     open,
   ])
 
@@ -483,7 +488,7 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
   )
 
   const providerChoices = useMemo(
-    () => buildProviderChoices(
+    () => runtimeChoices ?? buildProviderChoices(
       providers,
       activeId,
       availableModels,
@@ -499,6 +504,7 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
       deepSeekOAuthStatus?.loggedIn === true,
     ),
     [
+      runtimeChoices,
       activeId,
       availableModels,
       providers,
@@ -544,7 +550,9 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
       storeModel?.id,
     )
     : null
-  const resolvedRuntimeSelection = requestedRuntimeSelection
+  const resolvedRuntimeSelection = runtimeChoices !== undefined
+    ? requestedRuntimeSelection
+    : requestedRuntimeSelection
     ? reconcileRuntimeSelection(requestedRuntimeSelection, {
       providers, activeId, hasLoadedProviders: hasLoadedProviders && lockedProviderId === undefined,
       currentModelId: storeModel?.id,
@@ -614,7 +622,7 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
     if (disabled) return
     setEffortOpen(false)
 
-    if (!isRuntimeScoped || providerChoices.length > 0) {
+    if (runtimeChoices !== undefined || !isRuntimeScoped || providerChoices.length > 0) {
       setOpen(true)
       return
     }
@@ -676,6 +684,7 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
     isRuntimeScoped,
     navigateToProviderSettings,
     providerChoices.length,
+    runtimeChoices,
   ])
 
   useImperativeHandle(selectorRef, () => ({
@@ -685,7 +694,7 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
   const handleRuntimeSelect = (selection: RuntimeSelection) => {
     if (lockedProviderId !== undefined && selection.providerId !== lockedProviderId) return
     const provider = providers.find((entry) => entry.id === selection.providerId)
-    const normalizedSelection = normalizeRuntimeSelection(
+    const normalizedSelection = runtimeChoices !== undefined ? selection : normalizeRuntimeSelection(
       selection,
       provider?.apiFormat,
       provider ? getBundledPresetReasoningProviderKind(provider.presetId) : undefined,

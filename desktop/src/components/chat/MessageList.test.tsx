@@ -972,6 +972,21 @@ describe('MessageList nested tool calls', () => {
     expect(screen.getByText('latest assistant reply')).toBeTruthy()
   })
 
+  it.each([
+    { compact: false, mobileLayout: false, gutter: 'px-6' },
+    { compact: true, mobileLayout: false, gutter: 'px-4' },
+    { compact: false, mobileLayout: true, gutter: 'px-3' },
+    { compact: true, mobileLayout: true, gutter: 'px-3' },
+  ])('aligns a transcript without navigation with the composer at $gutter', ({ compact, mobileLayout, gutter }) => {
+    useChatStore.setState({ sessions: { [ACTIVE_TAB]: makeSessionState({
+      messages: [{ id: 'single-message', type: 'user_text', content: 'Review this change', timestamp: 1 }],
+    }) } })
+    render(<MessageList compact={compact} mobileLayout={mobileLayout} />)
+    expect(screen.queryByTestId('conversation-navigator')).toBeNull()
+    const scroller = screen.getByTestId('message-list').querySelector('.chat-scroll-area') as HTMLElement
+    expect(scroller.className.split(/\s+/)).toContain(gutter)
+  })
+
   it('keeps the conversation navigator available in compact desktop transcripts', () => {
     useChatStore.setState({
       sessions: {
@@ -6064,15 +6079,14 @@ describe('MessageList nested tool calls', () => {
     expect(assistantShell?.className).not.toContain('ml-10')
     expect(userActions?.getAttribute('data-align')).toBe('end')
     expect(assistantActions?.getAttribute('data-align')).toBe('start')
-    // The prompt's bar hangs under the bubble out of flow: hovering never moves
-    // the transcript, and the bar holds no height of its own when hidden.
-    expect(userShell?.className).toContain('relative')
+    // The prompt's bar hangs under the bubble as a zero-height row: hovering
+    // never moves the transcript, the bar holds no height of its own whether
+    // hidden or shown (a constant h-0, not a hover-driven height change), and
+    // it stays in flow so the hover shell is never narrower than its bar (#1616).
     expect(userActions?.getAttribute('data-placement')).toBe('overlay')
-    expect(userActions?.className).toContain('absolute')
-    expect(userActions?.className).toContain('top-full')
-    expect(userActions?.className).toContain('right-0')
+    expect(userActions?.className).not.toMatch(/(^|\s)(absolute|fixed)(\s|$)/)
+    expect(userActions?.className).toContain('h-0')
     expect(userActions?.className).not.toContain('mt-2')
-    expect(userActions?.className).not.toContain('h-0')
     expect(userActions?.className).not.toContain('group-hover:h-')
     expect(userActions?.className).not.toContain('invisible')
     // The closing reply's bar stays in flow: it is always shown.
@@ -6288,6 +6302,16 @@ describe('MessageList nested tool calls', () => {
 
     expect(await screen.findByRole('button', { name: 'Undo current turn changes' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Rewind to here' })).toBeNull()
+  })
+
+  it('does not offer transcript branching for a restored lean conversation', () => {
+    useSessionStore.setState({ sessions: [{ id: ACTIVE_TAB, agentProfile: 'lean', title: 'Lean', createdAt: '', modifiedAt: '', messageCount: 2, projectPath: '/tmp/project', workDir: '/tmp/project', workDirExists: true }] })
+    useChatStore.setState({ sessions: { [ACTIVE_TAB]: makeSessionState({ messages: [
+      { id: 'lean-u', transcriptMessageId: 'tu', type: 'user_text', content: 'Question', timestamp: 1 },
+      { id: 'lean-a', transcriptMessageId: 'ta', type: 'assistant_text', content: 'Answer', timestamp: 2 },
+    ] }) } })
+    render(<MessageList />)
+    expect(screen.queryByRole('button', { name: 'Fork a new conversation' })).toBeNull()
   })
 
   it('branches from completed transcript-backed chat messages using the original transcript id', async () => {
