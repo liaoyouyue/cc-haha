@@ -45,7 +45,9 @@ import type {
 //    persisted per-model dollars.
 // 10: project the explicit per-session ChatGPT OAuth Fast selection.
 // 11: Haiku 5.5 gained (prompt-length tiered) pricing; rebuild the persisted per-model dollars.
-export const SESSION_SUMMARY_PARSER_VERSION = 11
+// 12: all-zero streaming usage no longer claims the dedup key; rebuild to recover the tokens
+//     streaming gateways (Magpie & co.) only report on their final block line.
+export const SESSION_SUMMARY_PARSER_VERSION = 12
 
 export type SessionSourceCandidate = {
   path: string
