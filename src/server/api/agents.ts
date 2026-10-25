@@ -49,11 +49,10 @@ import {
   type SettingSource,
 } from '../../utils/settings/constants.js'
 import { parseEffortValue } from '../../utils/effort.js'
-import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
-import { readSavedProviderRuntime } from '../services/providerRuntimeEnv.js'
 import { reloadSessionComponents } from '../services/sessionComponentReloadService.js'
 import { getAllBaseTools } from '../../tools.js'
 import { filterToolsForAgent } from '../../tools/AgentTool/agentToolUtils.js'
+import { listSessionModels } from '../services/sessionModelCatalog.js'
 
 const agentService = new AgentService()
 const settingsService = new SettingsService()
@@ -115,6 +114,13 @@ async function handleAgents(
     })
   }
 
+  // ── GET /api/agents/:name/provider-models ───────────────────────────
+  if (method === 'GET' && segments[3] === 'provider-models' && agentName) {
+    const cwd = url.searchParams.get('cwd') || getCwd()
+    await assertOverridableBuiltInAgent(agentName, cwd)
+    return Response.json({ models: await listSessionModels() })
+  }
+
   // ── GET /api/agents/:name ────────────────────────────────────────────
   if (method === 'GET' && agentName) {
     agentService.assertValidName(agentName)
@@ -156,10 +162,13 @@ async function handleAgents(
       assertAllowedFields(body, BUILT_IN_OVERRIDE_FIELDS)
       const cwd = typeof body.cwd === 'string' ? body.cwd : getCwd()
       await assertOverridableBuiltInAgent(agentName, cwd)
-      const patch = parseBuiltInOverridePatch(
-        body,
-        resolveBuiltInAgentOverrides().get(agentName)?.provider?.value,
-      )
+      const patch = parseBuiltInOverridePatch(body)
+      if (patch.providerId) {
+        const providerId = patch.providerId === 'claude-official' ? null : patch.providerId
+        if (!(await listSessionModels()).some(model => model.providerId === providerId)) {
+          throw ApiError.badRequest('Requested agent provider is unavailable; choose an available provider or inherit the session provider')
+        }
+      }
       await settingsService.updateBuiltInAgentOverride(agentName, patch)
       clearAgentDefinitionsCache()
       return Response.json({
@@ -191,8 +200,7 @@ async function handleAgents(
     const body = await parseJsonBody(req)
     assertAllowedFields(body, UPDATE_AGENT_FIELDS)
     const context = parseMutationContext(body, true)
-    const saved = await agentService.getAgent(agentName, context).catch(() => null)
-    const updates = parseAgentUpdates(body, agentName, saved?.agent.provider)
+    const updates = parseAgentUpdates(body, agentName)
     await assertMutableTarget(agentName, context)
     const mutation = await agentService.updateAgent(agentName, updates, context)
     clearAgentDefinitionsCache()
@@ -316,11 +324,8 @@ type ApiAgentDefinition = {
   agentType: string
   description?: string
   model?: string
-  /** Saved provider pinned for this Agent's model. */
-  provider?: string
-  /** Name of `provider`; absent when it is no longer a saved API provider. */
-  providerName?: string
   modelDisplay?: string
+  providerId?: string
   effort?: SharedAgentDefinition['effort']
   tools?: string[]
   systemPrompt?: string
@@ -335,14 +340,14 @@ type ApiAgentDefinition = {
    * `overridable` below, which is a much narrower capability.
    */
   editable?: boolean
-  /** Built-in agents only: model/effort can be changed via /override. */
+  /** Built-in agents only: provider/model/effort can be changed via /override. */
   overridable?: boolean
   /** Built-in agents only: what model/effort this build ships with. */
   defaults?: { model?: string; effort?: SharedAgentDefinition['effort'] }
   /** Built-in agents only: the override currently in effect, if any. */
   override?: {
+    providerId?: string
     model?: string
-    provider?: string
     effort?: SharedAgentDefinition['effort']
     source: SettingSource
   }
@@ -364,7 +369,7 @@ function serializeActiveAgent(
     agentType: agent.agentType,
     description: agent.whenToUse,
     model: agent.model,
-    ...serializeAgentProvider(agent.provider),
+    ...(agent.providerId ? { providerId: agent.providerId } : {}),
     modelDisplay: resolveAgentModelDisplay(agent),
     effort: agent.effort,
     tools,
@@ -402,7 +407,7 @@ function serializeBuiltInOverride(
   )
   const override: ResolvedBuiltInAgentOverride | undefined =
     resolveBuiltInAgentOverrides().get(agent.agentType)
-  const fields = [override?.model, override?.effort].filter(
+  const fields = [override?.providerId, override?.model, override?.effort].filter(
     field => field !== undefined,
   )
 
@@ -412,8 +417,8 @@ function serializeBuiltInOverride(
     ...(fields.length > 0
       ? {
           override: {
+            ...(override?.providerId ? { providerId: override.providerId.value } : {}),
             ...(override?.model ? { model: override.model.value } : {}),
-            ...(override?.provider ? { provider: override.provider.value } : {}),
             ...(override?.effort ? { effort: override.effort.value } : {}),
             // Fields can come from different files. Report the highest-priority
             // one so the UI locks the control if any part is admin-managed.
@@ -436,7 +441,6 @@ const CREATE_AGENT_FIELDS = new Set([
   'description',
   'systemPrompt',
   'model',
-  'provider',
   'effort',
   'tools',
   'color',
@@ -446,10 +450,10 @@ const UPDATE_AGENT_FIELDS = new Set([...CREATE_AGENT_FIELDS, 'target'])
 
 // No `scope`: built-in overrides are user-level by definition. Accepting and
 // ignoring one would silently write somewhere the caller did not ask for.
-const BUILT_IN_OVERRIDE_FIELDS = new Set(['model', 'provider', 'effort', 'cwd'])
+const BUILT_IN_OVERRIDE_FIELDS = new Set(['providerId', 'model', 'effort', 'cwd'])
 
 /**
- * Only the model and effort of an agent that is genuinely built-in right now.
+ * Only the provider, model and effort of an agent that is genuinely built-in right now.
  *
  * Membership, not `assertValidName`: AGENT_SLUG_PATTERN is lowercase-only and
  * would reject `Explore` and `Plan` outright.
@@ -482,33 +486,19 @@ async function assertOverridableBuiltInAgent(
   }
 }
 
-function parseBuiltInOverridePatch(
-  body: Record<string, unknown>,
-  savedProvider?: string,
-): {
+function parseBuiltInOverridePatch(body: Record<string, unknown>): {
+  providerId?: string | null
   model?: string | null
-  provider?: string | null
   effort?: string | number | null
 } {
-  const patch: {
-    model?: string | null
-    provider?: string | null
-    effort?: string | number | null
-  } = {}
+  const patch: { providerId?: string | null; model?: string | null; effort?: string | number | null } = {}
 
+  if (Object.hasOwn(body, 'providerId')) {
+    patch.providerId = body.providerId === null ? null : requireNonEmptyString(body.providerId, 'providerId')
+  }
   if (Object.hasOwn(body, 'model')) {
     patch.model =
       body.model === null ? null : requireNonEmptyString(body.model, 'model')
-  }
-  if (Object.hasOwn(body, 'provider')) {
-    patch.provider = body.provider === null ? null : parseAgentProvider(body.provider, savedProvider)
-    // The loader only honors a provider saved beside its model.
-    if (patch.provider !== null && typeof patch.model !== 'string') {
-      throw ApiError.badRequest('Agent provider requires a model from that provider')
-    }
-  } else if (Object.hasOwn(body, 'model')) {
-    // A new model without a provider follows the session again.
-    patch.provider = null
   }
   if (Object.hasOwn(body, 'effort')) {
     if (body.effort === null) {
@@ -622,13 +612,8 @@ function parseCreateAgent(
 function parseAgentUpdates(
   body: Record<string, unknown>,
   agentName: string,
-  savedProvider?: string,
 ): AgentUpdate {
-  const updates = parseOptionalAgentFields(body, true, savedProvider)
-  // A provider only means something for the model saved beside it.
-  if (Object.hasOwn(body, 'model') && !Object.hasOwn(body, 'provider')) {
-    updates.provider = null
-  }
+  const updates = parseOptionalAgentFields(body, true)
   if (body.name !== undefined) {
     const requestedName = requireNonEmptyString(body.name, 'name')
     agentService.assertValidName(requestedName)
@@ -656,12 +641,10 @@ function parseOptionalAgentFields(
 function parseOptionalAgentFields(
   body: Record<string, unknown>,
   allowNull: true,
-  savedProvider?: string,
 ): AgentUpdate
 function parseOptionalAgentFields(
   body: Record<string, unknown>,
   allowNull: boolean,
-  savedProvider?: string,
 ): AgentUpdate {
   const fields: AgentUpdate = {}
 
@@ -669,11 +652,6 @@ function parseOptionalAgentFields(
     if (allowNull) fields.model = null
   } else if (body.model !== undefined) {
     fields.model = requireNonEmptyString(body.model, 'model')
-  }
-  if (body.provider === null) {
-    if (allowNull) fields.provider = null
-  } else if (body.provider !== undefined) {
-    fields.provider = parseAgentProvider(body.provider, savedProvider)
   }
   if (body.effort === null) {
     if (allowNull) fields.effort = null
@@ -709,28 +687,6 @@ function parseOptionalAgentFields(
     fields.color = color
   }
   return fields
-}
-
-/**
- * Only saved API providers can serve one Agent inside another provider's
- * session; account sign-ins hold process-wide credentials.
- */
-function parseAgentProvider(value: unknown, savedProvider?: string): string {
-  const providerId = requireNonEmptyString(value, 'provider')
-  // Re-saving the provider an Agent already has keeps other edits possible
-  // after that provider was deleted; running it still reports the missing one.
-  if (providerId !== savedProvider && !readSavedProviderRuntime(getClaudeConfigHomeDir(), providerId)) {
-    throw ApiError.badRequest(`Agent provider is not a saved API provider: ${providerId}`)
-  }
-  return providerId
-}
-
-function serializeAgentProvider(
-  providerId: string | undefined,
-): Pick<ApiAgentDefinition, 'provider' | 'providerName'> {
-  if (!providerId) return {}
-  const providerName = readSavedProviderRuntime(getClaudeConfigHomeDir(), providerId)?.provider.name
-  return { provider: providerId, ...(providerName ? { providerName } : {}) }
 }
 
 function requireNonEmptyString(value: unknown, field: string): string {

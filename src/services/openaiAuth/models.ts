@@ -1,3 +1,4 @@
+import { getProviderRuntimeEnvironment } from '../api/providerRuntimeContext.js'
 import { isOpenAIReasoningModel } from '../../shared/modelReasoning.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { readProviderEnv } from '../../utils/model/providerEnvScope.js'
@@ -236,8 +237,8 @@ export function isOpenAIResponsesModel(model: string): boolean {
 }
 
 export function resolveOpenAICodexModel(model: string): string {
-  if (process.env.OPENAI_CODEX_MODEL?.trim()) {
-    return process.env.OPENAI_CODEX_MODEL.trim()
+  if (getProviderRuntimeEnvironment().OPENAI_CODEX_MODEL?.trim()) {
+    return getProviderRuntimeEnvironment().OPENAI_CODEX_MODEL.trim()
   }
 
   const requested = model.trim()
@@ -251,21 +252,21 @@ export function resolveOpenAICodexModel(model: string): string {
 
   if (normalized.includes('haiku')) {
     return (
-      process.env.OPENAI_CODEX_HAIKU_MODEL?.trim() ||
+      getProviderRuntimeEnvironment().OPENAI_CODEX_HAIKU_MODEL?.trim() ||
       OPENAI_DEFAULT_HAIKU_MODEL
     )
   }
 
   if (normalized.includes('sonnet')) {
     return (
-      process.env.OPENAI_CODEX_SONNET_MODEL?.trim() ||
+      getProviderRuntimeEnvironment().OPENAI_CODEX_SONNET_MODEL?.trim() ||
       OPENAI_DEFAULT_SONNET_MODEL
     )
   }
 
   if (normalized.includes('opus')) {
     return (
-      process.env.OPENAI_CODEX_OPUS_MODEL?.trim() || OPENAI_DEFAULT_OPUS_MODEL
+      getProviderRuntimeEnvironment().OPENAI_CODEX_OPUS_MODEL?.trim() || OPENAI_DEFAULT_OPUS_MODEL
     )
   }
 

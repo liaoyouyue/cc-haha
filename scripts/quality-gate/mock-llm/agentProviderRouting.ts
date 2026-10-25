@@ -1,216 +1,215 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { buildProviderManagedEnv } from '../../../src/server/services/providerRuntimeEnv'
+import { CURRENT_PROVIDER_INDEX_SCHEMA_VERSION } from '../../../src/server/services/persistentStorageMigrations'
 import { createQualityGateSandbox } from '../sandbox'
-import { isExpectedRoutingCliExit } from './agentModelRouting'
 import { startMockLlmServer } from './server'
 import type { MockReply, MockRequest } from './scriptedModel'
 
-const SESSION_MODEL = 'session-main'
-const AGENT_TYPE = 'provider-fixture'
-const AGENT_PROVIDER_ID = 'agent-provider'
 const STEP_TIMEOUT_MS = 60_000
-
-type ProviderRoutingCase = {
-  id: string
-  /** Anthropic providers that opt out of nested media go through the provider proxy. */
-  proxied: boolean
-  agentModel: string
-  effort: 'low' | 'max'
-  expectedModel: string
-  /** The session provider turns experimental betas (and effort) off for itself only. */
-  sessionDisablesBetas?: boolean
-}
-
-const routingCases: ProviderRoutingCase[] = [
-  { id: 'direct-alias-max', proxied: false, agentModel: 'haiku', effort: 'max', expectedModel: 'deepseek-v4-flash' },
-  { id: 'proxied-concrete-low', proxied: true, agentModel: 'deepseek-v4-pro', effort: 'low', expectedModel: 'deepseek-v4-pro' },
-  { id: 'session-betas-off', proxied: false, agentModel: 'haiku', effort: 'max', expectedModel: 'deepseek-v4-flash', sessionDisablesBetas: true },
-]
-
 const textReply = (text: string): MockReply => ({
   kind: 'message', content: [{ type: 'text', text }], stopReason: 'end_turn',
 })
+type WireRequest = { endpoint: string; path: string; model?: string; apiKey: string | null; authorization: string | null }
 
-function mentions(request: MockRequest, marker: string) {
-  return JSON.stringify(request.system ?? '').includes(marker) ||
-    JSON.stringify(request.messages?.at(-1)?.content ?? '').includes(marker)
+function metadataUnder(directory: string): Array<{ providerId?: string; providerModel?: string }> {
+  const metadata: Array<{ providerId?: string; providerModel?: string }> = []
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name)
+    if (entry.isDirectory()) metadata.push(...metadataUnder(path))
+    else if (entry.name.endsWith('.meta.json')) metadata.push(JSON.parse(readFileSync(path, 'utf8')))
+  }
+  return metadata
 }
 
-/**
- * A real CLI on session provider A delegates to an Agent pinned to saved
- * provider B. Only the two loopback models are scripted; the Agent's request
- * must leave A entirely and reach B with B's model slot and the saved effort.
- */
+/** Real Agent execution; only three isolated loopback model endpoints are scripted. */
 export async function runAgentProviderRoutingScenario(rootDir: string, artifactDir: string) {
   mkdirSync(artifactDir, { recursive: true })
-  const results: Array<{ id: string; status: 'passed' | 'failed'; error?: string; agentRequests: unknown[] }> = []
-
-  for (const testCase of routingCases) {
+  const results: Array<{ id: string; status: 'passed' | 'failed'; requests: WireRequest[]; error?: string }> = []
+  for (const concurrent of [false, true]) {
+    const id = concurrent ? 'concurrent-providers' : 'saved-provider'
     const sandbox = createQualityGateSandbox({
-      label: `agent-provider-${testCase.id}`,
-      seedProviders: false,
-      sourceConfigDir: join(artifactDir, 'agent-provider-routing-unused-config'),
+      label: `agent-provider-${id}`, seedProviders: false,
+      sourceConfigDir: join(artifactDir, 'unused-provider-state'),
       source: { PATH: process.env.PATH, SHELL: process.env.SHELL, SYSTEMROOT: process.env.SYSTEMROOT },
     })
     const workDir = join(sandbox.home, 'project')
     mkdirSync(workDir, { recursive: true })
-    const childMarker = `PROVIDER_ROUTING_CHILD_${testCase.id}`
-    const childReply = `PROVIDER_ROUTING_CHILD_DONE_${testCase.id}`
-    const doneMarker = `PROVIDER_ROUTING_PARENT_DONE_${testCase.id}`
-    const sessionChildRequests: MockRequest[] = []
-    const agentRequests: Array<{ model?: string; effort?: unknown; path: string }> = []
-    let emittedAgent = false
-    let receivedAgentResult = false
-    let rootFinished = false
-    let receivedRootResult = false
+    const requests: WireRequest[] = []
+    const result: (typeof results)[number] = { id, status: 'failed', requests }
+    const upstreams: Array<{ stop(): Promise<void> }> = []
+    const receivedResults = new Set<string>()
+    const childModels = new Map<string, string[]>()
+    const expected = new Map<string, string>([['B', concurrent ? 'provider-b-fast' : 'provider-b-main']])
+    if (concurrent) expected.set('C', 'provider-c-main')
+    const doneMarker = `PROVIDER_ROUTING_PARENT_DONE_${id}`
+    let emittedAgents = false
+    let rootResult = false
+    let child
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let timedOut = false
+    let releaseChildren!: () => void
+    const bothChildren = new Promise<void>(resolve => { releaseChildren = resolve })
+    const arrivals = new Set<string>()
 
-    const sessionUpstream = startMockLlmServer((request: MockRequest): MockReply => {
-      if (mentions(request, childMarker)) {
-        sessionChildRequests.push(request)
-        return textReply('WRONG_PROVIDER')
-      }
-      if (!request.tools?.some(tool => tool.name === 'Agent')) return textReply('Mock auxiliary reply')
-      if (emittedAgent) {
-        const last = request.messages?.at(-1)?.content
-        receivedAgentResult ||= Array.isArray(last) && last.some(block =>
-          block.type === 'tool_result' && block.tool_use_id === 'provider_routing_agent' &&
-          !block.is_error && JSON.stringify(block.content ?? '').includes(childReply))
-        rootFinished = true
-        return textReply(doneMarker)
-      }
-      emittedAgent = true
-      return {
-        kind: 'message',
-        content: [{
-          type: 'tool_use', id: 'provider_routing_agent', name: 'Agent',
-          input: {
-            subagent_type: AGENT_TYPE, description: 'Exercise the pinned Agent provider',
-            prompt: `${childMarker}_PROMPT: Return the fixture completion marker.`,
-            // A tier alias from the lead names the session's slots; the pinned provider wins.
-            model: 'opus',
-          },
-        }],
-        stopReason: 'tool_use',
-      }
-    })
-    const agentUpstream = startMockLlmServer((request: MockRequest): MockReply =>
-      mentions(request, childMarker) ? textReply(childReply) : textReply('Mock auxiliary reply'))
-    const result: (typeof results)[number] = { id: testCase.id, status: 'failed', agentRequests }
+    function startEndpoint(endpoint: string, reply: (request: MockRequest) => MockReply) {
+      const scripted = startMockLlmServer(reply)
+      const gateway = Bun.serve({
+        hostname: '127.0.0.1', port: 0,
+        async fetch(request) {
+          const path = new URL(request.url).pathname
+          const body = await request.clone().json().catch(() => ({})) as MockRequest
+          requests.push({
+            endpoint, path, model: body.model,
+            apiKey: request.headers.get('x-api-key'), authorization: request.headers.get('authorization'),
+          })
+          if (concurrent && endpoint !== 'A' && path.endsWith('/v1/messages') && JSON.stringify(body.messages).includes(`PROVIDER_CHILD_PROMPT_${endpoint}`)) {
+            arrivals.add(endpoint)
+            if (arrivals.size === 2) releaseChildren()
+            // A serialized implementation cannot pass by serving B completely
+            // before C starts. The scenario timeout also releases this barrier.
+            await bothChildren
+          }
+          return fetch(new Request(new URL(path, scripted.url), request))
+        },
+      })
+      upstreams.push({ async stop() { gateway.stop(true); await scripted.stop() } })
+      return `http://127.0.0.1:${gateway.port}`
+    }
 
     try {
-      mkdirSync(join(sandbox.configDir, 'cc-haha'), { recursive: true })
-      writeFileSync(join(sandbox.configDir, 'cc-haha', 'providers.json'), JSON.stringify({
-        schemaVersion: 4,
-        activeId: null,
-        providers: [{
-          id: AGENT_PROVIDER_ID, presetId: 'deepseek', name: 'Agent provider',
-          apiKey: 'mock-agent-provider-key', baseUrl: agentUpstream.url, apiFormat: 'anthropic',
-          ...(testCase.proxied ? { supportsNestedToolResultMedia: false } : {}),
-          models: { main: 'deepseek-v4-pro', haiku: 'deepseek-v4-flash', sonnet: 'deepseek-v4-pro', opus: 'deepseek-v4-pro' },
-        }],
-      }))
-      // The session provider declares no effort capability for the Agent's
-      // model, so the effort only survives if B's own capabilities are used.
-      const sessionEnv = buildProviderManagedEnv({
-        id: 'session-provider', name: 'Session provider', presetId: 'custom',
-        baseUrl: sessionUpstream.url, apiKey: 'mock-session-key', apiFormat: 'anthropic',
-        runtimeKind: 'anthropic_compatible',
-        models: { main: SESSION_MODEL, haiku: SESSION_MODEL, sonnet: SESSION_MODEL, opus: SESSION_MODEL },
-        ...(testCase.sessionDisablesBetas ? { disableExperimentalBetas: true } : {}),
+      const parentUrl = startEndpoint('A', request => {
+        if (!request.tools?.some(tool => tool.name === 'Agent')) return textReply('Mock auxiliary reply')
+        if (emittedAgents) {
+          for (const message of request.messages ?? []) {
+            if (!Array.isArray(message.content)) continue
+            for (const block of message.content) {
+              if (block.type === 'tool_result' && !block.is_error && block.tool_use_id && JSON.stringify(block.content).includes('PROVIDER_CHILD_DONE_')) {
+                receivedResults.add(block.tool_use_id)
+              }
+            }
+          }
+          return textReply(doneMarker)
+        }
+        emittedAgents = true
+        return {
+          kind: 'message', stopReason: 'tool_use',
+          content: [...expected.keys()].map(endpoint => ({
+            type: 'tool_use' as const, id: `provider_agent_${endpoint}`, name: 'Agent',
+            input: {
+              subagent_type: endpoint === 'B' ? 'statusline-setup' : 'Explore',
+              description: `Verify isolated provider ${endpoint}`,
+              prompt: `PROVIDER_CHILD_PROMPT_${endpoint}: Return the fixture marker.`,
+            },
+          })),
+        }
       })
-      const child = Bun.spawn([
+      const childUrl = (endpoint: string) => startEndpoint(endpoint, request => {
+        const messages = JSON.stringify(request.messages ?? [])
+        if (messages.includes(`PROVIDER_CHILD_PROMPT_${endpoint}`)) {
+          const models = childModels.get(endpoint) ?? []
+          models.push(request.model ?? '')
+          childModels.set(endpoint, models)
+          return textReply(`PROVIDER_CHILD_DONE_${endpoint}`)
+        }
+        return textReply('Mock child auxiliary reply')
+      })
+      const providers = ['A', 'B', 'C'].map(endpoint => ({
+        id: `fixture-provider-${endpoint}`, name: `Fixture ${endpoint}`, presetId: 'custom',
+        baseUrl: endpoint === 'A' ? parentUrl : childUrl(endpoint), apiKey: `fake-key-${endpoint}`,
+        authStrategy: 'api_key' as const, apiFormat: 'anthropic' as const, runtimeKind: 'anthropic_compatible' as const,
+        models: {
+          main: `provider-${endpoint.toLowerCase()}-main`, haiku: `provider-${endpoint.toLowerCase()}-fast`,
+          sonnet: `provider-${endpoint.toLowerCase()}-standard`, opus: `provider-${endpoint.toLowerCase()}-large`,
+        },
+      }))
+      mkdirSync(join(sandbox.configDir, 'cc-haha'), { recursive: true })
+      const indexPath = join(sandbox.configDir, 'cc-haha', 'providers.json')
+      writeFileSync(indexPath, JSON.stringify({
+        schemaVersion: CURRENT_PROVIDER_INDEX_SCHEMA_VERSION,
+        activeId: providers[0]!.id, providers, providerOrder: providers.map(provider => provider.id), officialProviderModels: {},
+      }))
+      writeFileSync(join(sandbox.configDir, 'settings.json'), JSON.stringify({
+        builtInAgentOverrides: {
+          'statusline-setup': { providerId: providers[1]!.id, ...(concurrent ? { model: 'haiku' } : {}) },
+          Explore: { providerId: providers[2]!.id },
+        },
+      }))
+      child = Bun.spawn([
         process.execPath, '--no-env-file', '--feature=TRANSCRIPT_CLASSIFIER', '--preload', join(rootDir, 'preload.ts'),
         join(rootDir, 'src/entrypoints/cli.tsx'),
-        '--print', '--model', SESSION_MODEL, '--permission-mode', 'bypassPermissions',
+        '--print', '--model', 'provider-a-main', '--permission-mode', 'bypassPermissions',
         '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
-        '--debug-file', join(artifactDir, `agent-provider-routing-${testCase.id}.debug.log`),
-        '--agents', JSON.stringify({
-          [AGENT_TYPE]: {
-            description: 'A deterministic provider-routing fixture',
-            prompt: `${childMarker}: Reply with the fixture completion marker.`,
-            tools: ['Read'], model: testCase.agentModel, provider: AGENT_PROVIDER_ID, effort: testCase.effort,
-          },
-        }),
+        '--debug-file', join(artifactDir, `${id}.debug.log`),
       ], {
         cwd: workDir, stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
         env: {
-          ...sandbox.env, ...sessionEnv, CALLER_DIR: workDir, CC_HAHA_SKIP_DOTENV: '1',
+          ...sandbox.env, ...buildProviderManagedEnv(providers[0]!),
+          CALLER_DIR: workDir, CC_HAHA_SKIP_DOTENV: '1',
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_AUTOUPDATER: '1',
         },
       })
-      let timedOut = false
-      const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL') }, STEP_TIMEOUT_MS)
-      try {
-        const readStdout = async () => {
-          const decoder = new TextDecoder()
-          let stdout = ''
-          for await (const chunk of child.stdout) {
-            stdout += decoder.decode(chunk, { stream: true })
-            if (!receivedRootResult && stdout.includes(doneMarker)) {
-              receivedRootResult = stdout.split('\n').some(line => {
-                try {
-                  const message = JSON.parse(line)
-                  return message.type === 'result' && !message.is_error && message.result === doneMarker
-                } catch { return false }
-              })
-            }
-          }
-          return stdout + decoder.decode()
-        }
-        const output = Promise.all([readStdout(), new Response(child.stderr).text()])
-        child.stdin.write(`${JSON.stringify({
-          type: 'user', message: { role: 'user', content: 'Delegate this fixture to the provider-fixture Agent.' },
-          parent_tool_use_id: null, session_id: '',
-        })}\n`)
-        child.stdin.flush()
-        while ((!rootFinished || !receivedRootResult) && child.exitCode === null && !timedOut) await Bun.sleep(50)
-        child.stdin.end()
-        const [exitCode, [stdout, stderr]] = await Promise.all([child.exited, output])
-        writeFileSync(join(artifactDir, `agent-provider-routing-${testCase.id}.log`), `${stdout}\n${stderr}`)
-        for (const request of agentUpstream.requests) {
-          if (!mentions(request.body, childMarker)) continue
-          agentRequests.push({
-            model: request.body.model,
-            effort: (request.body as { output_config?: { effort?: unknown } }).output_config?.effort,
-            path: request.path,
+      const processChild = child
+      timer = setTimeout(() => { timedOut = true; releaseChildren(); processChild.kill('SIGKILL') }, STEP_TIMEOUT_MS)
+      const readStdout = async () => {
+        const decoder = new TextDecoder()
+        let stdout = ''
+        for await (const chunk of processChild.stdout) {
+          stdout += decoder.decode(chunk, { stream: true })
+          rootResult ||= stdout.split('\n').some(line => {
+            try {
+              const message = JSON.parse(line)
+              return message.type === 'result' && !message.is_error && message.result === doneMarker
+            } catch { return false }
           })
         }
-        assert.ok(!timedOut, `${testCase.id}: CLI exceeded ${STEP_TIMEOUT_MS}ms`)
-        assert.ok(isExpectedRoutingCliExit(exitCode, child.signalCode, false),
-          `${testCase.id}: CLI failed (${exitCode}, ${child.signalCode}): ${stderr}\n${stdout}`)
-        assert.ok(receivedAgentResult, `${testCase.id}: Agent failed or its result was not returned upstream`)
-        assert.ok(receivedRootResult, `${testCase.id}: CLI did not report the completed parent turn`)
-        assert.equal(sessionChildRequests.length, 0, `${testCase.id}: the Agent request reached the session provider`)
-        assert.ok(agentRequests.length > 0, `${testCase.id}: no Agent request reached its pinned provider`)
-        for (const request of agentRequests) {
-          assert.equal(request.path, '/v1/messages')
-          assert.equal(request.model, testCase.expectedModel, `${testCase.id}: wrong Agent model`)
-          assert.equal(request.effort, testCase.effort, `${testCase.id}: the saved Agent effort did not reach its provider`)
-        }
-        assert.ok(agentUpstream.requests.every(request => request.body.model !== SESSION_MODEL),
-          `${testCase.id}: a session request reached the Agent provider`)
-        result.status = 'passed'
-      } finally {
-        clearTimeout(timer)
-        if (child.exitCode === null) { child.kill('SIGKILL'); await child.exited }
+        return stdout + decoder.decode()
       }
+      const output = Promise.all([readStdout(), new Response(child.stderr).text()])
+      child.stdin.write(`${JSON.stringify({
+        type: 'user', message: { role: 'user', content: 'Run the provider routing fixture using the requested built-in agents.' },
+        parent_tool_use_id: null, session_id: '',
+      })}\n`)
+      child.stdin.flush()
+      while (!rootResult && child.exitCode === null && !timedOut) await Bun.sleep(50)
+      child.stdin.end()
+      const [exitCode, [stdout, stderr]] = await Promise.all([child.exited, output])
+      writeFileSync(join(artifactDir, `${id}.log`), `${stdout}\n${stderr}`)
+      assert.ok(!timedOut, `${id}: CLI exceeded ${STEP_TIMEOUT_MS}ms`)
+      assert.equal(exitCode, 0, `${id}: CLI failed: ${stderr}\n${stdout}`)
+      assert.ok(rootResult, `${id}: parent result did not finish`)
+      const rootRequests = requests.filter(request => request.endpoint === 'A' && request.path.endsWith('/v1/messages'))
+      assert.ok(rootRequests.length >= 2, `${id}: child result did not return to parent A`)
+      assert.ok(rootRequests.every(request => request.model === 'provider-a-main'), `${id}: parent model was replaced`)
+      const metadata = metadataUnder(sandbox.configDir)
+      for (const [endpoint, model] of expected) {
+        assert.ok(receivedResults.has(`provider_agent_${endpoint}`), `${id}: agent ${endpoint} result failed or was lost`)
+        assert.ok(childModels.get(endpoint)?.length, `${id}: no child ${endpoint} request reached its endpoint`)
+        assert.ok(childModels.get(endpoint)!.every(value => value === model), `${id}: wrong child ${endpoint} model: ${childModels.get(endpoint)}`)
+        assert.ok(metadata.some(entry => entry.providerId === `fixture-provider-${endpoint}` && entry.providerModel === model), `${id}: resume metadata lost provider/model ${endpoint}`)
+      }
+      for (const request of requests.filter(request => request.path.endsWith('/v1/messages'))) {
+        assert.equal(request.apiKey, `fake-key-${request.endpoint}`, `${id}: ${request.endpoint} received another provider's API key`)
+        assert.equal(request.authorization, null, `${id}: inherited bearer token leaked into ${request.endpoint}`)
+      }
+      assert.equal(JSON.parse(readFileSync(indexPath, 'utf8')).activeId, providers[0]!.id, `${id}: an agent activated its provider globally`)
+      if (concurrent) assert.equal(arrivals.size, 2, `${id}: child providers did not overlap`)
+      result.status = 'passed'
     } catch (error) {
       result.error = error instanceof Error ? error.message : String(error)
     } finally {
-      try {
-        await Promise.all([sessionUpstream.stop(), agentUpstream.stop()])
-      } finally {
-        const mutations = sandbox.detectUserStateMutations()
-        sandbox.cleanup()
-        assert.deepEqual(mutations, [], 'provider-routing lane mutated its isolated source state')
-        results.push(result)
-        writeFileSync(join(artifactDir, 'agent-provider-routing-results.json'), `${JSON.stringify(results, null, 2)}\n`)
-      }
+      clearTimeout(timer)
+      releaseChildren()
+      if (child && child.exitCode === null) { child.kill('SIGKILL'); await child.exited }
+      await Promise.all(upstreams.map(upstream => upstream.stop()))
+      const mutations = sandbox.detectUserStateMutations()
+      sandbox.cleanup()
+      assert.deepEqual(mutations, [], 'provider-routing scenario mutated its isolated source state')
+      results.push(result)
+      writeFileSync(join(artifactDir, 'results.json'), `${JSON.stringify(results, null, 2)}\n`)
     }
   }
-
   const failed = results.filter(result => result.status === 'failed')
   assert.equal(failed.length, 0, failed.map(result => `${result.id}: ${result.error}`).join('\n'))
   return results

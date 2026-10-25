@@ -1,6 +1,7 @@
 import { feature } from 'bun:bundle'
-import { getAgentModelSetting } from './builtInAgentOverrides.js'
-import { runWithAgentProviderRoute, withAgentProviderRoute } from '../../utils/model/providerEnvScope.js'
+import { resolveAgentProviderRuntime } from '../../services/api/agentProviderRuntime.js'
+import { bindProviderRuntimeGenerator, getProviderRuntimeContext, type ProviderRuntimeContext } from '../../services/api/providerRuntimeContext.js'
+import { getAgentProviderModel, getBuiltInAgentProviderId } from './agentProviderModel.js'
 import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
 import uniqBy from 'lodash-es/uniqBy.js'
@@ -10,7 +11,6 @@ import { getCommand, getSkillToolCommands, hasCommand } from '../../commands.js'
 import {
   DEFAULT_AGENT_PROMPT,
   enhanceSystemPromptWithEnvDetails,
-  getSystemPrompt,
 } from '../../constants/prompts.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import { getSystemContext, getUserContext } from '../../context.js'
@@ -44,7 +44,6 @@ import type {
   UserMessage,
 } from '../../types/message.js'
 import { createAttachmentMessage } from '../../utils/attachments.js'
-import { filterAgentProfileTools, getAgentProfile, isAgentProfileMcpEnabled } from '../../utils/agentProfile.js'
 import { AbortError } from '../../utils/errors.js'
 import { getDisplayPath } from '../../utils/file.js'
 import {
@@ -60,7 +59,6 @@ import { registerFrontmatterHooks } from '../../utils/hooks/registerFrontmatterH
 import { clearSessionHooks } from '../../utils/hooks/sessionHooks.js'
 import { executeSubagentStartHooks } from '../../utils/hooks.js'
 import { createUserMessage } from '../../utils/messages.js'
-import { getAgentModel } from '../../utils/model/agent.js'
 import {
   isChainParticipant,
   recordSidechainTranscript,
@@ -87,8 +85,6 @@ import { getTeammateContext } from '../../utils/teammateContext.js'
 import { filterToolsForAgent, resolveAgentTools } from './agentToolUtils.js'
 import { createDenialTrackingState } from '../../utils/permissions/denialTracking.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
-import { resolveLeanAgentDefinition } from './leanAgents.js'
-import { getSkillSelectionMessages } from '../SkillTool/explicitSkillRequest.js'
 
 export function resolveSubagentThinkingConfig(
   parentThinkingConfig: ToolUseContext['options']['thinkingConfig'],
@@ -181,9 +177,9 @@ export async function initializeAgentMcpServers(
   cleanup: () => Promise<void>
 }> {
   // If no agent-specific servers defined, return parent clients as-is
-  if (!isAgentProfileMcpEnabled() || !agentDefinition.mcpServers?.length) {
+  if (!agentDefinition.mcpServers?.length) {
     return {
-      clients: isAgentProfileMcpEnabled() ? parentClients : [],
+      clients: parentClients,
       tools: [],
       cleanup: async () => {},
     }
@@ -325,7 +321,18 @@ function isRecordableMessage(
   )
 }
 
-export async function* runAgent({
+export async function* runAgent(
+  options: Parameters<typeof runAgentInProviderContext>[0],
+): AsyncGenerator<Message, void> {
+  const providerId = getBuiltInAgentProviderId(options.agentDefinition)
+  const runtime = options.providerRuntime ?? (providerId
+    ? await resolveAgentProviderRuntime(providerId)
+    : getProviderRuntimeContext())
+  const iterator = runAgentInProviderContext(options)
+  yield* runtime ? bindProviderRuntimeGenerator(runtime, iterator) : iterator
+}
+
+async function* runAgentInProviderContext({
   agentDefinition,
   promptMessages,
   toolUseContext,
@@ -355,12 +362,14 @@ export async function* runAgent({
   extraMetadata,
   workflow,
   onQueryProgress,
-  skillSelectionMessages,
+  providerParentModel,
 }: {
   agentDefinition: AgentDefinition
+  /** A resolved snapshot shared by task metadata and the lazy query stream. */
+  providerRuntime?: ProviderRuntimeContext
+  /** Recorded provider model for a resumed child whose invoker has changed. */
+  providerParentModel?: string
   promptMessages: Message[]
-  /** Human authorization carried separately from model-authored child messages. */
-  skillSelectionMessages?: readonly Message[]
   toolUseContext: ToolUseContext
   canUseTool: CanUseToolFn
   isAsync: boolean
@@ -448,9 +457,6 @@ export async function* runAgent({
 }): AsyncGenerator<Message, void> {
   // Track subagent usage for feature discovery
 
-  const lean = getAgentProfile() === 'lean'
-  if (lean) agentDefinition = resolveLeanAgentDefinition(agentDefinition.agentType)
-
   const appState = toolUseContext.getAppState()
   const permissionMode = appState.toolPermissionContext.mode
   // Always-shared channel to the root AppState store. toolUseContext.setAppState
@@ -459,22 +465,13 @@ export async function* runAgent({
   const rootSetAppState =
     toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState
 
-  // A pinned provider owns the model: the saved choice wins over tool-call
-  // aliases and CLAUDE_CODE_SUBAGENT_MODEL, which name the session's slots.
-  // Loaded on demand: the route reaches the provider proxy, whose module
-  // graph imports this one.
-  const providerRoute = agentDefinition.provider
-    ? await (await import('../../utils/model/agentProviderRoute.js')).resolveAgentProviderRoute({
-        agentType: agentDefinition.agentType,
-        providerId: agentDefinition.provider,
-        model: agentDefinition.model,
-      })
-    : undefined
-  const resolvedAgentModel = providerRoute?.model ?? getAgentModel(
-    getAgentModelSetting(agentDefinition, toolUseContext.options.mainLoopModel),
+  const resolvedAgentModel = getAgentProviderModel(
+    agentDefinition,
     toolUseContext.options.mainLoopModel,
     model,
     permissionMode,
+    getProviderRuntimeContext(),
+    providerParentModel,
   )
 
   const agentId = override?.agentId ? override.agentId : createAgentId()
@@ -653,21 +650,15 @@ export async function* runAgent({
     }
   }
 
-  const profileTools = filterAgentProfileTools(availableTools)
-  const resolvedTools = useExactTools && !lean
+  const resolvedTools = useExactTools
     ? availableTools
-    : resolveAgentTools(agentDefinition, profileTools, isAsync).resolvedTools
+    : resolveAgentTools(agentDefinition, availableTools, isAsync).resolvedTools
 
   const additionalWorkingDirectories = Array.from(
     appState.toolPermissionContext.additionalWorkingDirectories.keys(),
   )
 
-  const agentSystemPrompt = lean
-    ? asSystemPrompt([
-        ...await getSystemPrompt(resolvedTools, resolvedAgentModel, additionalWorkingDirectories),
-        agentDefinition.getSystemPrompt({ toolUseContext }),
-      ])
-    : override?.systemPrompt
+  const agentSystemPrompt = override?.systemPrompt
     ? override.systemPrompt
     : asSystemPrompt(
         await getAgentSystemPrompt(
@@ -737,7 +728,7 @@ export async function* runAgent({
   }
 
   // Preload skills from agent frontmatter
-  const skillsToPreload = lean ? [] : agentDefinition.skills ?? []
+  const skillsToPreload = agentDefinition.skills ?? []
   if (skillsToPreload.length > 0) {
     const allSkills = await getSkillToolCommands(getProjectRoot())
 
@@ -885,12 +876,6 @@ export async function* runAgent({
     contentReplacementState,
   })
 
-  if (lean) {
-    agentToolUseContext.skillSelectionState = {
-      messages: skillSelectionMessages ?? getSkillSelectionMessages(toolUseContext),
-    }
-  }
-
   if (isBackgrounded) {
     const foregroundSetAppState = agentToolUseContext.setAppState
     agentToolUseContext.setAppState = updater => {
@@ -907,14 +892,13 @@ export async function* runAgent({
 
   // Expose cache-safe params for background summarization (prompt cache sharing)
   if (onCacheSafeParams) {
-    // Summaries it schedules reuse this Agent's model, so they keep its route.
-    runWithAgentProviderRoute(providerRoute, () => onCacheSafeParams({
+    onCacheSafeParams({
       systemPrompt: agentSystemPrompt,
       userContext: resolvedUserContext,
       systemContext: resolvedSystemContext,
       toolUseContext: agentToolUseContext,
       forkContextMessages: initialMessages,
-    }))
+    })
   }
 
   // Record initial messages before the query loop starts, plus the agentType
@@ -946,6 +930,10 @@ export async function* runAgent({
     ...(description && { description }),
     ...(spawningToolUseId && { toolUseId: spawningToolUseId }),
     ...(ownerAgentId && { ownerAgentId }),
+    ...(getProviderRuntimeContext() && {
+      providerId: getProviderRuntimeContext()!.providerId,
+      providerModel: resolvedAgentModel,
+    }),
     ...(workflow && { workflow }),
     ...extraMetadata,
   }).catch(_err => logForDebugging(`Failed to write agent metadata: ${_err}`))
@@ -954,7 +942,7 @@ export async function* runAgent({
   let lastRecordedUuid: UUID | null = initialMessages.at(-1)?.uuid ?? null
 
   try {
-    for await (const message of withAgentProviderRoute(providerRoute, query({
+    for await (const message of query({
       messages: initialMessages,
       systemPrompt: agentSystemPrompt,
       userContext: resolvedUserContext,
@@ -963,7 +951,7 @@ export async function* runAgent({
       toolUseContext: agentToolUseContext,
       querySource,
       maxTurns: maxTurns ?? agentDefinition.maxTurns,
-    }))) {
+    })) {
       onQueryProgress?.()
       if (
         agentRunRoute &&

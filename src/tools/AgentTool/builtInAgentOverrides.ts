@@ -25,8 +25,8 @@ export type OverriddenField<T> = {
 }
 
 export type ResolvedBuiltInAgentOverride = {
+  providerId?: OverriddenField<string>
   model?: OverriddenField<string>
-  provider?: OverriddenField<string>
   effort?: OverriddenField<EffortValue>
 }
 
@@ -68,22 +68,17 @@ export function resolveBuiltInAgentOverrides(): Map<
         typeof entry.model === 'string' && entry.model.trim().length > 0
           ? entry.model.trim()
           : undefined
-      const provider =
-        typeof entry.provider === 'string' && entry.provider.trim().length > 0
-          ? entry.provider.trim()
-          : undefined
+      const providerId = typeof entry.providerId === 'string' && entry.providerId.trim()
+        ? entry.providerId.trim()
+        : undefined
       const effort = parseEffortValue(entry.effort)
-      if (model === undefined && effort === undefined) continue
+      if (model === undefined && effort === undefined && providerId === undefined) continue
 
       const current = resolved.get(agentType) ?? {}
       // Later sources win, but only for the fields they actually specify — a
-      // project-level model must not erase a user-level effort. A provider only
-      // means something for the model saved beside it, so the two move together.
-      if (model !== undefined) {
-        current.model = { value: model, source }
-        if (provider !== undefined) current.provider = { value: provider, source }
-        else delete current.provider
-      }
+      // project-level model must not erase a user-level effort.
+      if (model !== undefined) current.model = { value: model, source }
+      if (providerId !== undefined) current.providerId = { value: providerId, source }
       if (effort !== undefined) current.effort = { value: effort, source }
       resolved.set(agentType, current)
     }
@@ -97,6 +92,12 @@ export function getAgentModelSetting(
   agent: AgentDefinition | undefined,
   parentModel: string | null,
 ): string | undefined {
+  if (agent?.source === 'built-in' && agent.providerId) {
+    // Resolve aliases against the selected provider at the runtime boundary,
+    // never against the parent session's environment. A provider-only override
+    // uses that provider's default rather than the shipped Claude tier.
+    return agent.model ?? 'inherit'
+  }
   if (
     agent?.source === 'built-in' &&
     usesNonClaudeAgentRouting(parentModel) &&
@@ -133,12 +134,12 @@ export function applyBuiltInAgentOverrides(
 
   return agents.map(agent => {
     const override = overrides.get(agent.agentType)
-    if (!override?.model && !override?.effort) return agent
+    if (!override?.model && !override?.effort && !override?.providerId) return agent
 
     return {
       ...agent,
-      ...(override.model ? { model: override.model.value } : {}),
-      ...(override.provider ? { provider: override.provider.value } : {}),
+      ...(override.providerId ? { providerId: override.providerId.value } : {}),
+      ...(override.model ? { model: override.model.value } : override.providerId ? { model: 'inherit' } : {}),
       ...(override.effort ? { effort: override.effort.value } : {}),
     }
   })

@@ -1,17 +1,8 @@
-import { readProviderEnvForModel } from './providerEnvScope.js'
+import { getProviderRuntimeEnvironment } from '../../services/api/providerRuntimeContext.js'
 
 export const MODEL_CONTEXT_WINDOWS_ENV_KEY = 'CLAUDE_CODE_MODEL_CONTEXT_WINDOWS'
-export const AUTO_COMPACT_WINDOW_ENV_KEY = 'CLAUDE_CODE_AUTO_COMPACT_WINDOW'
 export const MODEL_CONTEXT_WINDOW_MIN = 16_000
 export const MODEL_CONTEXT_WINDOW_MAX = 10_000_000
-/**
- * A provider's per-model reply limits, the same shape as the window map. A
- * gateway serving many models (Magpie) knows each one's limit; one
- * provider-wide number would cut the long-reply models or overrun the others.
- */
-export const MODEL_MAX_OUTPUT_TOKENS_ENV_KEY = 'CLAUDE_CODE_MODEL_MAX_OUTPUT_TOKENS'
-export const MODEL_MAX_OUTPUT_TOKENS_MIN = 1_024
-export const MODEL_MAX_OUTPUT_TOKENS_MAX = MODEL_CONTEXT_WINDOW_MAX
 
 const DIRECT_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   'claude-fable-5-1': 1_000_000,
@@ -91,40 +82,32 @@ export function normalizeModelContextKey(model: string): string {
     .toLowerCase()
 }
 
-function normalizeModelLimit(value: unknown, min: number, max: number): number | undefined {
+function normalizeWindow(value: unknown): number | undefined {
   if (typeof value !== 'number' || !Number.isInteger(value)) {
     return undefined
   }
-  if (value < min || value > max) {
+  if (value < MODEL_CONTEXT_WINDOW_MIN || value > MODEL_CONTEXT_WINDOW_MAX) {
     return undefined
   }
   return value
 }
 
-function normalizeConfiguredModelLimits(
-  parsed: unknown,
-  min: number,
-  max: number,
-): Record<string, number> {
+function normalizeConfiguredContextWindows(parsed: unknown): Record<string, number> {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return {}
   }
 
-  const limits: Record<string, number> = {}
+  const windows: Record<string, number> = {}
   for (const [model, value] of Object.entries(parsed)) {
-    const normalized = normalizeModelLimit(value, min, max)
+    const normalized = normalizeWindow(value)
     if (normalized !== undefined) {
-      limits[normalizeModelContextKey(model)] = normalized
+      windows[normalizeModelContextKey(model)] = normalized
     }
   }
-  return limits
+  return windows
 }
 
-function normalizeConfiguredContextWindows(parsed: unknown): Record<string, number> {
-  return normalizeConfiguredModelLimits(parsed, MODEL_CONTEXT_WINDOW_MIN, MODEL_CONTEXT_WINDOW_MAX)
-}
-
-function findConfiguredModelLimit(
+function findConfiguredModelContextWindow(
   model: string,
   configured: Record<string, number>,
 ): number | undefined {
@@ -155,7 +138,7 @@ export function getModelContextWindowFromEnvValue(
 
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>
-    return findConfiguredModelLimit(
+    return findConfiguredModelContextWindow(
       model,
       normalizeConfiguredContextWindows(parsed),
     )
@@ -164,8 +147,8 @@ export function getModelContextWindowFromEnvValue(
   }
 }
 
-function parseConfiguredContextWindows(model: string): Record<string, number> {
-  const raw = readProviderEnvForModel(model, MODEL_CONTEXT_WINDOWS_ENV_KEY)
+function parseConfiguredContextWindows(): Record<string, number> {
+  const raw = getProviderRuntimeEnvironment()[MODEL_CONTEXT_WINDOWS_ENV_KEY]
   if (!raw?.trim()) {
     return {}
   }
@@ -180,28 +163,7 @@ function parseConfiguredContextWindows(model: string): Record<string, number> {
 export function getConfiguredModelContextWindow(
   model: string,
 ): number | undefined {
-  return findConfiguredModelLimit(model, parseConfiguredContextWindows(model))
-}
-
-/** The reply limit the model's provider configured for it, matched like the windows. */
-export function getConfiguredModelMaxOutputTokens(model: string): number | undefined {
-  const raw = readProviderEnvForModel(model, MODEL_MAX_OUTPUT_TOKENS_ENV_KEY)
-  if (!raw?.trim()) {
-    return undefined
-  }
-
-  try {
-    return findConfiguredModelLimit(
-      model,
-      normalizeConfiguredModelLimits(
-        JSON.parse(raw) as unknown,
-        MODEL_MAX_OUTPUT_TOKENS_MIN,
-        MODEL_MAX_OUTPUT_TOKENS_MAX,
-      ),
-    )
-  } catch {
-    return undefined
-  }
+  return findConfiguredModelContextWindow(model, parseConfiguredContextWindows())
 }
 
 export function getBuiltInModelContextWindow(model: string): number | undefined {

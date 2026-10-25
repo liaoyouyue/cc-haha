@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   ArrowLeft,
   Bot,
@@ -6,7 +6,6 @@ import {
   Boxes,
   Bolt,
   Check,
-  ChevronDown,
   CircleAlert,
   Folder,
   LockKeyhole,
@@ -27,12 +26,12 @@ import type {
   AgentScope,
   AgentSource,
 } from '../../api/agents'
+import { agentsApi } from '@/api/agents'
+import type { SessionModelChoice } from '../../../../src/shared/sessionDelegation'
 import { useAgentStore } from '../../stores/agentStore'
-import { useProviderStore } from '../../stores/providerStore'
-import { useSettingsStore } from '../../stores/settingsStore'
 import { useSessionStore } from '../../stores/sessionStore'
+import { useSettingsStore } from '../../stores/settingsStore'
 import { getSessionBrowsablePath } from '../../lib/sessionWorkspace'
-import { getProviderModelReasoningEfforts } from '../../lib/runtimeSelection'
 import { useUIStore } from '../../stores/uiStore'
 import { MarkdownRenderer } from '../markdown/MarkdownRenderer'
 import { Badge } from '@/components/ui/Badge'
@@ -54,8 +53,7 @@ import {
   SettingsSection,
   SettingsStat,
 } from '@/components/settings/SettingsSection'
-import { ModelSelector, type ModelProviderChoice } from '@/components/controls/ModelSelector'
-import { ReasoningEffortPopover } from '@/components/controls/ReasoningEffortPopover'
+import { ModelSelector } from '@/components/controls/ModelSelector'
 import { cx } from '@/lib/cx'
 
 /**
@@ -96,13 +94,6 @@ const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
  * `null`. Distinct from `inherit`, which is itself a persistable choice.
  */
 const DEFAULT_CHOICE = '__default__'
-/**
- * The picker group whose rows follow the session's provider, as distinct from
- * a model chosen under one saved provider, which pins that provider.
- */
-const SESSION_PROVIDER_CHOICE = '__session__'
-/** `providerId: null` follows the session's provider. */
-type AgentRuntimeChoice = { providerId: string | null; modelId: string }
 const NAME_PATTERN = /^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/
 type ToolAccessMode = 'inherit' | 'none' | 'custom'
 type ToolCategory = 'readSearch' | 'modify' | 'execute' | 'workflow' | 'other'
@@ -307,8 +298,11 @@ export function AgentManager() {
                             <span className="block min-w-0 flex-1">
                               <span className="flex flex-wrap items-center gap-1.5">
                                 <span className="break-all font-mono text-[13px] font-medium text-[var(--color-text-primary)]">{agent.agentType}</span>
-                                {agent.modelDisplay && <MetaPill mono>{agent.modelDisplay}</MetaPill>}
-                                {agent.provider && <MetaPill>{agent.providerName ?? agent.provider}</MetaPill>}
+                                {(usesProviderDefaultModel(agent) || agent.modelDisplay) && (
+                                  <MetaPill mono={!usesProviderDefaultModel(agent)}>
+                                    {usesProviderDefaultModel(agent) ? t('settings.agents.form.providerDefaultModel') : agent.modelDisplay}
+                                  </MetaPill>
+                                )}
                                 {agent.effort !== undefined && <MetaPill>{agent.effort}</MetaPill>}
                                 <Badge tone={agent.isActive ? 'success' : 'neutral'}>
                                   {agent.isActive ? t('settings.agents.status.active') : t('settings.agents.status.available')}
@@ -375,6 +369,12 @@ export function AgentManager() {
   )
 }
 
+function usesProviderDefaultModel(agent: AgentDefinition): boolean {
+  return agent.source === 'built-in' &&
+    Boolean(agent.providerId || agent.override?.providerId) &&
+    (!agent.override?.model || agent.override.model === 'inherit')
+}
+
 function AgentDetailView({
   agent,
   onBack,
@@ -421,8 +421,8 @@ function AgentDetailView({
                 {t('settings.agents.override')}
               </Button>
             )}
-            {/* Kept alongside the button: the prompt and tools really are fixed,
-                and only the model and effort are not. */}
+            {/* Kept alongside the button: the prompt and tools remain fixed,
+                while the provider, model and effort can be overridden. */}
             <Badge tone="neutral" icon={<LockKeyhole size={11} strokeWidth={2} aria-hidden="true" />}>
               {t('settings.agents.readOnly')}
             </Badge>
@@ -460,8 +460,7 @@ function AgentDetailView({
         <SettingsGroup>
           <SettingsRow title={t('settings.agents.detail.configuredModel')} layout="inline">
             <span className="break-all font-mono text-xs text-[var(--color-text-secondary)]">
-              {agent.model || inherited}
-              {agent.provider && ` · ${agent.providerName ?? agent.provider}`}
+              {usesProviderDefaultModel(agent) ? t('settings.agents.form.providerDefaultModel') : agent.model || inherited}
             </span>
           </SettingsRow>
           <SettingsRow
@@ -537,6 +536,7 @@ function AgentFormModal({
   const availableTools = useAgentStore((state) => state.availableTools)
   const sessions = useSessionStore((state) => state.sessions)
   const initialScope = agent?.source === 'projectSettings' ? 'project' : 'user'
+  const initialModel = agent?.model || 'inherit'
   const [scope, setScope] = useState<AgentScope>(initialScope)
   const [projectPath, setProjectPath] = useState(
     initialScope === 'project' ? getAgentProjectPath(agent) || cwd || '' : cwd || '',
@@ -544,11 +544,9 @@ function AgentFormModal({
   const [name, setName] = useState(agent?.agentType || '')
   const [description, setDescription] = useState(agent?.description || '')
   const [systemPrompt, setSystemPrompt] = useState(agent?.systemPrompt || '')
-  const [runtimeChoice, setRuntimeChoice] = useState<AgentRuntimeChoice>({
-    providerId: agent?.provider ?? null,
-    modelId: agent?.model || 'inherit',
-  })
+  const [modelChoice, setModelChoice] = useState(initialModel)
   const initialEffort = agent?.effort === undefined ? 'inherit' : String(agent.effort)
+  const hasLegacyEffort = initialEffort !== 'inherit' && !EFFORTS.includes(initialEffort as typeof EFFORTS[number])
   const [effort, setEffort] = useState(initialEffort)
   const initialToolAccess: ToolAccessMode = agent?.tools === undefined
     ? 'inherit'
@@ -594,12 +592,9 @@ function AgentFormModal({
       name: trimmedName,
       description: description.trim(),
       systemPrompt: systemPrompt.trim(),
-      // A model picked under a provider pins it; session rows clear the pin.
-      ...(runtimeChoice.providerId
-        ? { model: runtimeChoice.modelId, provider: runtimeChoice.providerId }
-        : mode === 'edit'
-          ? { model: runtimeChoice.modelId === 'inherit' ? null : runtimeChoice.modelId, provider: null }
-          : runtimeChoice.modelId === 'inherit' ? {} : { model: runtimeChoice.modelId }),
+      ...(mode === 'edit'
+        ? { model: modelChoice === 'inherit' ? null : modelChoice }
+        : modelChoice === 'inherit' ? {} : { model: modelChoice }),
       ...(mode === 'edit'
         ? { effort: effort === 'inherit' ? null : typeof agent?.effort === 'number' && effort === initialEffort ? agent.effort : effort }
         : effort === 'inherit' ? {} : { effort }),
@@ -748,24 +743,27 @@ function AgentFormModal({
           <Field label={t('settings.agents.form.model')}>
             <AgentModelSelector
               label={t('settings.agents.form.model')}
-              value={runtimeChoice}
-              onChange={setRuntimeChoice}
+              value={modelChoice}
+              onChange={setModelChoice}
             />
           </Field>
           <Field label={t('settings.agents.form.effort')}>
-            <AgentEffortField
+            <AgentSelect
               label={t('settings.agents.form.effort')}
               value={effort}
               onChange={setEffort}
-              runtime={runtimeChoice}
-              inheritValue="inherit"
-              inheritLabel={t('settings.agents.form.inherit')}
-              inheritStopLabel={t('settings.agents.form.effortInherit')}
+              items={[
+                { value: 'inherit', label: t('settings.agents.form.inherit') },
+                ...(hasLegacyEffort ? [{ value: initialEffort, label: initialEffort }] : []),
+                ...EFFORTS.map((value) => ({ value, label: value })),
+              ]}
             />
           </Field>
         </div>
 
-        <AgentRuntimeHint runtime={runtimeChoice} scope={scope} />
+        <p className="-mt-2 text-xs leading-5 text-[var(--color-text-tertiary)]">
+          {t('settings.agents.form.modelProviderHint')}
+        </p>
 
         <Field label={t('settings.agents.form.tools')}>
           <AgentSelect<ToolAccessMode>
@@ -1055,11 +1053,32 @@ function BuiltInAgentOverrideModal({
   // this modal writes to, so saying so beats a write that silently loses.
   const isManaged = overrideSource !== undefined && overrideSource !== 'userSettings'
 
+  const initialModel = agent.override?.model
   const initialEffort = agent.override?.effort
-  const [runtimeChoice, setRuntimeChoice] = useState<AgentRuntimeChoice>({
-    providerId: agent.override?.provider ?? null,
-    modelId: agent.override?.model ?? DEFAULT_CHOICE,
-  })
+  const [modelChoice, setModelChoice] = useState(
+    agent.override?.providerId && initialModel === 'inherit' ? DEFAULT_CHOICE : initialModel ?? DEFAULT_CHOICE,
+  )
+  const [providerChoice, setProviderChoice] = useState(agent.override?.providerId ?? '')
+  const [providerModels, setProviderModels] = useState<SessionModelChoice[]>([])
+  const [catalogState, setCatalogState] = useState<'loading' | 'ready' | 'error'>('loading')
+  useEffect(() => {
+    let cancelled = false
+    void agentsApi.providerModels(agent.agentType, cwd).then(({ models }) => {
+      if (!cancelled) {
+        setProviderModels(models)
+        setCatalogState('ready')
+      }
+    }).catch(() => { if (!cancelled) setCatalogState('error') })
+    return () => { cancelled = true }
+  }, [agent.agentType, cwd])
+  const providerItems = Array.from(new Map(providerModels.map(model => [
+    model.providerId ?? 'claude-official',
+    { value: model.providerId ?? 'claude-official', label: model.providerName },
+  ])).values())
+  const unlistedProvider = providerChoice !== '' && !providerItems.some(item => item.value === providerChoice)
+  const selectedProviderModels = providerModels.filter(model => (model.providerId ?? 'claude-official') === providerChoice)
+  const missingProvider = providerChoice !== '' && catalogState === 'ready' && selectedProviderModels.length === 0
+  const providerUnavailable = providerChoice !== '' && (catalogState !== 'ready' || missingProvider)
   const [effort, setEffort] = useState(
     initialEffort === undefined ? DEFAULT_CHOICE : String(initialEffort),
   )
@@ -1077,14 +1096,16 @@ function BuiltInAgentOverrideModal({
         agent.agentType,
         {
           ...(cwd ? { cwd } : {}),
+          ...(providerChoice || agent.override?.providerId
+            ? { providerId: providerChoice || null }
+            : {}),
           // `null` clears the override so the shipped default applies again.
           // Never send the default's literal value: that would freeze today's
           // default into the user's settings file forever.
           model:
-            runtimeChoice.modelId === DEFAULT_CHOICE
+            modelChoice === DEFAULT_CHOICE
               ? null
-              : runtimeChoice.modelId,
-          provider: runtimeChoice.providerId,
+              : modelChoice,
           effort: effort === DEFAULT_CHOICE ? null : effort,
         },
         sessionId,
@@ -1119,7 +1140,7 @@ function BuiltInAgentOverrideModal({
             </Button>
           )}
           <Button variant="secondary" onClick={onClose} disabled={isMutating}>{t('common.cancel')}</Button>
-          <Button onClick={() => void handleSave()} disabled={isMutating || isManaged}>
+          <Button onClick={() => void handleSave()} disabled={isMutating || isManaged || providerUnavailable}>
             {t('common.save')}
           </Button>
         </>
@@ -1151,28 +1172,48 @@ function BuiltInAgentOverrideModal({
           </p>
         )}
 
+        <Field label={t('settings.agents.form.provider')}>
+          <AgentSelect
+            label={t('settings.agents.form.provider')}
+            value={providerChoice}
+            onChange={(value) => {
+              setProviderChoice(value)
+              setModelChoice(DEFAULT_CHOICE)
+            }}
+            disabled={isManaged || catalogState === 'loading'}
+            items={[
+              { value: '', label: t('settings.agents.form.providerInherit') },
+              ...providerItems,
+              ...(unlistedProvider ? [{ value: providerChoice, label: t('settings.agents.form.providerUnavailable', { id: providerChoice }) }] : []),
+            ]}
+          />
+        </Field>
+        {catalogState === 'error' && <p role="alert" className="text-xs text-[var(--color-error)]">{t('settings.agents.form.providerLoadError')}</p>}
+        {missingProvider && <p role="status" className="text-xs text-[var(--color-text-secondary)]">{t('settings.agents.form.providerMissingHint')}</p>}
+
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label={t('settings.agents.form.model')}>
             <AgentModelSelector
               label={t('settings.agents.form.model')}
-              value={runtimeChoice}
-              onChange={setRuntimeChoice}
-              disabled={isManaged}
-              defaultLabel={describeDefault(defaultModel)}
+              value={modelChoice}
+              onChange={setModelChoice}
+              disabled={isManaged || providerUnavailable}
+              defaultLabel={providerChoice ? t('settings.agents.form.providerDefaultModel') : describeDefault(defaultModel)}
+              providerModels={providerChoice ? selectedProviderModels : undefined}
             />
           </Field>
           <Field label={t('settings.agents.form.effort')}>
-            {/* No "inherit" stop: effort has no such value, omitting it is
-                what inherits. */}
-            <AgentEffortField
+            <AgentSelect
               label={t('settings.agents.form.effort')}
               value={effort}
               onChange={setEffort}
-              runtime={runtimeChoice}
               disabled={isManaged}
-              inheritValue={DEFAULT_CHOICE}
-              inheritLabel={describeDefault(defaultEffort)}
-              inheritStopLabel={t('settings.agents.form.effortDefault')}
+              items={[
+                // No "inherit" entry: effort has no such value, omitting it is
+                // what inherits.
+                { value: DEFAULT_CHOICE, label: describeDefault(defaultEffort) },
+                ...EFFORTS.map((value) => ({ value, label: value })),
+              ]}
             />
           </Field>
         </div>
@@ -1180,7 +1221,9 @@ function BuiltInAgentOverrideModal({
         <p className="text-xs leading-5 text-[var(--color-text-tertiary)]">
           {t('settings.agents.overrideHint')}
         </p>
-        <AgentRuntimeHint runtime={runtimeChoice} />
+        <p className="text-xs leading-5 text-[var(--color-text-tertiary)]">
+          {t('settings.agents.form.providerHint')}
+        </p>
         <p className="text-xs leading-5 text-[var(--color-text-tertiary)]">
           {t('settings.agents.overrideScopeHint')}
         </p>
@@ -1320,41 +1363,41 @@ function AgentModelSelector({
   onChange,
   disabled,
   defaultLabel,
+  providerModels,
 }: {
   label: string
-  value: AgentRuntimeChoice
-  onChange: (value: AgentRuntimeChoice) => void
+  value: string
+  onChange: (value: string) => void
   disabled?: boolean
   defaultLabel?: string
+  providerModels?: SessionModelChoice[]
 }) {
   const t = useTranslation()
-  const providers = useProviderStore((state) => state.providers)
-  const hasLoadedProviders = useProviderStore((state) => state.hasLoadedProviders)
   const availableModels = useSettingsStore((state) => state.availableModels)
-  const leadingChoices = useMemo(() => {
-    const models: ModelInfo[] = []
+  const models = useMemo(() => {
+    const choices: ModelInfo[] = []
     const seen = new Set<string>()
     const add = (model: ModelInfo) => {
       if (seen.has(model.id)) return
       seen.add(model.id)
-      models.push(model)
+      choices.push(model)
     }
 
     if (defaultLabel) {
       add({
         id: DEFAULT_CHOICE,
         name: defaultLabel,
-        description: t('settings.agents.form.modelDefaultDescription'),
+        description: t(providerModels ? 'settings.agents.form.providerDefaultModelDescription' : 'settings.agents.form.modelDefaultDescription'),
         context: '',
       })
     }
-    add({
+    if (!providerModels) add({
       id: 'inherit',
       name: t('settings.agents.form.inherit'),
       description: t('settings.agents.form.modelInheritDescription'),
       context: '',
     })
-    for (const alias of BUILT_IN_MODELS) {
+    for (const alias of providerModels ? [] : BUILT_IN_MODELS) {
       add({
         id: alias,
         name: alias,
@@ -1362,156 +1405,30 @@ function AgentModelSelector({
         context: '',
       })
     }
-    // The current session provider's listing: a model ID without a pinned
-    // provider, which is the only concrete choice for account sign-ins.
-    availableModels.forEach(add)
-    if (value.providerId === null && value.modelId) {
+
+    if (!seen.has(value) && value) {
       add({
-        id: value.modelId,
-        name: value.modelId,
+        id: value,
+        name: value,
         description: t('settings.agents.form.modelUnavailableDescription'),
         context: '',
       })
     }
-
-    const choices: ModelProviderChoice[] = [{
-      providerId: SESSION_PROVIDER_CHOICE,
-      providerName: t('settings.agents.form.sessionProvider'),
-      isDefault: false,
-      models,
-    }]
-    // A provider deleted after this Agent was saved keeps showing the saved
-    // choice instead of silently turning into the default provider's model.
-    if (value.providerId && hasLoadedProviders && !providers.some((provider) => provider.id === value.providerId)) {
-      choices.push({
-        providerId: value.providerId,
-        providerName: value.providerId,
-        isDefault: false,
-        models: [{
-          id: value.modelId,
-          name: value.modelId,
-          description: t('settings.agents.form.providerMissing'),
-          context: '',
-        }],
-      })
-    }
+    if (providerModels) providerModels.forEach(model => add({ id: model.modelId, name: model.modelName, description: model.providerName, context: '' }))
+    else availableModels.forEach(add)
     return choices
-  }, [availableModels, defaultLabel, hasLoadedProviders, providers, t, value.modelId, value.providerId])
+  }, [availableModels, defaultLabel, providerModels, t, value])
 
   return (
     <ModelSelector
+      value={value}
+      onChange={onChange}
+      models={models}
       ariaLabel={label}
       appearance="field"
       disabled={disabled}
       fluid
-      leadingChoices={leadingChoices}
-      savedProvidersOnly
-      runtimeSelection={{ providerId: value.providerId ?? SESSION_PROVIDER_CHOICE, modelId: value.modelId }}
-      onRuntimeSelectionChange={(selection) => onChange({
-        providerId: selection.providerId === SESSION_PROVIDER_CHOICE ? null : selection.providerId,
-        modelId: selection.modelId,
-      })}
     />
-  )
-}
-
-/**
- * Effort for an Agent, on the composer's effort track. Levels follow what the
- * chosen provider model accepts; the leading stop keeps the effort unset.
- */
-function AgentEffortField({
-  label,
-  value,
-  onChange,
-  runtime,
-  disabled,
-  inheritValue,
-  inheritLabel,
-  inheritStopLabel,
-}: {
-  label: string
-  value: string
-  onChange: (value: string) => void
-  runtime: AgentRuntimeChoice
-  disabled?: boolean
-  inheritValue: string
-  inheritLabel: string
-  inheritStopLabel: string
-}) {
-  const t = useTranslation()
-  const providers = useProviderStore((state) => state.providers)
-  const anchorRef = useRef<HTMLButtonElement>(null)
-  const [open, setOpen] = useState(false)
-  const provider = runtime.providerId
-    ? providers.find((entry) => entry.id === runtime.providerId)
-    : undefined
-  const supported = provider ? getProviderModelReasoningEfforts(provider, runtime.modelId) : undefined
-  const levels: string[] = EFFORTS.filter((level) => supported === undefined || supported.includes(level))
-  // A saved value the model no longer lists stays visible rather than vanishing.
-  const options = [
-    inheritValue,
-    ...levels,
-    ...(value !== inheritValue && !levels.includes(value) ? [value] : []),
-  ]
-  const levelLabel = (level: string) =>
-    (EFFORTS as readonly string[]).includes(level)
-      ? t(`settings.general.effort.${level}` as TranslationKey)
-      : level
-  const labels = Object.fromEntries(options.map((option) => [
-    option,
-    option === inheritValue ? inheritStopLabel : levelLabel(option),
-  ]))
-  const triggerLabel = value === inheritValue ? inheritLabel : levelLabel(value)
-
-  return (
-    <>
-      <button
-        ref={anchorRef}
-        type="button"
-        aria-label={`${label}: ${triggerLabel}`}
-        aria-expanded={open}
-        disabled={disabled}
-        onClick={() => setOpen((current) => !current)}
-        className={cx(
-          FIELD_BASE_CLASSES,
-          fieldStateClasses(false),
-          'flex h-10 items-center gap-1.5 px-3 text-left text-[13px] hover:border-[var(--color-outline)]',
-          'focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]',
-        )}
-      >
-        <span className="min-w-0 flex-1 truncate">{triggerLabel}</span>
-        <ChevronDown aria-hidden="true" size={16} strokeWidth={2} className="shrink-0 text-[var(--color-text-tertiary)]" />
-      </button>
-      <ReasoningEffortPopover
-        open={open}
-        anchorRef={anchorRef}
-        options={options}
-        value={value}
-        labels={labels}
-        ariaLabel={label}
-        onChange={onChange}
-        onClose={() => setOpen(false)}
-      />
-    </>
-  )
-}
-
-function AgentRuntimeHint({ runtime, scope }: { runtime: AgentRuntimeChoice; scope?: AgentScope }) {
-  const t = useTranslation()
-  const providers = useProviderStore((state) => state.providers)
-  const hasLoadedProviders = useProviderStore((state) => state.hasLoadedProviders)
-  const missing = runtime.providerId !== null && hasLoadedProviders &&
-    !providers.some((provider) => provider.id === runtime.providerId)
-  return missing ? (
-    <p role="status" className="rounded-[var(--radius-md)] bg-[var(--color-warning-container)] px-3 py-2 text-xs leading-5 text-[var(--color-on-warning-container)]">
-      {t('settings.agents.form.providerMissing')}
-    </p>
-  ) : (
-    <p className="-mt-2 text-xs leading-5 text-[var(--color-text-tertiary)]">
-      {scope === 'project' && runtime.providerId !== null
-        ? t('settings.agents.form.projectProviderHint')
-        : t('settings.agents.form.modelProviderHint')}
-    </p>
   )
 }
 

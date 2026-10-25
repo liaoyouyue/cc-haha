@@ -125,11 +125,6 @@ export class SettingsService {
     return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null
   }
 
-  /** Desktop composer next-prompt suggestions; opt-in because each turn costs an extra request. */
-  async getNextPromptSuggestionsEnabled(): Promise<boolean> {
-    return (await this.getUserSettings()).nextPromptSuggestionsEnabled === true
-  }
-
   /** Read-time upgrade for older settings that only stored the team env flag.
    * Keep the original file intact until the user explicitly saves a choice.
    */
@@ -310,9 +305,9 @@ export class SettingsService {
   }
 
   /**
-   * 合并单个内置 Agent 的 model/provider/effort 覆盖。
+   * 合并单个内置 Agent 的 providerId/model/effort 覆盖。
    *
-   * `patch` 为 null 时删除 model/provider/effort；字段值为 null 时只删该字段。
+   * `patch` 为 null 时删除 providerId/model/effort；字段值为 null 时只删该字段。
    * 条目清空后连同条目一起删除，`builtInAgentOverrides` 变空时删掉这个 key，
    * 不在用户的 settings.json 里留下空壳。
    *
@@ -323,8 +318,8 @@ export class SettingsService {
   async updateBuiltInAgentOverride(
     agentType: string,
     patch: {
+      providerId?: string | null
       model?: string | null
-      provider?: string | null
       effort?: string | number | null
     } | null,
   ): Promise<void> {
@@ -339,10 +334,10 @@ export class SettingsService {
         // future per-agent fields, so reset must not erase data written by a
         // newer client or another settings editor.
         delete entry.model
-        delete entry.provider
         delete entry.effort
+        delete entry.providerId
       } else {
-        for (const field of ['model', 'provider', 'effort'] as const) {
+        for (const field of ['providerId', 'model', 'effort'] as const) {
           if (!Object.hasOwn(patch, field)) continue
           if (patch[field] === null) {
             delete entry[field]
