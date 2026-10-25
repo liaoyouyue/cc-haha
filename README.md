@@ -1,5 +1,11 @@
 # cc-haha
 
+> **本仓库是个人 fork，仅供自用。**
+> 原始项目：[NanmiCoder/cc-haha](https://github.com/NanmiCoder/cc-haha)，Copyright (c) 2026 cc-haha，
+> 采用 [cc-haha Community Source License 1.0](LICENSE)。
+> 本 fork 的修改清单见文末「本 fork 的修改说明」；二次修改仅用于个人非商业用途。
+
+
 <p align="center">
   <img src="docs/images/readme-cover-zh.jpg" alt="cc-haha — Claude Code 源码可用桌面端" width="960">
 </p>
