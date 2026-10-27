@@ -220,9 +220,12 @@ test('stopping a running team stops its runtime and marks the plan interrupted',
   const stopped: string[] = []
   const service = new TeamPlanService({ validate: async item => item, launch: async () => ({ memberIds: { worker: 'child-1' } }), stop: async id => { stopped.push(id) } })
   await service.approve('review', identity(plan))
-  expect(calls).toBe(1)
-  release()
   expect((await settle('running')).launch?.memberIds).toEqual({ worker: 'child-1' })
+  const running = await readTeamPlan('review')
+  const result = await service.action('review', 'stop', identity(running!))
+  expect(stopped).toEqual([plan.planId])
+  expect(result.state).toBe('interrupted')
+  await expect(service.action('review', 'stop', identity(result))).rejects.toThrow('Only a running team can be stopped')
 })
 test('a plan read while the approval is committing does not orphan the launch', async () => {
   let launches = 0
@@ -427,7 +430,7 @@ test('launch transitions preserve future persisted launch metadata', async () =>
   await service.approve('review', identity(enriched))
   const running = await settle('running')
   const result = await service.action('review', 'stop', identity(running))
-  expect(stopped).toEqual([plan.planId])
   expect(result.state).toBe('interrupted')
+  expect(result.launch?.futureLaunch).toEqual({ retained: true })
   await expect(service.action('review', 'stop', identity(result))).rejects.toThrow('Only a running team can be stopped')
 })
