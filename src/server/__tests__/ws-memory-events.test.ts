@@ -204,9 +204,7 @@ describe('WebSocket memory events', () => {
       },
     ])
   })
-})
-
-it('forwards CLI memory_loaded system messages to the desktop client', () => {
+  it('forwards CLI memory_loaded system messages to the desktop client', () => {
     const messages = translateCliMessage(
       {
         type: 'system',
