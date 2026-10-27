@@ -138,7 +138,7 @@ export class TeamPlanService {
    * interrupted team whose members did start. Either leaves nothing behind that
    * would still read as a team in progress.
    */
-  async action(teamName: string, kind: 'return' | 'cancel' | 'retry' | 'end', action: TeamPlanAction): Promise<TeamPlanRecord> {
+  async action(teamName: string, kind: 'return' | 'cancel' | 'retry' | 'end' | 'stop', action: TeamPlanAction): Promise<TeamPlanRecord> {
     if (kind === 'retry') {
       const plan = await mutateTeamPlan(teamName, action, current => {
         if (current.state !== 'launch_failed') throw new TeamPlanError('Only failed launches can retry')
