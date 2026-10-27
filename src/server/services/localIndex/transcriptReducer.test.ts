@@ -755,6 +755,8 @@ describe('reduceTranscript activity usage', () => {
 
   it('bills repeated non-zero block lines once and does not double-count later updates', () => {
     // Native Anthropic replies repeat one identical usage per block line: still billed once.
+    // Under the upstream per-field ledger a later larger line bills only the excess, so a
+    // 999_999/888_888 update on the same message id raises totals to that maximum.
     const chunks = completeChunks([
       ...assistantBlockLines({
         messageId: 'msg_native',
@@ -763,7 +765,6 @@ describe('reduceTranscript activity usage', () => {
         usage: STANDARD_USAGE,
         blocks: [{ type: 'text', text: 'one' }, { type: 'text', text: 'two' }],
       }),
-      // A later content-block line repeating the same message id must not add again.
       ...assistantBlockLines({
         messageId: 'msg_native',
         requestId: 'req_native',
@@ -776,8 +777,8 @@ describe('reduceTranscript activity usage', () => {
     const result = reduceTranscript(chunks, initialProjection())
     expect(result.activity?.models).toHaveLength(1)
     expect(result.activity?.models[0]).toMatchObject({
-      inputTokens: 1000,
-      outputTokens: 200,
+      inputTokens: 999_999,
+      outputTokens: 888_888,
     })
   })
 
