@@ -842,7 +842,14 @@ function cacheToStats(
         )[0]
       : null
 
-  const totalDays = countUtcCalendarDaysInclusive(firstSessionDate, lastSessionDate)
+  // Same rule as `processedStatsToClaudeCodeStats`: the activity-rate
+  // denominator is the span of active days, not of session timestamps.
+  // Archived main transcripts leave only subagents behind, so session
+  // timestamps can collapse to "today" while daily activity spans the range.
+  const totalDays = countUtcCalendarDaysInclusive(
+    dailyActivityArray[0]?.date ?? firstSessionDate,
+    dailyActivityArray.at(-1)?.date ?? lastSessionDate,
+  )
 
   const totalSpeculationTimeSavedMs =
     cache.totalSpeculationTimeSavedMs +
@@ -1106,8 +1113,15 @@ export function processedStatsToClaudeCodeStats(
         )
       : null
 
-  // Total days in range
-  const totalDays = countUtcCalendarDaysInclusive(firstSessionDate, lastSessionDate)
+  // Total days in range: the span of days that have activity. It must NOT come
+  // from session timestamps — archived main transcripts leave only their
+  // subagents behind, so `firstSessionDate` collapses to "today" while the
+  // daily-activity rows still span the real range. Fall back to the timestamps
+  // only when there is no daily activity at all.
+  const totalDays = countUtcCalendarDaysInclusive(
+    dailyActivitySorted[0]?.date ?? firstSessionDate,
+    dailyActivitySorted.at(-1)?.date ?? lastSessionDate,
+  )
 
   const result: ClaudeCodeStats = {
     totalSessions: stats.sessionStats.length,
