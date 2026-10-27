@@ -166,32 +166,6 @@ export function isBillableUsageRecord(identity: UsageRecordIdentity): boolean {
 }
 
 /**
- * Whether a `usage` object carries any tokens at all. Streaming gateways (Magpie and several
- * OpenAI-compatible bridges) emit placeholder block lines whose usage is all zeros and only fill
- * in the real counts on the final line of the reply. An all-zero line must not claim the
- * deduplication key — otherwise it bills nothing and blocks the real usage from ever being counted.
- */
-export function usageCarriesTokens(usage: {
-  input_tokens?: number
-  output_tokens?: number
-  cache_read_input_tokens?: number
-  cache_creation_input_tokens?: number
-  cache_creation?: {
-    ephemeral_5m_input_tokens?: number
-    ephemeral_1h_input_tokens?: number
-  } | null
-  server_tool_use?: { web_search_requests?: number } | null
-}): boolean {
-  if ((usage.input_tokens ?? 0) > 0) return true
-  if ((usage.output_tokens ?? 0) > 0) return true
-  if ((usage.cache_read_input_tokens ?? 0) > 0) return true
-  if ((usage.cache_creation_input_tokens ?? 0) > 0) return true
-  if ((usage.cache_creation?.ephemeral_5m_input_tokens ?? 0) > 0) return true
-  if ((usage.cache_creation?.ephemeral_1h_input_tokens ?? 0) > 0) return true
-  return false
-}
-
-/**
  * Conversation branches copy the selected prefix into a new transcript so the fork keeps its
  * context. Those lines retain their original usage and carry this provenance marker; the API calls
  * belong to the source session and must not be attributed to the fork a second time.
@@ -224,6 +198,74 @@ export function usageRecordKey(
   if (typeof messageId !== 'string' || !messageId) return null
   const requestId = typeof identity.requestId === 'string' ? identity.requestId : ''
   return `${messageId}\0${requestId}${suffix}`
+}
+
+/**
+ * What one reply's content-block lines add to a ledger of already-counted usage.
+ *
+ * The lines of one reply do not necessarily agree: the first block can be written with an
+ * all-zero or partial `usage` (output_tokens still 0) and a later line carries the final numbers.
+ * Keeping "the first line wins" therefore recorded some replies as ~0 output tokens. Instead each
+ * field keeps the largest value any line reported, and a line only contributes what exceeds what
+ * was already counted. Identical repeats add nothing; a late-arriving final line adds the rest.
+ *
+ * `previous` is what had been counted before this line (null for a first sighting) and `total` is
+ * the reply's running figure, so tiered pricing can be applied to the whole reply and billed as
+ * `cost(total) - cost(previous)` instead of pricing each fragment as a tiny prompt.
+ */
+export type UsageIncrement = {
+  previous: Required<PricedTokens> | null
+  total: Required<PricedTokens>
+  delta: Required<PricedTokens>
+  isEmpty: boolean
+}
+
+export type UsageLedger = Map<string, Required<PricedTokens>>
+
+function withWebSearch(tokens: PricedTokens): Required<PricedTokens> {
+  return { ...tokens, webSearchRequests: tokens.webSearchRequests ?? 0 }
+}
+
+export function claimUsageIncrement(
+  ledger: UsageLedger,
+  key: string | null,
+  current: PricedTokens,
+): UsageIncrement {
+  const next = withWebSearch(current)
+  const previous = key === null ? undefined : ledger.get(key)
+  const total: Required<PricedTokens> = previous
+    ? {
+        inputTokens: Math.max(previous.inputTokens, next.inputTokens),
+        outputTokens: Math.max(previous.outputTokens, next.outputTokens),
+        cacheReadInputTokens: Math.max(previous.cacheReadInputTokens, next.cacheReadInputTokens),
+        cacheCreationInputTokens: Math.max(
+          previous.cacheCreationInputTokens,
+          next.cacheCreationInputTokens,
+        ),
+        webSearchRequests: Math.max(previous.webSearchRequests, next.webSearchRequests),
+      }
+    : next
+  if (key !== null) ledger.set(key, total)
+  const base = previous ?? withWebSearch({
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+  })
+  const delta: Required<PricedTokens> = {
+    inputTokens: total.inputTokens - base.inputTokens,
+    outputTokens: total.outputTokens - base.outputTokens,
+    cacheReadInputTokens: total.cacheReadInputTokens - base.cacheReadInputTokens,
+    cacheCreationInputTokens: total.cacheCreationInputTokens - base.cacheCreationInputTokens,
+    webSearchRequests: total.webSearchRequests - base.webSearchRequests,
+  }
+  const isEmpty =
+    delta.inputTokens === 0 &&
+    delta.outputTokens === 0 &&
+    delta.cacheReadInputTokens === 0 &&
+    delta.cacheCreationInputTokens === 0 &&
+    delta.webSearchRequests === 0
+  return { previous: previous ?? null, total, delta, isEmpty }
 }
 
 /**

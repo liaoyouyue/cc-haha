@@ -12,11 +12,14 @@ import { getProjectsDir, isTranscriptMessage } from './sessionStorage.js'
 import { extractShotCountFromAssistantContent } from './shotStats.js'
 import {
   activeGapMs,
+  claimUsageIncrement,
   estimateCostUSD,
   isBillableUsageRecord,
   resolveModelCosts,
-  usageCarriesTokens,
   usageRecordKey,
+  type PricedTokens,
+  type UsageIncrement,
+  type UsageLedger,
 } from './usageAccounting.js'
 import { jsonParse } from './slowOperations.js'
 import {
@@ -156,15 +159,6 @@ function cacheCreationTokens(usage: UsageLike): number {
     )
   }
   return usage.cache_creation_input_tokens || 0
-}
-
-function getTotalUsageTokens(usage: UsageLike): number {
-  return (
-    (usage.input_tokens || 0) +
-    (usage.output_tokens || 0) +
-    (usage.cache_read_input_tokens || 0) +
-    cacheCreationTokens(usage)
-  )
 }
 
 /**
@@ -444,11 +438,16 @@ async function processSessionFiles(
         hourCounts.set(hour, (hourCounts.get(hour) || 0) + 1)
       }
 
-      // One assistant reply is written as one JSONL line per content block, each repeating the
-      // same complete `usage`. Scoped per transcript, matching how the local index reducer keys
-      // its own deduplication, so both paths produce identical totals.
-      const countedUsageKeys = new Set<string>()
-      const claimUsage = (message: TranscriptMessage, suffix = '', usage?: unknown): boolean => {
+      // One assistant reply is written as one JSONL line per content block, each carrying a usage
+      // object that may be zero/partial until the last line. Each field is counted at the largest
+      // value any line reported, billing only the excess. Scoped per transcript, matching how the
+      // local index reducer keys its own deduplication, so both paths produce identical totals.
+      const usageLedger: UsageLedger = new Map()
+      const claimUsage = (
+        message: TranscriptMessage,
+        tokens: PricedTokens,
+        suffix = '',
+      ): UsageIncrement | null => {
         const record = message as unknown as Record<string, unknown>
         const identity = {
           version: record.version,
@@ -457,15 +456,8 @@ async function processSessionFiles(
           messageId: (message.message as { id?: unknown } | undefined)?.id,
           forkedFrom: record.forkedFrom,
         }
-        if (!isBillableUsageRecord(identity)) return false
-        // An all-zero usage (streaming placeholder block lines) must not claim the dedup key —
-        // recording it is a no-op and would block the final line carrying the real counts.
-        if (usage !== undefined && !usageCarriesTokens(usage as never)) return false
-        const key = usageRecordKey(identity, suffix)
-        if (key === null) return true
-        if (countedUsageKeys.has(key)) return false
-        countedUsageKeys.add(key)
-        return true
+        if (!isBillableUsageRecord(identity)) return null
+        return claimUsageIncrement(usageLedger, usageRecordKey(identity, suffix), tokens)
       }
 
       // Process messages for tool usage and model stats
@@ -520,7 +512,16 @@ async function processSessionFiles(
               continue
             }
 
-            if (!claimUsage(message, '', usage)) {
+            const webSearchRequests =
+              (usage as UsageLike).server_tool_use?.web_search_requests || 0
+            const increment = claimUsage(message, {
+              inputTokens: usage.input_tokens || 0,
+              outputTokens: usage.output_tokens || 0,
+              cacheReadInputTokens: usage.cache_read_input_tokens || 0,
+              cacheCreationInputTokens: cacheCreationTokens(usage),
+              webSearchRequests,
+            })
+            if (!increment || (increment.isEmpty && increment.previous)) {
               continue
             }
 
@@ -537,34 +538,34 @@ async function processSessionFiles(
               }
             }
 
-            const cacheCreationInputTokens = cacheCreationTokens(usage)
-            const webSearchRequests =
-              (usage as UsageLike).server_tool_use?.web_search_requests || 0
-            modelUsageAgg[model]!.inputTokens += usage.input_tokens || 0
-            modelUsageAgg[model]!.outputTokens += usage.output_tokens || 0
+            const { delta, total, previous } = increment
+            modelUsageAgg[model]!.inputTokens += delta.inputTokens
+            modelUsageAgg[model]!.outputTokens += delta.outputTokens
             modelUsageAgg[model]!.cacheReadInputTokens +=
-              usage.cache_read_input_tokens || 0
+              delta.cacheReadInputTokens
             modelUsageAgg[model]!.cacheCreationInputTokens +=
-              cacheCreationInputTokens
-            modelUsageAgg[model]!.webSearchRequests += webSearchRequests
+              delta.cacheCreationInputTokens
+            modelUsageAgg[model]!.webSearchRequests += delta.webSearchRequests
 
             // A model with no published rates (every third-party provider) contributes tokens but
-            // no dollars — a null must never be folded in as a zero.
-            const cost = estimateCostUSD(
-              model,
-              {
-                inputTokens: usage.input_tokens || 0,
-                outputTokens: usage.output_tokens || 0,
-                cacheReadInputTokens: usage.cache_read_input_tokens || 0,
-                cacheCreationInputTokens,
-                webSearchRequests,
-              },
-              (usage as UsageLike).speed,
-            )
-            if (cost !== null) modelUsageAgg[model]!.costUSD += cost
+            // no dollars — a null must never be folded in as a zero. Priced on the reply's running
+            // total and billed as the difference, so a prompt-length tier is decided by the whole
+            // prompt rather than by whichever fragment arrived last.
+            const speed = (usage as UsageLike).speed
+            const totalCost = estimateCostUSD(model, total, speed)
+            if (totalCost !== null) {
+              const previousCost = previous
+                ? estimateCostUSD(model, previous, speed)
+                : 0
+              modelUsageAgg[model]!.costUSD += totalCost - (previousCost ?? 0)
+            }
 
             // Track daily tokens per model
-            const totalTokens = getTotalUsageTokens(usage)
+            const totalTokens =
+              delta.inputTokens +
+              delta.outputTokens +
+              delta.cacheReadInputTokens +
+              delta.cacheCreationInputTokens
             if (totalTokens > 0) {
               const tokenDateKey = messageDateKey
               const dayTokens = dailyModelTokensMap.get(tokenDateKey) || {}
@@ -841,12 +842,7 @@ function cacheToStats(
         )[0]
       : null
 
-  // Same rule as `processedStatsToClaudeCodeStats`: the activity-rate
-  // denominator is the span of active days, not of session timestamps.
-  const totalDays = countUtcCalendarDaysInclusive(
-    dailyActivityArray[0]?.date ?? firstSessionDate,
-    dailyActivityArray.at(-1)?.date ?? lastSessionDate,
-  )
+  const totalDays = countUtcCalendarDaysInclusive(firstSessionDate, lastSessionDate)
 
   const totalSpeculationTimeSavedMs =
     cache.totalSpeculationTimeSavedMs +
@@ -1110,15 +1106,8 @@ export function processedStatsToClaudeCodeStats(
         )
       : null
 
-  // Total days in range: the span of days that have activity. It must NOT come
-  // from session timestamps — archived main transcripts leave only their
-  // subagents behind, so `firstSessionDate` collapses to "today" while the
-  // daily-activity rows still span the real range. Fall back to the timestamps
-  // only when there is no daily activity at all.
-  const totalDays = countUtcCalendarDaysInclusive(
-    dailyActivitySorted[0]?.date ?? firstSessionDate,
-    dailyActivitySorted.at(-1)?.date ?? lastSessionDate,
-  )
+  // Total days in range
+  const totalDays = countUtcCalendarDaysInclusive(firstSessionDate, lastSessionDate)
 
   const result: ClaudeCodeStats = {
     totalSessions: stats.sessionStats.length,
