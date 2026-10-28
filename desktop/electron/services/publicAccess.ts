@@ -16,6 +16,9 @@ export async function forwardPublicAccess(config: ForwardConfig, sdk: NgrokSdk):
   let closed = false
   const session = await new sdk.SessionBuilder()
     .authtoken(config.authtoken)
+    // 本机网络环境：默认区域的 tunnel 域名 TLS 握手被干扰，日本区可达。
+    // pinned server 地址保证公网访问在墙内网络可用。
+    .serverAddr('tunnel.jp.ngrok.com:443')
     .handleDisconnection(() => {
       if (!closed) config.onStatusChange('closed')
       return true
