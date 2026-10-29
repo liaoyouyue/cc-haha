@@ -48,7 +48,10 @@ import type {
 // 12: project the immutable conversation agent profile; legacy sessions use standard.
 // 13: a reply's usage is the per-field maximum over its content-block lines, not its first line;
 //     rebuild the persisted per-model tokens and dollars that under-counted zero-first replies.
-export const SESSION_SUMMARY_PARSER_VERSION = 13
+// 14: the fork had already used 13 for a different algorithm ("fork of upstream v12"), so the
+//     upstream 13 above collides with it. Bump so the coordinator rebuilds sources stamped
+//     under either meaning.
+export const SESSION_SUMMARY_PARSER_VERSION = 14
 
 export type SessionSourceCandidate = {
   path: string
