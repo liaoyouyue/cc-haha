@@ -93,8 +93,10 @@ describe('WindowsNativeBridge vs real worker', () => {
     const r = await bridge.callNative<{ pong: boolean }>('ping', {})
     const dt = performance.now() - t0
     expect(r.pong).toBe(true)
-    expect(dt).toBeLessThan(5000)
-  })
+    // ponytail: wall-clock budget, not a product SLA — cold-spawning the 69MB
+    // worker measured 9-10s under load (the bun default is 5s).
+    expect(dt).toBeLessThan(30000)
+  }, 30000)
 
   test.skipIf(!WORKER)('isNativeWorkerAvailable reflects reality', async () => {
     // WORKER 存在时应当 true（或至少不抛）
