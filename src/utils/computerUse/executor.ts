@@ -34,6 +34,7 @@ import {
 // Platform-routed helper: macOS → native cu-helper (no cursor steal),
 // Windows → Python helper (pyautogui, which does move the real cursor).
 import { callHelper } from './helperBridge.js'
+import { callNative } from './windowsNativeBridge.js'
 
 const SCREENSHOT_JPEG_QUALITY = 0.75
 const MOVE_SETTLE_MS = 50
@@ -347,7 +348,10 @@ export function createCliExecutor(opts: {
     // AXTree/AXAction). On Windows the Python helper has no get_app_state/click-
     // by-index surface, so we leave `engine` undefined there and the ten Codex
     // tools cleanly return `feature_unavailable` (toolCalls.ts gate 5).
-    engine: process.platform === 'darwin' ? createCodexEngine() : undefined,
+    // P2: Windows semantic engine (UIA via win-cu-worker). Returns null when the
+    // worker binary is absent — in that case the ten Codex tools keep their
+    // `feature_unavailable` behavior (same as the old `undefined` engine).
+    engine: process.platform === 'darwin' ? createCodexEngine() : createWindowsCodexEngine(),
 
     async prepareForAction(_allowlistBundleIds, _displayId): Promise<string[]> {
       return callHelper('prepare_for_action', {})
@@ -506,4 +510,87 @@ export function createCliExecutor(opts: {
 
 export async function unhideComputerUseApps(_bundleIds: readonly string[]): Promise<void> {
   return
+}
+
+// --------------------------------------------------------------------------
+// P2: Windows semantic engine (UIA via the win-cu-worker named pipe).
+//
+// Maps the same CodexComputerEngine face onto worker commands. P2 ships the
+// read half (list/resolve/get_app_state). Mutators (click/set_value/...) call
+// worker verbs that exist in P1/P2 and surface unsupported_command cleanly,
+// which the tool face turns into feature_unavailable per verb.
+//
+// Capability-gated: when the worker binary is missing, callNative returns null
+// and we throw the same shape the macOS engine would on a dead daemon.
+// --------------------------------------------------------------------------
+
+async function nativeOrThrow<T>(command: string, payload: Record<string, unknown>): Promise<T> {
+  const r = await callNative<T>(command, payload)
+  if (r === null) {
+    throw new Error('native_helper_unavailable: win-cu-worker is required for the Windows semantic engine')
+  }
+  return r
+}
+
+function createWindowsCodexEngine(): CodexComputerEngine | undefined {
+  if (process.platform !== 'win32') return undefined
+  return {
+    async listApps(): Promise<string> {
+      // Windows has no bundleId concept; the model addresses apps by pid/name.
+      const { windows } = await nativeOrThrow<{ windows: Array<{ pid: number; title: string }> }>('list_windows', {})
+      return formatNativeAppList(windows.map(w => ({ id: String(w.pid), displayName: w.title })))
+    },
+
+    async listAppsInfo() {
+      const { windows } = await nativeOrThrow<{ windows: Array<{ pid: number; title: string }> }>('list_windows', {})
+      return windows.map(w => ({ id: String(w.pid), displayName: w.title, isRunning: true }))
+    },
+
+    async resolveTarget(target: AppTarget): Promise<ResolvedAppTarget> {
+      return nativeOrThrow<ResolvedAppTarget>('resolve_app_target', { ...target })
+    },
+
+    async getAppState(target: AppTarget, opts?: { disableDiff?: boolean }): Promise<AppStateResult> {
+      return nativeOrThrow<AppStateResult>('get_app_state', { ...target })
+    },
+
+    // ---- mutators: worker P2 exposes unsupported_command for these; kept so
+    // the tool face reports per-verb availability instead of hiding the tools.
+    async click(args): Promise<void> {
+      await nativeOrThrow('semantic_click', { ...appTargetKeys(args.target), index: args.index, x: args.x, y: args.y, click_count: args.clickCount, button: args.button })
+    },
+    async setValue(args): Promise<SetValueResult> {
+      return nativeOrThrow<SetValueResult>('semantic_set_value', { ...appTargetKeys(args.target), index: args.index, value: args.value })
+    },
+    async selectText(args): Promise<void> {
+      await nativeOrThrow('semantic_select_text', { ...appTargetKeys(args.target), index: args.index, text: args.text })
+    },
+    async performSecondaryAction(args): Promise<void> {
+      await nativeOrThrow('semantic_secondary_action', { ...appTargetKeys(args.target), index: args.index, action: args.action })
+    },
+    async scroll(args): Promise<void> {
+      await nativeOrThrow('semantic_scroll', { ...appTargetKeys(args.target), index: args.index, x: args.x, y: args.y, direction: args.direction, pages: args.pages })
+    },
+    async drag(args): Promise<void> {
+      await nativeOrThrow('semantic_drag', { ...appTargetKeys(args.target), from: args.from, to: args.to, button: args.button })
+    },
+    async pressKey(args): Promise<void> {
+      await nativeOrThrow('semantic_press_key', { ...appTargetKeys(args.target), key: args.key })
+    },
+    async typeText(args): Promise<void> {
+      await nativeOrThrow('semantic_type_text', { ...appTargetKeys(args.target), text: args.text })
+    },
+    async paste(args): Promise<void> {
+      await nativeOrThrow('semantic_paste', { ...appTargetKeys(args.target), text: args.text, format: args.format })
+    },
+  }
+}
+
+function appTargetKeys(target: AppTarget): Record<string, unknown> {
+  const keys: Record<string, unknown> = {}
+  if (target.pid !== undefined) keys.pid = target.pid
+  if (target.app !== undefined) keys.app = target.app
+  if (target.bundleId !== undefined) keys.bundleId = target.bundleId
+  if (target.expectedProcessIdentity !== undefined) keys.expectedProcessIdentity = target.expectedProcessIdentity
+  return keys
 }

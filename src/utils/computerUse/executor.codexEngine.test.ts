@@ -77,7 +77,15 @@ describe('CLI executor Codex engine — daemon payload alignment', () => {
     if (process.platform === 'darwin') {
       expect(exec.engine).toBeDefined()
     } else {
-      expect(exec.engine).toBeUndefined()
+      // P2: win32 mounts createWindowsCodexEngine when the worker binary is
+      // resolvable (capability-gated, not platform-gated). Assert the contract,
+      // not a hard undefined.
+      const { isNativeWorkerAvailable } = await import('./windowsNativeBridge.js')
+      if (isNativeWorkerAvailable()) {
+        expect(exec.engine).toBeDefined()
+      } else {
+        expect(exec.engine).toBeUndefined()
+      }
     }
   })
 
