@@ -46,6 +46,7 @@ function assistantEntry(
     isSidechain?: boolean
     parentUuid?: string
     content?: unknown[]
+    messageId?: string
   } = {},
 ) {
   return {
@@ -59,6 +60,7 @@ function assistantEntry(
       model: options.model ?? 'claude-test',
       content: options.content ?? [],
       usage,
+      ...(options.messageId ? { id: options.messageId } : {}),
     },
   }
 }
@@ -280,6 +282,41 @@ describe('activity stats token accounting', () => {
       inputTokens: 15,
       outputTokens: 3,
     })
+  })
+
+  it('bills a reply replayed into a subagent transcript only once', async () => {
+    const today = dateKey(0)
+    const replayed = assistantEntry(
+      'parent-assistant-line-1',
+      at(today, '10:01:00'),
+      { input_tokens: 400, output_tokens: 20 },
+      { parentUuid: 'parent-user', messageId: 'msg_shared_reply' },
+    )
+
+    await writeJsonl(projectFile('parent-session'), [
+      userEntry('parent-user', at(today, '10:00:00')),
+      replayed,
+      assistantEntry(
+        'parent-assistant-line-2',
+        at(today, '10:05:00'),
+        { input_tokens: 30, output_tokens: 3 },
+        { parentUuid: 'parent-assistant-line-1', messageId: 'msg_own_reply' },
+      ),
+    ])
+    // A compaction subagent replays the parent's messages verbatim: same `message.id`,
+    // same usage, different uuid and `isSidechain: true`. Per-file ledgers billed it twice.
+    await writeJsonl(subagentFile('parent-session', '001'), [
+      {
+        ...replayed,
+        uuid: 'replayed-into-agent',
+        isSidechain: true,
+        message: { ...replayed.message, id: 'msg_shared_reply' },
+      },
+    ])
+
+    const stats = await aggregateClaudeCodeStatsForRange('all')
+
+    expect(totalForDate(stats.dailyModelTokens, today)).toBe(453)
   })
 
   it('tracks tool and skill usage from main and subagent transcripts', async () => {

@@ -300,6 +300,11 @@ async function processSessionFiles(
     getDailyActivity(date)
   }
 
+  // Shared across all transcripts in this pass so a reply replayed into a compaction or subagent
+  // transcript is billed once. Scoped to one `processSessionFiles` call, so a range-restricted
+  // pass still starts empty and cannot double-bill against an earlier pass.
+  const usageLedger: UsageLedger = new Map()
+
   // Process session files in parallel batches for better performance
   const BATCH_SIZE = 20
   for (let i = 0; i < sessionFiles.length; i += BATCH_SIZE) {
@@ -332,16 +337,16 @@ async function processSessionFiles(
       }),
     )
 
-    for (const { sessionFile, entries, error, skipped } of results) {
-      if (skipped) continue
-      if (error || !entries) {
-        logForDebugging(
-          `Failed to read session file ${sessionFile}: ${errorMessage(error)}`,
-        )
-        continue
-      }
+  for (const { sessionFile, entries, error, skipped } of results) {
+    if (skipped) continue
+    if (error || !entries) {
+      logForDebugging(
+        `Failed to read session file ${sessionFile}: ${errorMessage(error)}`,
+      )
+      continue
+    }
 
-      const sessionId = basename(sessionFile, '.jsonl')
+    const sessionId = basename(sessionFile, '.jsonl')
       const messages: TranscriptMessage[] = []
 
       for (const entry of entries) {
@@ -440,9 +445,12 @@ async function processSessionFiles(
 
       // One assistant reply is written as one JSONL line per content block, each carrying a usage
       // object that may be zero/partial until the last line. Each field is counted at the largest
-      // value any line reported, billing only the excess. Scoped per transcript, matching how the
-      // local index reducer keys its own deduplication, so both paths produce identical totals.
-      const usageLedger: UsageLedger = new Map()
+      // value any line reported, billing only the excess.
+      //
+      // The ledger is shared across every transcript in one aggregation pass, not per file: a
+      // compaction or subagent transcript replays its parent's messages verbatim (same
+      // `message.id` + `requestId`), so per-file ledgers billed the same API call once per copy.
+      // Measured on this machine: 1.0e9 tokens of pure double counting.
       const claimUsage = (
         message: TranscriptMessage,
         tokens: PricedTokens,
