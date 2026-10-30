@@ -22,6 +22,15 @@ type ContextCategory = {
 export type ContextUsageSessionStats = {
   cacheHitRate: number | null
   tokensPerSecond: number | null
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  /**
+   * Live output rate for the current turn, in tokens per second. `null` when
+   * there is no honest reading (no turn running, too little history, a stall).
+   */
+  liveRate: number | null
   /** Pre-formatted by the server (unknown-model sessions included), displayed verbatim. */
   costDisplay: string
 }
@@ -54,6 +63,12 @@ export type ContextUsageDetailsProps = {
     sessionSpeed: string
     sessionCost: string
     sessionSpeedUnit: string
+    sessionInput: string
+    sessionOutput: string
+    sessionCacheRead: string
+    sessionCacheWrite: string
+    liveSpeed: string
+    sessionTokens: string
   }
 }
 
@@ -112,12 +127,27 @@ function SessionStatGrid({
   density: 'compact' | 'comfortable'
 }) {
   const labelClass = 'truncate text-xs text-[var(--color-text-tertiary)]'
+  const tokenRows: Array<[string, number]> = [
+    [labels.sessionInput, stats.inputTokens],
+    [labels.sessionOutput, stats.outputTokens],
+    [labels.sessionCacheRead, stats.cacheReadTokens],
+    [labels.sessionCacheWrite, stats.cacheWriteTokens],
+  ]
   const valueClass = density === 'compact'
     ? 'mt-0.5 font-mono text-[13px] tabular-nums text-[var(--color-text-primary)]'
     : 'mt-0.5 font-mono text-sm tabular-nums text-[var(--color-text-primary)]'
 
   return (
-    <div className="mt-3 grid grid-cols-3 gap-3 border-t border-[var(--color-border)] pt-3">
+    <div className="mt-3 grid grid-cols-4 gap-3 border-t border-[var(--color-border)] pt-3">
+      <div className="min-w-0">
+        <div className={labelClass}>{labels.liveSpeed}</div>
+        <div className={valueClass} data-testid="live-speed">
+          {stats.liveRate === null ? '--' : formatTokensPerSecond(stats.liveRate)}
+          {stats.liveRate !== null && (
+            <span className="ml-1 text-[11px] text-[var(--color-text-tertiary)]">{labels.sessionSpeedUnit}</span>
+          )}
+        </div>
+      </div>
       <div className="min-w-0">
         <div className={labelClass}>{labels.sessionSpeed}</div>
         <div className={valueClass} data-testid="session-speed">
@@ -138,6 +168,14 @@ function SessionStatGrid({
         <div className={`${valueClass} truncate`} data-testid="session-cost" title={stats.costDisplay}>
           {stats.costDisplay}
         </div>
+      </div>
+      <div role="group" aria-label={labels.sessionTokens} className="col-span-4 grid grid-cols-4 gap-2 border-t border-[var(--color-border)] pt-2">
+        {tokenRows.map(([label, value]) => (
+          <div key={label} className="min-w-0">
+            <div className={labelClass}>{label}</div>
+            <div className={`${valueClass} truncate`}>{formatCompactTokens(value)}</div>
+          </div>
+        ))}
       </div>
     </div>
   )

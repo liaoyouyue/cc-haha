@@ -504,6 +504,35 @@ describe('chatStore background agent activity interleaving', () => {
       'After the tool.',
     ])
   })
+
+  it('counts only body text in the live-rate counter, never thinking or tool input', async () => {
+    vi.useFakeTimers()
+    try {
+      const store = useChatStore.getState()
+      store.handleServerMessage(TEST_SESSION_ID, { type: 'content_start', blockType: 'text' })
+      store.handleServerMessage(TEST_SESSION_ID, { type: 'content_delta', text: 'Hello there.' })
+
+      // The text buffer flushes on a 50ms timer.
+      await vi.advanceTimersByTimeAsync(100)
+      const afterText = useChatStore.getState().sessions[TEST_SESSION_ID]
+      expect(afterText?.streamingTextChars).toBe('Hello there.'.length)
+
+      store.handleServerMessage(TEST_SESSION_ID, { type: 'thinking', text: 'Thinking about it.' })
+      store.handleServerMessage(TEST_SESSION_ID, {
+        type: 'content_delta',
+        toolInput: JSON.stringify({ file_path: '/a/very/long/path.md', content: 'x'.repeat(4000) }),
+      })
+      await vi.advanceTimersByTimeAsync(100)
+
+      const session = useChatStore.getState().sessions[TEST_SESSION_ID]
+      // Tool input arrives as one burst and thinking is not model output speed:
+      // counting either would report the file's size as the model's speed.
+      expect(session?.streamingTextChars).toBe('Hello there.'.length)
+      expect(session?.streamingResponseChars).toBeGreaterThan(session?.streamingTextChars ?? 0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('chatStore history mapping', () => {

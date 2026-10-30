@@ -203,9 +203,20 @@ export type PerSessionState = {
    * indicator — same estimation the CLI spinner uses. Reset on each send.
    */
   streamingResponseChars: number
+  /**
+   * Assistant body text streamed this turn, excluding thinking and tool input.
+   * The rate reader cannot use `streamingResponseChars`: tool input arrives in
+   * one burst per call, so mixing it into a 5-second window measures file size,
+   * not model speed.
+   *
+   * Optional because a session object can be seeded by a caller that predates
+   * this field; readers treat a missing value as zero.
+   */
+  streamingTextChars?: number
   /** Boundary used to discard one failed, side-effect-free stream attempt. */
   streamAttemptStartIndex?: number
   streamAttemptStartResponseChars?: number
+  streamAttemptStartTextChars?: number
   elapsedSeconds: number
   statusVerb: string
   apiRetry?: ApiRetryState | null
@@ -264,6 +275,7 @@ const DEFAULT_SESSION_STATE: PerSessionState = {
   compactCount: 0,
   runtimeConfigReadyCount: 0,
   streamingResponseChars: 0,
+  streamingTextChars: 0,
   elapsedSeconds: 0,
   statusVerb: '',
   apiRetry: null,
@@ -3566,6 +3578,7 @@ export const useChatStore = create<ChatStore>((setState, get) => {
             replaceHistoryOnCompletion: false,
             streamingText: '',
             streamingResponseChars: 0,
+            streamingTextChars: 0,
             statusVerb: isDirectAgentSession ? '' : randomSpinnerVerb(),
             apiRetry: null,
             streamingFallback: null,
@@ -4972,8 +4985,11 @@ export const useChatStore = create<ChatStore>((setState, get) => {
               activeToolName: null,
               streamingResponseChars:
                 current.streamAttemptStartResponseChars ?? current.streamingResponseChars,
+              streamingTextChars:
+                current.streamAttemptStartTextChars ?? current.streamingTextChars ?? 0,
               streamAttemptStartIndex: undefined,
               streamAttemptStartResponseChars: undefined,
+              streamAttemptStartTextChars: undefined,
               apiRetry: null,
               streamingFallback: null,
               statusVerb: '',
@@ -5117,6 +5133,7 @@ export const useChatStore = create<ChatStore>((setState, get) => {
             ...(msg.attemptStart ? {
               streamAttemptStartIndex: session.messages.length,
               streamAttemptStartResponseChars: session.streamingResponseChars,
+              streamAttemptStartTextChars: session.streamingTextChars,
             } : {}),
             ...(nextMessages !== session.messages ? { messages: nextMessages } : {}),
             ...(shouldFlush ? {
@@ -5301,8 +5318,11 @@ export const useChatStore = create<ChatStore>((setState, get) => {
               activeThinkingId: null,
               streamingResponseChars:
                 session.streamAttemptStartResponseChars ?? session.streamingResponseChars,
+              streamingTextChars:
+                session.streamAttemptStartTextChars ?? session.streamingTextChars ?? 0,
               streamAttemptStartIndex: undefined,
               streamAttemptStartResponseChars: undefined,
+              streamAttemptStartTextChars: undefined,
               streamingFallback: null,
               apiRetry: null,
               chatState: 'thinking',
@@ -5346,6 +5366,7 @@ export const useChatStore = create<ChatStore>((setState, get) => {
               update((s) => ({
                 streamingText: s.streamingText + text,
                 streamingResponseChars: s.streamingResponseChars + text.length,
+                streamingTextChars: (s.streamingTextChars ?? 0) + text.length,
               }))
             }, 50)
             flushTimerBySession.set(sessionId, timer)
@@ -5760,6 +5781,8 @@ export const useChatStore = create<ChatStore>((setState, get) => {
           elapsedTimer: null,
           apiRetry: null,
           streamingFallback: null,
+          // The turn is over: the live-rate counter restarts with the next one.
+          streamingTextChars: 0,
           replaceHistoryOnCompletion: false,
           historyMutationEpoch: (current.historyMutationEpoch ?? 0) + 1,
         }))
@@ -5848,6 +5871,8 @@ export const useChatStore = create<ChatStore>((setState, get) => {
             pendingComputerUsePermissions: {},
             apiRetry: null,
             streamingFallback: null,
+            // The turn ended in an error; the next one starts a fresh count.
+            streamingTextChars: 0,
             historyMutationEpoch: (s.historyMutationEpoch ?? 0) + 1,
           }
         })
@@ -6005,6 +6030,7 @@ export const useChatStore = create<ChatStore>((setState, get) => {
             streamingFallback: null,
             tokenUsage: { input_tokens: 0, output_tokens: 0 },
             streamingResponseChars: 0,
+            streamingTextChars: 0,
             slashCommands: [],
             activeGoal: null,
             backgroundAgentTasks: {},
