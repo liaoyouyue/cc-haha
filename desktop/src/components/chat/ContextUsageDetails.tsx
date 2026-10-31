@@ -22,6 +22,23 @@ type ContextCategory = {
 export type ContextUsageSessionStats = {
   cacheHitRate: number | null
   tokensPerSecond: number | null
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  /**
+   * Live output rate for the current turn, in tokens per second. `null` when
+   * there is no honest reading (no turn running, too little history, a stall).
+   */
+  liveRate: number | null
+  /**
+   * Measured generation rate of the last completed turn: its output tokens
+   * over the time the model spent emitting them. `null` when the turn reported
+   * no timed stream.
+   */
+  measuredRate: number | null
+  /** Time to the first token of the last turn, in milliseconds. */
+  ttftMs: number | null
   /** Pre-formatted by the server (unknown-model sessions included), displayed verbatim. */
   costDisplay: string
 }
@@ -54,6 +71,13 @@ export type ContextUsageDetailsProps = {
     sessionSpeed: string
     sessionCost: string
     sessionSpeedUnit: string
+    sessionInput: string
+    sessionOutput: string
+    sessionCacheRead: string
+    sessionCacheWrite: string
+    liveSpeed: string
+    sessionTokens: string
+    ttft: string
   }
 }
 
@@ -98,6 +122,13 @@ function UsageMeter({
   )
 }
 
+/** Time to first token: `0.42s` — sub-second precision is the interesting range. */
+function formatTtft(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '--'
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  return `${(ms / 1000).toFixed(2)}s`
+}
+
 /**
  * The three numbers a user watches while a session runs: how fast it is generating, how much of
  * the prompt is being served from cache, and what the session has cost so far.
@@ -112,17 +143,34 @@ function SessionStatGrid({
   density: 'compact' | 'comfortable'
 }) {
   const labelClass = 'truncate text-xs text-[var(--color-text-tertiary)]'
+  const tokenRows: Array<[string, number]> = [
+    [labels.sessionInput, stats.inputTokens],
+    [labels.sessionOutput, stats.outputTokens],
+    [labels.sessionCacheRead, stats.cacheReadTokens],
+    [labels.sessionCacheWrite, stats.cacheWriteTokens],
+  ]
   const valueClass = density === 'compact'
     ? 'mt-0.5 font-mono text-[13px] tabular-nums text-[var(--color-text-primary)]'
     : 'mt-0.5 font-mono text-sm tabular-nums text-[var(--color-text-primary)]'
 
   return (
-    <div className="mt-3 grid grid-cols-3 gap-3 border-t border-[var(--color-border)] pt-3">
+    <div className="mt-3 grid grid-cols-4 gap-3 border-t border-[var(--color-border)] pt-3">
+      <div className="min-w-0">
+        <div className={labelClass}>{labels.liveSpeed}</div>
+        <div className={valueClass} data-testid="live-speed">
+          {stats.liveRate === null ? '--' : formatTokensPerSecond(stats.liveRate)}
+          {stats.liveRate !== null && (
+            <span className="ml-1 text-[11px] text-[var(--color-text-tertiary)]">{labels.sessionSpeedUnit}</span>
+          )}
+        </div>
+      </div>
       <div className="min-w-0">
         <div className={labelClass}>{labels.sessionSpeed}</div>
         <div className={valueClass} data-testid="session-speed">
-          {formatTokensPerSecond(stats.tokensPerSecond ?? 0)}
-          {stats.tokensPerSecond !== null && (
+          {stats.measuredRate === null
+            ? '--'
+            : formatTokensPerSecond(stats.measuredRate)}
+          {stats.measuredRate !== null && (
             <span className="ml-1 text-[11px] text-[var(--color-text-tertiary)]">{labels.sessionSpeedUnit}</span>
           )}
         </div>
@@ -137,6 +185,20 @@ function SessionStatGrid({
         <div className={labelClass}>{labels.sessionCost}</div>
         <div className={`${valueClass} truncate`} data-testid="session-cost" title={stats.costDisplay}>
           {stats.costDisplay}
+        </div>
+      </div>
+      <div role="group" aria-label={labels.sessionTokens} className="col-span-4 grid grid-cols-5 gap-2 border-t border-[var(--color-border)] pt-2">
+        {tokenRows.map(([label, value]) => (
+          <div key={label} className="min-w-0">
+            <div className={labelClass}>{label}</div>
+            <div className={`${valueClass} truncate`}>{formatCompactTokens(value)}</div>
+          </div>
+        ))}
+        <div className="min-w-0">
+          <div className={labelClass}>{labels.ttft}</div>
+          <div className={`${valueClass} truncate`} data-testid="session-ttft">
+            {stats.ttftMs === null ? '--' : formatTtft(stats.ttftMs)}
+          </div>
         </div>
       </div>
     </div>
@@ -307,12 +369,23 @@ export function ContextUsageDetails({
       labels={labels}
     />
   ) : (
-    <div className={variant === 'sheet'
-      ? 'mt-4 rounded-[var(--radius-md)] bg-[var(--color-surface-container)] p-4 text-[13px] leading-6 text-[var(--color-text-secondary)]'
-      : 'mt-3 text-[13px] leading-6 text-[var(--color-text-secondary)]'
-    }>
-      {statusMessage}
-    </div>
+    <>
+      {sessionStats && (
+        // Lifetime token/usage numbers come from the usage API, not the context
+        // snapshot: a session whose context read failed can still answer "how
+        // fast, how much, how cached" honestly, so the stat grid renders here
+        // rather than disappearing with the unavailable context body.
+        <div className={variant === 'sheet' ? 'mt-4' : 'mt-3'}>
+          <SessionStatGrid stats={sessionStats} labels={labels} density={variant === 'sheet' ? 'comfortable' : 'compact'} />
+        </div>
+      )}
+      <div className={variant === 'sheet'
+        ? 'mt-4 rounded-[var(--radius-md)] bg-[var(--color-surface-container)] p-4 text-[13px] leading-6 text-[var(--color-text-secondary)]'
+        : 'mt-3 text-[13px] leading-6 text-[var(--color-text-secondary)]'
+      }>
+        {statusMessage}
+      </div>
+    </>
   )
 
   if (variant === 'sheet') {

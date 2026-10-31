@@ -10,7 +10,9 @@ import type { ChatState } from '../../types/chat'
 import { useMobileViewport } from '../../hooks/useMobileViewport'
 import { useDismissable } from '../../hooks/useDismissable'
 import { isDesktopRuntime } from '../../lib/desktopRuntime'
-import { deriveSessionUsageMetrics } from '../../lib/sessionUsageMetrics'
+import { deriveSessionUsageMetrics, formatTokensPerSecond } from '../../lib/sessionUsageMetrics'
+import { pushRateSample, streamRate, type RateSample } from '../../lib/streamRate'
+import { useChatStore } from '../../stores/chatStore'
 import { MobileBottomSheet } from '@/components/ui/MobileBottomSheet'
 import {
   ContextUsageDetails,
@@ -38,6 +40,12 @@ type Props = {
    * of spending a 44px toolbar slot on it.
    */
   hideTrigger?: boolean
+  /**
+   * Assistant body text streamed this turn. Tool input and thinking are
+   * excluded on purpose: a tool call arrives as one burst, so counting it
+   * would report the file's size as model speed.
+   */
+  streamingTextChars?: number
 }
 
 export type ContextUsageIndicatorHandle = {
@@ -174,6 +182,7 @@ export const ContextUsageIndicator = forwardRef<ContextUsageIndicatorHandle, Pro
   compact = false,
   refreshNonce = 0,
   hideTrigger = false,
+  streamingTextChars = 0,
 }, handleRef) {
   const t = useTranslation()
   // `compact` also fires for the desktop composer, which narrows for the right
@@ -204,6 +213,33 @@ export const ContextUsageIndicator = forwardRef<ContextUsageIndicatorHandle, Pro
   const lastAutoRefreshAtRef = useRef(0)
   const contextEnabledRef = useRef(contextEnabled)
   contextEnabledRef.current = contextEnabled
+  const samplesRef = useRef<RateSample[]>([])
+  const [rateSample, setRateSample] = useState<{ sessionId: string; rate: number } | null>(null)
+  const estimatedRate =
+    rateSample !== null && rateSample.sessionId === sessionId ? rateSample.rate : null
+  const charsRef = useRef(streamingTextChars ?? 0)
+  charsRef.current = streamingTextChars ?? 0
+
+  useEffect(() => {
+    samplesRef.current = []
+    setRateSample(null)
+    if (!sessionId || chatState !== 'streaming') return
+    const sample = () => {
+      if (!isDocumentVisible()) {
+        samplesRef.current = []
+        setRateSample(null)
+        return
+      }
+      const now = Date.now()
+      const samples = pushRateSample(samplesRef.current, { at: now, chars: charsRef.current })
+      samplesRef.current = samples
+      const rate = streamRate(samples, now)
+      setRateSample(rate === null ? null : { sessionId, rate })
+    }
+    sample()
+    const timer = window.setInterval(sample, 500)
+    return () => window.clearInterval(timer)
+  }, [sessionId, chatState])
 
   const closeDetails = useCallback(() => {
     setDetailsOpen(false)
@@ -489,23 +525,49 @@ export const ContextUsageIndicator = forwardRef<ContextUsageIndicatorHandle, Pro
     sessionSpeed: t('contextIndicator.sessionSpeed'),
     sessionCost: t('contextIndicator.sessionCost'),
     sessionSpeedUnit: t('contextIndicator.sessionSpeedUnit'),
+    sessionInput: t('contextIndicator.sessionInput'),
+    sessionOutput: t('contextIndicator.sessionOutput'),
+    sessionCacheRead: t('contextIndicator.sessionCacheRead'),
+    sessionCacheWrite: t('contextIndicator.sessionCacheWrite'),
+    liveSpeed: t('contextIndicator.liveSpeed'),
+    liveSpeedUnit: t('contextIndicator.liveSpeedUnit'),
+    sessionTokens: t('contextIndicator.sessionTokens'),
+    ttft: t('contextIndicator.ttft'),
   }), [t])
 
   // Derived per render rather than memoized on `usage` alone: the session it belongs to lives in
   // a ref, so the guard has to run against the current sessionId every time.
   const displayUsage = usageSessionIdRef.current === sessionId ? usage : null
+  const sessionState = useChatStore((s) => sessionId ? s.sessions[sessionId] : undefined)
+  const turnTiming = sessionState?.turnTiming
   const sessionStats = useMemo<ContextUsageSessionStats | null>(() => {
     if (!displayUsage) return null
     const metrics = deriveSessionUsageMetrics(displayUsage)
     // A session with nothing produced yet has no honest answer for any of these rows; showing an
     // empty block (or a 0 tok/s) would read as a measurement rather than an absence.
     if (metrics.totalTokens === 0) return null
+    // The measured rate divides the last turn's output by the time the model
+    // spent emitting it — a real number, not the API average that includes
+    // prefill. No timed stream (non-streaming fallback, old CLI) means no rate.
+    const lastOutput = turnTiming && turnTiming.decode_ms > 0
+      ? sessionState?.tokenUsage.output_tokens ?? 0
+      : 0
+    const measuredRate = turnTiming && turnTiming.decode_ms > 0 && lastOutput > 0
+      ? lastOutput / (turnTiming.decode_ms / 1000)
+      : null
     return {
       cacheHitRate: metrics.cacheHitRate,
       tokensPerSecond: metrics.tokensPerSecond,
+      measuredRate,
+      ttftMs: turnTiming && turnTiming.ttft_ms > 0 ? turnTiming.ttft_ms : null,
+      inputTokens: displayUsage.totalInputTokens,
+      outputTokens: displayUsage.totalOutputTokens,
+      cacheReadTokens: displayUsage.totalCacheReadInputTokens,
+      cacheWriteTokens: displayUsage.totalCacheCreationInputTokens,
+      liveRate: estimatedRate,
       costDisplay: displayUsage.costDisplay,
     }
-  }, [displayUsage])
+  }, [displayUsage, estimatedRate, turnTiming, sessionState?.tokenUsage.output_tokens])
 
   const detailsBody = (
     <ContextUsageDetails
@@ -593,6 +655,13 @@ export const ContextUsageIndicator = forwardRef<ContextUsageIndicatorHandle, Pro
     },
   }), [refresh])
 
+  const liveSpeedVisible = estimatedRate !== null && estimatedRate > 0 && !compact && !isMobileBrowser
+  // Same formatting rule as the panel, so the toolbar and the breakdown never
+  // show the same speed with two different precisions.
+  const liveSpeedText = liveSpeedVisible
+    ? `≈${formatTokensPerSecond(estimatedRate)} ${t('contextIndicator.liveSpeedUnit')}`
+    : null
+
   return (
     <div className="relative pointer-events-auto">
       <button
@@ -601,11 +670,15 @@ export const ContextUsageIndicator = forwardRef<ContextUsageIndicatorHandle, Pro
         // No reading yet (a draft, or a session before its first turn): a "--"
         // says nothing and costs a toolbar slot, so the ring appears with data.
         hidden={hideTrigger || isPendingContext}
-        aria-label={ariaLabel}
+        // The live rate is part of the control's name: a screen reader user
+        // gets the same reading the sighted user sees on the toolbar.
+        aria-label={liveSpeedText ? `${ariaLabel}, ${liveSpeedText}` : ariaLabel}
         aria-expanded={detailsOpen}
         aria-haspopup="dialog"
         onClick={handleTriggerClick}
-        title={t('contextIndicator.title')}
+        title={liveSpeedVisible
+          ? `${t('contextIndicator.liveSpeedEstimate')}: ${liveSpeedText}`
+          : t('contextIndicator.title')}
         data-testid="context-usage-indicator"
         // Desktop: a 28px toolbar control showing the ring and the percentage
         // side by side. The phone shell keeps a 44px square touch target and
@@ -621,13 +694,25 @@ export const ContextUsageIndicator = forwardRef<ContextUsageIndicatorHandle, Pro
           percentage={displayContext ? percentage : null}
           color={strokeColor}
         />
+        {/* The button's accessible name already carries both readings; these
+            spans are decoration for sighted users. */}
         <span
+          aria-hidden="true"
           className={isMobileBrowser
             ? 'sr-only'
             : 'font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]'}
         >
           {displayPercent}
         </span>
+        {liveSpeedText && (
+          <span
+            aria-hidden="true"
+            data-testid="context-live-speed"
+            className="whitespace-nowrap font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]"
+          >
+            {liveSpeedText}
+          </span>
+        )}
       </button>
 
       {!preferSheet && detailsOpen && popoverPosition && createPortal(

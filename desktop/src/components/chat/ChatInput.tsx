@@ -1882,6 +1882,7 @@ export function ChatInput({ variant = 'default', compact = false, sessionId, vis
                   sessionId={activeTabId}
                   chatState={chatState}
                   messageCount={messageCount}
+                  streamingTextChars={sessionState?.streamingTextChars}
                   runtimeSelectionKey={runtimeSelectionKey}
                   fallbackModelLabel={runtimeModelLabel}
                   compact={useCompactControls}
