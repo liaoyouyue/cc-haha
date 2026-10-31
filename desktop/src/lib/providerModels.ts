@@ -39,7 +39,10 @@ export function groupProviderModels(
 
   return [...groups.entries()]
     .map(([group, groupModels]) => ({ group, models: groupModels }))
-    .sort((a, b) => a.group.localeCompare(b.group, undefined, { sensitivity: 'base' }))
+    // Pin the locale: the default follows the OS, so a zh-CN machine sorted
+    // CJK names ahead of Latin ones and the picker order (and tests) changed
+    // per machine. 'en' keeps Latin first on every host.
+    .sort((a, b) => a.group.localeCompare(b.group, 'en', { sensitivity: 'base' }))
 }
 
 /**
