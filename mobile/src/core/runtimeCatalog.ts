@@ -14,6 +14,7 @@ export type Provider = {
   presetId: string
   apiFormat: string
   baseUrl: string
+  apiKey?: string
   hasApiKey?: boolean
   models: Record<string, string>
   model1mSupport?: Record<string, boolean>
@@ -183,7 +184,16 @@ export async function loadRuntimeModels(
   )
     return directory.defaults.models
   const saved = directory.providers.find((value) => value.id === providerId)
-  if (saved) return savedProviderModels(saved, directory.presets)
+  if (saved) {
+    // The saved slot mapping carries at most five entries and duplicates are
+    // common (every slot pointing at one model), so it hides everything else
+    // the endpoint actually serves. Ask the desktop to list the upstream's
+    // real catalog — the same probe the provider settings page uses — and
+    // fall back to the mapping when that fails (offline, bad key, no route).
+    const fetched = await fetchSavedProviderModels(client, saved, signal)
+    if (fetched.length > 0) return fetched
+    return savedProviderModels(saved, directory.presets)
+  }
   // The real endpoint rejects saved-provider IDs. Never temporarily activate one to inspect it.
   return (
     await client.get<{ models: Model[] }>(
@@ -191,6 +201,34 @@ export async function loadRuntimeModels(
       { signal }
     )
   ).models
+}
+
+/** Lists one saved custom provider's real upstream models via the desktop proxy. */
+async function fetchSavedProviderModels(
+  client: ApiClient,
+  provider: Provider,
+  signal: AbortSignal
+): Promise<Model[]> {
+  try {
+    const result = await client.post<{
+      ok: boolean
+      models?: { id: string }[]
+    }>(
+      '/api/providers/models',
+      {
+        baseUrl: provider.baseUrl,
+        apiKey: provider.apiKey,
+      },
+      { signal }
+    )
+    if (!result.ok || !result.models?.length) return []
+    return result.models.map((model) => ({
+      id: model.id,
+      name: model.id,
+    }))
+  } catch {
+    return []
+  }
 }
 
 /** OpenAI/Grok startup chooses its account catalog default, ignoring the global /api/effort value. */

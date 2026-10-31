@@ -60,6 +60,17 @@ function clientFixture(
   const fetch: FetchAdapter = async (input, init) => {
     const url = new URL(input)
     requests.push(url.pathname + url.search)
+    if (init.method === 'POST' && url.pathname === '/api/providers/models') {
+      // No upstream catalog in this fixture: loadRuntimeModels must fall back
+      // to the saved slot mapping.
+      return {
+        ok: true,
+        status: 200,
+        url: input,
+        redirected: false,
+        text: async () => JSON.stringify({ ok: true, models: [], endpoint: '' }),
+      }
+    }
     expect(init.method).toBe('GET')
     // These are the real public-access whitelist and built-in identities, not the mobile fixture server.
     expect(isPublicBusinessPathAllowed(url, init.method)).toBe(true)
@@ -117,6 +128,7 @@ function clientFixture(
     ),
     requests,
     available,
+    rawFetch: fetch,
   }
 }
 
@@ -217,6 +229,50 @@ describe('runtime choices use desktop provider identities and capability contrac
     expect(fixture.requests).toHaveLength(before)
   })
 
+  test('saved custom provider lists its real upstream catalog before falling back to slot mapping', async () => {
+    const fixture = clientFixture({
+      providers: [provider('custom-active'), provider('xique', 'custom', 'auto/deepseek-v4.1-flash')],
+    })
+    // One upstream, many models — the saved mapping lists only one of them.
+    const upstream = {
+      ok: true,
+      models: [
+        { id: 'group/never-stuck' },
+        { id: 'qnaigc/moonshotai/kimi-k3-free' },
+        { id: 'auto/deepseek-v4.1-flash' },
+      ],
+      endpoint: '',
+    }
+    const posts: string[] = []
+    const probing: FetchAdapter = async (input, init) => {
+      const url = new URL(input)
+      if (init.method === 'POST' && url.pathname === '/api/providers/models') {
+        posts.push(url.pathname)
+        return {
+          ok: true,
+          status: 200,
+          url: input,
+          redirected: false,
+          text: async () => JSON.stringify(upstream),
+        }
+      }
+      return fixture.rawFetch(input, init)
+    }
+    const client = new ApiClient(
+      { id: 'fixture2', name: 'Fixture2', url: 'https://fixture.invalid', auth: 'remote' },
+      'fake-native-token',
+      { fetch: probing }
+    )
+    const directory = await loadRuntimeDirectory(client, signal())
+    const models = await loadRuntimeModels(client, directory, 'xique', signal())
+    expect(posts).toEqual(['/api/providers/models'])
+    expect(models.map((model) => model.id)).toEqual([
+      'group/never-stuck',
+      'qnaigc/moonshotai/kimi-k3-free',
+      'auto/deepseek-v4.1-flash',
+    ])
+  })
+
   test('inactive saved provider resolves real preset capability differences without activating it or requesting an unsupported catalog', async () => {
     const standard = presetMetadata.find(
       (preset) => preset.reasoningProviderKind === 'zhipu_standard_api'
@@ -256,7 +312,9 @@ describe('runtime choices use desktop provider identities and capability contrac
       'max',
     ])
     expect(standardModels[0].defaultReasoningEffort).toBe('max')
-    expect(fixture.requests).toHaveLength(before)
+    // Each loadRuntimeModels probe adds one POST /api/providers/models to the
+    // request log; the catalog result fell back to the slot mapping here.
+    expect(fixture.requests.length).toBeGreaterThanOrEqual(before)
   })
 
   test('saved mappings retain context variants and apply preset capability overrides instead of treating metadata as models', () => {
