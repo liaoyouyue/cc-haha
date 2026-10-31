@@ -3251,6 +3251,7 @@ export const zh: Record<TranslationKey, string> = {
   'contextIndicator.sessionCost': '工作階段費用',
   'contextIndicator.sessionSpeedUnit': 'tok/s',
   'contextIndicator.liveSpeedUnit': 'tok/s',
+  'contextIndicator.ttft': '首回应',
   'contextIndicator.sessionTokens': '工作階段 Token',
   'contextIndicator.sessionInput': '輸入',
   'contextIndicator.sessionOutput': '輸出',

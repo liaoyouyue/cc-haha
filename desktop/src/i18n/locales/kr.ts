@@ -3254,6 +3254,7 @@ export const kr: Record<TranslationKey, string> = {
   'contextIndicator.sessionCost': '세션 비용',
   'contextIndicator.sessionSpeedUnit': 'tok/s',
   'contextIndicator.liveSpeedUnit': 'tok/s',
+  'contextIndicator.ttft': '첫 응답',
   'contextIndicator.sessionTokens': '세션 토큰',
   'contextIndicator.sessionInput': '입력',
   'contextIndicator.sessionOutput': '출력',

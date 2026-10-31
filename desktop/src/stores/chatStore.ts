@@ -58,6 +58,7 @@ import type {
   UIMessage,
   ServerMessage,
   TokenUsage,
+  TurnTiming,
   PermissionUpdate,
 } from '../types/chat'
 import type {
@@ -188,6 +189,15 @@ export type PerSessionState = {
   pendingComputerUsePermission: PendingComputerUsePermission | null
   pendingComputerUsePermissions?: PendingComputerUsePermissions
   tokenUsage: TokenUsage
+  /**
+   * Timings the server reported for the last completed turn.
+   *
+   * `decode_ms` spans only the time the model spent emitting tokens, so
+   * `output_tokens / decode_ms` is a real generation rate rather than a number
+   * diluted by prefill and tool execution. Absent when the turn produced no
+   * timed stream (non-streaming fallback, or a CLI too old to report them).
+   */
+  turnTiming?: TurnTiming
   /**
    * Bumped each time a compact boundary arrives. The context usage indicator
    * watches this to force an immediate re-read of the (now much smaller)
@@ -5772,6 +5782,9 @@ export const useChatStore = create<ChatStore>((setState, get) => {
           messages: finalMessages,
           scheduledTaskTurn: false,
           tokenUsage: msg.usage,
+          // The server's real timings, kept so the metrics panel can show a
+          // measured generation rate instead of an estimate.
+          ...(msg.timing ? { turnTiming: msg.timing } : {}),
           chatState: 'idle',
           activeThinkingId: null,
           pendingPermission: null,

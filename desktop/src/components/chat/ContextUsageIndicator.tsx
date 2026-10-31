@@ -10,9 +10,9 @@ import type { ChatState } from '../../types/chat'
 import { useMobileViewport } from '../../hooks/useMobileViewport'
 import { useDismissable } from '../../hooks/useDismissable'
 import { isDesktopRuntime } from '../../lib/desktopRuntime'
-import { deriveSessionUsageMetrics } from '../../lib/sessionUsageMetrics'
+import { deriveSessionUsageMetrics, formatTokensPerSecond } from '../../lib/sessionUsageMetrics'
 import { pushRateSample, streamRate, type RateSample } from '../../lib/streamRate'
-import { formatTokensPerSecond } from '../../lib/sessionUsageMetrics'
+import { useChatStore } from '../../stores/chatStore'
 import { MobileBottomSheet } from '@/components/ui/MobileBottomSheet'
 import {
   ContextUsageDetails,
@@ -532,20 +532,34 @@ export const ContextUsageIndicator = forwardRef<ContextUsageIndicatorHandle, Pro
     liveSpeed: t('contextIndicator.liveSpeed'),
     liveSpeedUnit: t('contextIndicator.liveSpeedUnit'),
     sessionTokens: t('contextIndicator.sessionTokens'),
+    ttft: t('contextIndicator.ttft'),
   }), [t])
 
   // Derived per render rather than memoized on `usage` alone: the session it belongs to lives in
   // a ref, so the guard has to run against the current sessionId every time.
   const displayUsage = usageSessionIdRef.current === sessionId ? usage : null
+  const sessionState = useChatStore((s) => sessionId ? s.sessions[sessionId] : undefined)
+  const turnTiming = sessionState?.turnTiming
   const sessionStats = useMemo<ContextUsageSessionStats | null>(() => {
     if (!displayUsage) return null
     const metrics = deriveSessionUsageMetrics(displayUsage)
     // A session with nothing produced yet has no honest answer for any of these rows; showing an
     // empty block (or a 0 tok/s) would read as a measurement rather than an absence.
     if (metrics.totalTokens === 0) return null
+    // The measured rate divides the last turn's output by the time the model
+    // spent emitting it — a real number, not the API average that includes
+    // prefill. No timed stream (non-streaming fallback, old CLI) means no rate.
+    const lastOutput = turnTiming && turnTiming.decode_ms > 0
+      ? sessionState?.tokenUsage.output_tokens ?? 0
+      : 0
+    const measuredRate = turnTiming && turnTiming.decode_ms > 0 && lastOutput > 0
+      ? lastOutput / (turnTiming.decode_ms / 1000)
+      : null
     return {
       cacheHitRate: metrics.cacheHitRate,
       tokensPerSecond: metrics.tokensPerSecond,
+      measuredRate,
+      ttftMs: turnTiming && turnTiming.ttft_ms > 0 ? turnTiming.ttft_ms : null,
       inputTokens: displayUsage.totalInputTokens,
       outputTokens: displayUsage.totalOutputTokens,
       cacheReadTokens: displayUsage.totalCacheReadInputTokens,
@@ -553,7 +567,7 @@ export const ContextUsageIndicator = forwardRef<ContextUsageIndicatorHandle, Pro
       liveRate: estimatedRate,
       costDisplay: displayUsage.costDisplay,
     }
-  }, [displayUsage, estimatedRate])
+  }, [displayUsage, estimatedRate, turnTiming, sessionState?.tokenUsage.output_tokens])
 
   const detailsBody = (
     <ContextUsageDetails

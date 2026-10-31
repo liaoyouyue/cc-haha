@@ -39,6 +39,7 @@ vi.mock('../../api/sessions', async (importOriginal) => {
 
 import { ContextUsageIndicator } from './ContextUsageIndicator'
 import { useSettingsStore } from '../../stores/settingsStore'
+import { useChatStore } from '../../stores/chatStore'
 
 const baseInspection = {
   active: true,
@@ -967,9 +968,8 @@ describe('ContextUsageIndicator session usage', () => {
 
     // Cache reads stay in the hit-rate row; they are not a separate headline.
     expect(await screen.findByTestId('session-cache-hit')).toHaveTextContent('90.0%')
-    // 2400 output / 42s API time, including prefill — not the 12s decode span (200 tok/s).
-    expect(screen.getByTestId('session-speed')).toHaveTextContent('57')
-    expect(screen.getByTestId('session-speed')).toHaveTextContent('tok/s')
+    // No completed turn in the store: the measured rate has no reading.
+    expect(screen.getByTestId('session-speed')).toHaveTextContent('--')
     expect(screen.getByTestId('session-cost')).toHaveTextContent('$1.23')
     expect(sessionsApiMock.getSessionUsage).toHaveBeenCalledWith('session-1', expect.anything())
     // Token grid: raw values from the usage snapshot, formatted by formatCompactTokens.
@@ -979,6 +979,35 @@ describe('ContextUsageIndicator session usage', () => {
     expect(grid.textContent).toContain('2.4K')
     expect(grid.textContent).toContain('9.0K')
     expect(grid.textContent).toContain('0')
+  })
+
+  it('shows the measured generation rate and real TTFT from the last turn', async () => {
+    sessionsApiMock.getInspection.mockResolvedValue(baseInspection)
+    sessionsApiMock.getSessionUsage.mockResolvedValue(usageInspection(baseUsage))
+    // The store keeps the server's timing from the last message_complete.
+    const base = useChatStore.getState().getSession('session-1')
+    useChatStore.setState({
+      sessions: {
+        'session-1': {
+          ...base,
+          chatState: 'idle',
+          messages: [],
+          tokenUsage: { input_tokens: 900, output_tokens: 120 },
+          turnTiming: { duration_ms: 10_000, duration_api_ms: 8_000, ttft_ms: 850, decode_ms: 4_000 },
+        },
+      },
+    })
+
+    render(
+      <ContextUsageIndicator sessionId="session-1" chatState="idle" messageCount={1} />,
+    )
+    await waitFor(() => {
+      expect(screen.getByTestId('context-usage-indicator')).toHaveTextContent('21%')
+    })
+    fireEvent.click(screen.getByTestId('context-usage-indicator'))
+    // 120 tokens / 4s decode = 30 tok/s measured.
+    expect(await screen.findByTestId('session-speed')).toHaveTextContent('30')
+    expect(screen.getByTestId('session-ttft')).toHaveTextContent('850ms')
   })
 
   it('never reports a partial cache as a perfect one', async () => {
@@ -1001,6 +1030,9 @@ describe('ContextUsageIndicator session usage', () => {
   })
 
   it('withholds the speed reading when the session reported no API duration', async () => {
+    // An earlier test in this file left turnTiming in the store; this session
+    // must not inherit it.
+    useChatStore.setState({ sessions: {} })
     // Transcript-sourced usage has no request timing. Showing a number here would mean
     // dividing by session wall clock, which includes tool execution.
     sessionsApiMock.getSessionUsage.mockResolvedValue(usageInspection({
@@ -1018,7 +1050,6 @@ describe('ContextUsageIndicator session usage', () => {
     fireEvent.click(screen.getByTestId('context-usage-indicator'))
 
     expect(await screen.findByTestId('session-speed')).toHaveTextContent('--')
-    expect(screen.getByTestId('session-speed')).not.toHaveTextContent('tok/s')
   })
 
   it('hides the block entirely for a session that has produced nothing', async () => {

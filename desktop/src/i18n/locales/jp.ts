@@ -3252,6 +3252,7 @@ export const jp: Record<TranslationKey, string> = {
   'contextIndicator.sessionCost': 'セッション費用',
   'contextIndicator.sessionSpeedUnit': 'tok/s',
   'contextIndicator.liveSpeedUnit': 'tok/s',
+  'contextIndicator.ttft': '初応答',
   'contextIndicator.sessionTokens': 'セッション Token',
   'contextIndicator.sessionInput': '入力',
   'contextIndicator.sessionOutput': '出力',

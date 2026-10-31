@@ -31,6 +31,14 @@ export type ContextUsageSessionStats = {
    * there is no honest reading (no turn running, too little history, a stall).
    */
   liveRate: number | null
+  /**
+   * Measured generation rate of the last completed turn: its output tokens
+   * over the time the model spent emitting them. `null` when the turn reported
+   * no timed stream.
+   */
+  measuredRate: number | null
+  /** Time to the first token of the last turn, in milliseconds. */
+  ttftMs: number | null
   /** Pre-formatted by the server (unknown-model sessions included), displayed verbatim. */
   costDisplay: string
 }
@@ -69,6 +77,7 @@ export type ContextUsageDetailsProps = {
     sessionCacheWrite: string
     liveSpeed: string
     sessionTokens: string
+    ttft: string
   }
 }
 
@@ -113,6 +122,13 @@ function UsageMeter({
   )
 }
 
+/** Time to first token: `0.42s` — sub-second precision is the interesting range. */
+function formatTtft(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '--'
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  return `${(ms / 1000).toFixed(2)}s`
+}
+
 /**
  * The three numbers a user watches while a session runs: how fast it is generating, how much of
  * the prompt is being served from cache, and what the session has cost so far.
@@ -151,8 +167,10 @@ function SessionStatGrid({
       <div className="min-w-0">
         <div className={labelClass}>{labels.sessionSpeed}</div>
         <div className={valueClass} data-testid="session-speed">
-          {formatTokensPerSecond(stats.tokensPerSecond ?? 0)}
-          {stats.tokensPerSecond !== null && (
+          {stats.measuredRate === null
+            ? '--'
+            : formatTokensPerSecond(stats.measuredRate)}
+          {stats.measuredRate !== null && (
             <span className="ml-1 text-[11px] text-[var(--color-text-tertiary)]">{labels.sessionSpeedUnit}</span>
           )}
         </div>
@@ -169,13 +187,19 @@ function SessionStatGrid({
           {stats.costDisplay}
         </div>
       </div>
-      <div role="group" aria-label={labels.sessionTokens} className="col-span-4 grid grid-cols-4 gap-2 border-t border-[var(--color-border)] pt-2">
+      <div role="group" aria-label={labels.sessionTokens} className="col-span-4 grid grid-cols-5 gap-2 border-t border-[var(--color-border)] pt-2">
         {tokenRows.map(([label, value]) => (
           <div key={label} className="min-w-0">
             <div className={labelClass}>{label}</div>
             <div className={`${valueClass} truncate`}>{formatCompactTokens(value)}</div>
           </div>
         ))}
+        <div className="min-w-0">
+          <div className={labelClass}>{labels.ttft}</div>
+          <div className={`${valueClass} truncate`} data-testid="session-ttft">
+            {stats.ttftMs === null ? '--' : formatTtft(stats.ttftMs)}
+          </div>
+        </div>
       </div>
     </div>
   )

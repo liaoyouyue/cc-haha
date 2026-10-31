@@ -505,6 +505,31 @@ describe('chatStore background agent activity interleaving', () => {
     ])
   })
 
+  it('keeps the server-reported turn timing from message_complete', () => {
+    const store = useChatStore.getState()
+    store.handleServerMessage(TEST_SESSION_ID, { type: 'content_start', blockType: 'text' })
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'message_complete',
+      usage: { input_tokens: 100, output_tokens: 50 },
+      timing: { duration_ms: 5000, duration_api_ms: 4000, ttft_ms: 800, decode_ms: 2500 },
+    })
+
+    const session = useChatStore.getState().sessions[TEST_SESSION_ID]
+    // 50 output tokens over 2.5s of decode = 20 tok/s measured; ttft 800ms.
+    expect(session?.turnTiming).toEqual({
+      duration_ms: 5000, duration_api_ms: 4000, ttft_ms: 800, decode_ms: 2500,
+    })
+  })
+
+  it('leaves turnTiming absent when the server sent no timing', () => {
+    const store = useChatStore.getState()
+    store.handleServerMessage(TEST_SESSION_ID, {
+      type: 'message_complete',
+      usage: { input_tokens: 1, output_tokens: 1 },
+    })
+    expect(useChatStore.getState().sessions[TEST_SESSION_ID]?.turnTiming).toBeUndefined()
+  })
+
   it('counts only body text in the live-rate counter, never thinking or tool input', async () => {
     vi.useFakeTimers()
     try {

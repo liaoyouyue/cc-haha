@@ -3251,6 +3251,7 @@ Row 9, all 8 cells: continuing from straight down, turning left through lower-le
   'contextIndicator.sessionCost': 'Session cost',
   'contextIndicator.sessionSpeedUnit': 'tok/s',
   'contextIndicator.liveSpeedUnit': 'tok/s',
+  'contextIndicator.ttft': 'First token',
   'contextIndicator.sessionTokens': 'Session tokens',
   'contextIndicator.sessionInput': 'Input',
   'contextIndicator.sessionOutput': 'Output',
