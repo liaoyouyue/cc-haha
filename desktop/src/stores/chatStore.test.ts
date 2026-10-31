@@ -512,12 +512,10 @@ describe('chatStore background agent activity interleaving', () => {
       store.handleServerMessage(TEST_SESSION_ID, { type: 'content_start', blockType: 'text' })
       store.handleServerMessage(TEST_SESSION_ID, { type: 'content_delta', text: 'Hello there.' })
 
-      // The text buffer flushes on a 50ms timer.
-      await vi.advanceTimersByTimeAsync(100)
+      // A thinking event can consume the pending buffer before its timer fires.
+      store.handleServerMessage(TEST_SESSION_ID, { type: 'thinking', text: 'Thinking about it.' })
       const afterText = useChatStore.getState().sessions[TEST_SESSION_ID]
       expect(afterText?.streamingTextChars).toBe('Hello there.'.length)
-
-      store.handleServerMessage(TEST_SESSION_ID, { type: 'thinking', text: 'Thinking about it.' })
       store.handleServerMessage(TEST_SESSION_ID, {
         type: 'content_delta',
         toolInput: JSON.stringify({ file_path: '/a/very/long/path.md', content: 'x'.repeat(4000) }),

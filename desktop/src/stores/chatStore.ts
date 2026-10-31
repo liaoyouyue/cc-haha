@@ -5358,6 +5358,7 @@ export const useChatStore = create<ChatStore>((setState, get) => {
           if (!get().sessions[sessionId]) break
           receivedLiveDelta = true
           appendPendingDelta(sessionId, msg.text)
+          update((s) => ({ streamingTextChars: (s.streamingTextChars ?? 0) + msg.text!.length }))
           if (!flushTimerBySession.has(sessionId)) {
             const timer = setTimeout(() => {
               const text = pendingDeltaBySession.get(sessionId) ?? ''
@@ -5366,7 +5367,6 @@ export const useChatStore = create<ChatStore>((setState, get) => {
               update((s) => ({
                 streamingText: s.streamingText + text,
                 streamingResponseChars: s.streamingResponseChars + text.length,
-                streamingTextChars: (s.streamingTextChars ?? 0) + text.length,
               }))
             }, 50)
             flushTimerBySession.set(sessionId, timer)
