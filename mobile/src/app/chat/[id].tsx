@@ -1,12 +1,13 @@
 import { serializeComposer, type ComposerReference } from '../../core/composerReferences'
 import { KeyboardViewport } from '../../ui/KeyboardViewport'
 import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
-import { AppState, FlatList, Platform, Pressable, View } from 'react-native'
+import { AppState, FlatList, Platform, View, type NativeScrollEvent } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router'
 import * as Clipboard from 'expo-clipboard'
 import { Text } from '../../ui/Text'
 import { useApp, useConnection } from '../../state/AppContext'
+import { isH5, reconnectH5 } from '../../state/h5'
 import { useDashboard } from '../../state/DashboardContext'
 import { createChatState } from '../../core/chat'
 import { ChatRecovery } from '../../core/chatRecovery'
@@ -20,6 +21,7 @@ import {
 import { notificationPermissionResponse, runtimeMatches } from '../../core/chatActions'
 import { clearPendingTask, peekPendingTask, pendingTaskDraft } from '../../core/pendingTask'
 import { SessionTransport, type ConnectionState, type SocketLike } from '../../core/sessionTransport'
+import { sessionHistory } from '../../core/historyCache'
 import { shouldReconnectOnResume } from '../../core/resume'
 import { takeSessionStale } from '../../core/sessionStale'
 import {
@@ -31,13 +33,17 @@ import {
 } from '../../core/operations'
 import type { ChatItem, ChatState, ClientMessage, PermissionMode, Session } from '../../core/types'
 import { Approval } from '../../ui/Approval'
+import { teamLaunchNotice, teamPlanSurface, teamRuntime } from '../../core/teamPlan'
+import { useTeamPlan } from '../../ui/team/useTeamPlan'
+import { TeamPlanCard } from '../../ui/team/TeamPlanCard'
+import { TeamPlanSheet } from '../../ui/team/TeamPlanSheet'
 import { ChatComposer } from '../../ui/ChatComposer'
 import { Message, type BubbleLayout } from '../../ui/Message'
 import { type Model } from '../../ui/RuntimePicker'
 import { RunSheet } from '../../ui/compose/RunSheet'
 import { nextChosenModel, runCapsule } from '../../ui/compose/runLogic'
 import { useComputerUse } from '../../core/useComputerUse'
-import { useSessionActivity } from '../../core/sessionActivity'
+import { teamMembersAllStopped, useSessionActivity } from '../../core/sessionActivity'
 import { registerSessionSender } from '../../core/sessionSender'
 import { ActivityCapsule } from '../../ui/activity/ActivityCapsule'
 import { ActivitySheet } from '../../ui/activity/ActivitySheet'
@@ -60,14 +66,19 @@ import {
   NavBar,
   ScreenView,
   Spinner,
+  Toast,
   goBack,
   useColors,
   type ActionMenuItem,
 } from '../../ui/kit'
 import { errorText } from '../../ui/theme'
-import { buildChatRows, visibleChatRows, type ChatRow } from '../../ui/chat/steps'
+import { buildChatRows, toggleGroupOpen, visibleChatRows, type ChatRow } from '../../ui/chat/steps'
 import { StepGroup, TurnFold, type StepContext, type StepUi } from '../../ui/chat/StepGroup'
+import { ToolImageLoaderContext } from '../../ui/chat/toolImageContext'
+import { createToolImageLoader } from '../../core/toolImages'
 import { QueuedMessages } from '../../ui/chat/QueuedMessages'
+import { OlderHistoryStatus } from '../../ui/chat/OlderHistoryStatus'
+import { shouldPrefetchOlder } from '../../ui/chat/olderHistory'
 import {
   canFlushQueue,
   clearParkedComposer,
@@ -94,6 +105,7 @@ import {
   sessionSubtitle,
   turnMeta,
 } from '../../ui/chat/session'
+import { simulatedPhoneChrome } from '../../ui/webChrome'
 
 const NativeSocket = WebSocket as unknown as new (
   url: string,
@@ -105,6 +117,9 @@ type RewindPreview = {
   target: { targetUserMessageId: string }
   conversation: { messagesRemoved: number }
 }
+/** 离最新处（倒置列表的起点）不到这么远就算停在最新处。 */
+const LATEST_SLOP = 120
+
 const toggle = (set: ReadonlySet<string>, key: string) => {
   const next = new Set(set)
   if (next.has(key)) next.delete(key)
@@ -142,6 +157,8 @@ function ChatSession({
   notificationRequestId?: string
 }) {
   const { client, host, credential, error: connectionError } = useConnection(hostId)
+  // 工具结果里的图片按引用下载，缓存跟着这台电脑的连接走。
+  const toolImages = useMemo(() => (client ? createToolImageLoader(client) : null), [client])
   const { drafts } = useApp()
   const colors = useColors()
   const insets = useSafeAreaInsets()
@@ -191,10 +208,14 @@ function ChatSession({
   const [revision, setRevision] = useState(0)
   const [hasOlder, setHasOlder] = useState(false)
   const [loadingOlder, setLoadingOlder] = useState(false)
+  const [olderFailed, setOlderFailed] = useState(false)
+  const [awayFromLatest, setAwayFromLatest] = useState(false)
+  // 停在最新处附近：这时不开「保持阅读位置」，新内容由倒置列表自然贴底。
+  const [atLatest, setAtLatest] = useState(true)
   const [branch, setBranch] = useState<string | null>(null)
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([])
   const [backgroundTasks, setBackgroundTasks] = useState<BackgroundTask[]>([])
-  const [ui, setUi] = useState<StepUi>(() => ({ expanded: new Set(), open: new Set(), revealed: new Set() }))
+  const [ui, setUi] = useState<StepUi>(() => ({ expanded: new Set(), open: new Set(), closed: new Set(), revealed: new Set() }))
   const [turnClock, setTurnClock] = useState<{ startedAt?: number; endedAt?: number; live?: boolean }>({})
   // 进页面时已经在跑的一轮，用电脑给的开始时间，和首页一致。
   const { snapshot: dashboard } = useDashboard()
@@ -207,15 +228,16 @@ function ChatSession({
   const clockRef = useRef<{ active: boolean; startedAt?: number; live: boolean } | undefined>(undefined)
   const connectionRef = useRef<ConnectionState>('connecting')
   const transport = useRef<SessionTransport | null>(null)
+  // 消息流是倒置列表：offset 0 就是最新处。打开会话、键盘弹起、输入框变高、流式输出变长时
+  // 由原生保持在底部，不需要 JS 算位置补滚动（那样会和原生尺寸变化赛跑，滚不到底）。
   const list = useRef<FlatList<ChatRow>>(null)
-  const follow = useRef(true)
-  const scrollMetrics = useRef({ height: 0, offset: 0 })
-  const holdScroll = useRef(false)
+  // 离最新处的距离，以及列表可视高度和内容高度：决定什么时候提前往前翻。
+  const scrollMetrics = useRef({ offset: 0 })
+  const listSize = useRef({ viewport: 0, content: 0 })
   const olderInFlight = useRef(false)
-  // 自动加载每次只能补一批：停在顶部回弹时不能连续把历史全拉下来。
-  const autoLoadArmed = useRef(true)
-  // 手动加载完后回到顶部，让用户看见刚补进来的更早消息（自动加载则保持阅读位置）。
-  const scrollTopAfterLoad = useRef(false)
+  const olderFailedRef = useRef(false)
+  // 一次拖动里连续自动翻了几批，见 shouldPrefetchOlder。
+  const autoBatches = useRef(0)
   const notificationSeen = useRef(new Set<string>())
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const mounted = useRef(true)
@@ -228,7 +250,8 @@ function ChatSession({
   }, [])
 
   useEffect(() => {
-    if (!client || !credential) return
+    // An H5 page authenticated by its cookie or loopback address has credential ''.
+    if (!client || credential === undefined) return
     let alive = true
     /** 本轮起止时间只在收到状态时记录：亲眼看到开始用本地时间，否则用消息时间。 */
     function trackTurn(value: ChatState) {
@@ -272,6 +295,7 @@ function ChatSession({
       credential,
       sessionId: id,
       platform: Platform.OS === 'web' ? 'web' : 'native',
+      history: sessionHistory.store(hostId, id),
       socketFactory: (options) =>
         Platform.OS === 'web'
           ? (new WebSocket(options.url) as unknown as SocketLike)
@@ -287,6 +311,11 @@ function ChatSession({
         if (alive) {
           connectionRef.current = value
           setConnection(value)
+          // 重新连上后，之前因为断线没翻成的可以再自动翻。
+          if (value === 'ready') {
+            olderFailedRef.current = false
+            setOlderFailed(false)
+          }
           recovery.onConnection(value)
           if (value !== 'ready' && value !== 'syncing' && handoff.current.phase === 'config')
             handoff.current.phase = 'failed'
@@ -325,7 +354,7 @@ function ChatSession({
       channel.dispose()
       if (transport.current === channel) transport.current = null
     }
-  }, [client, credential, id, revision])
+  }, [client, credential, hostId, id, revision])
 
   const ready = connection === 'ready'
   const busy =
@@ -361,7 +390,7 @@ function ChatSession({
     if (!next || !canFlushQueue(queueGate, focused.current)) return
     if (dispatch(next.message, () => {})) {
       setQueue((items) => items.filter((item) => item.id !== next.id))
-      follow.current = true
+      showLatest()
     }
   })
   useEffect(() => {
@@ -416,7 +445,7 @@ function ChatSession({
     if (!item || !ready || state.turnActive || waitingForDecision || pendingUser) return
     if (dispatch(item.message)) {
       setQueue((items) => items.filter((value) => value.id !== itemId))
-      follow.current = true
+      showLatest()
     }
   }
   /** 立即把排队消息插进正在运行的一轮；这一轮刚好结束时退回普通发送。 */
@@ -425,12 +454,12 @@ function ChatSession({
     if (!item) return
     if (transport.current?.steer(item.message)) {
       setQueue((items) => items.filter((value) => value.id !== itemId))
-      follow.current = true
+      showLatest()
       return
     }
     if (!state.turnActive && dispatch(item.message)) {
       setQueue((items) => items.filter((value) => value.id !== itemId))
-      follow.current = true
+      showLatest()
       return
     }
     showNotice('现在还不能引导，等上一条确认或当前决定处理完再试。', true)
@@ -455,6 +484,39 @@ function ChatSession({
   const computer = useComputerUse(client)
   const sendRaw = useCallback((message: ClientMessage) => transport.current?.send(message) ?? false, [])
   useEffect(() => registerSessionSender(id, sendRaw), [id, sendRaw])
+  // 队长提交团队后只有人确认才会开工：手机上也要能处理。和桌面端一样放在输入框上方，
+  // 不占输入框——追加成员时原有成员还在跑，用户仍要能停止、能和队长说话。
+  const teamPlan = useTeamPlan({
+    client,
+    sessionId: id,
+    ready,
+    signal: state.teamPlanSignal,
+    turnActive: state.turnActive,
+  })
+  const teamSurface = teamPlanSurface(teamPlan.plan)
+  // 每份新提交的方案从底部自动弹出一次；关掉后从卡片再打开。开关放在页面上，
+  // 卡片随输入框或审批切换重挂载时不会把它关掉或重复弹出。
+  const reviewPlanId = teamSurface === 'review' ? teamPlan.plan?.planId : undefined
+  const [teamSheet, setTeamSheet] = useState<{ planId?: string; open: boolean }>({ open: false })
+  if (reviewPlanId && teamSheet.planId !== reviewPlanId) setTeamSheet({ planId: reviewPlanId, open: true })
+  const teamSheetOpen = !!reviewPlanId && teamSheet.planId === reviewPlanId && teamSheet.open
+  // 确认后审阅卡就消失了：顶栏下方说一句「正在启动」，顶部胶囊接着显示进度。
+  const [seenPlan, setSeenPlan] = useState(teamPlan.plan)
+  const [teamToast, setTeamToast] = useState('')
+  if (seenPlan !== teamPlan.plan) {
+    const text = teamLaunchNotice(seenPlan, teamPlan.plan)
+    setSeenPlan(teamPlan.plan)
+    if (text) setTeamToast(text)
+  }
+  useEffect(() => {
+    if (!teamToast) return
+    const timer = setTimeout(() => setTeamToast(''), 2600)
+    return () => clearTimeout(timer)
+  }, [teamToast])
+  const teamLaunching =
+    teamPlan.plan?.state === 'launching'
+      ? (teamPlan.plan.approvedSnapshot?.members ?? teamPlan.plan.members).length
+      : undefined
   const activity = useSessionActivity({
     client,
     host: { id: hostId },
@@ -465,7 +527,13 @@ function ChatSession({
     pendingApprovals: state.permissions.length,
     workDir: session?.workDir ?? undefined,
     send: sendRaw,
+    teamPlan: teamPlan.plan,
   })
+  // 队长这一轮结束了、已确认的成员还在跑：停止照样要给（同桌面的 background 停止）。
+  const teamWorking =
+    !state.turnActive &&
+    (teamPlan.plan?.state === 'launching' || teamPlan.plan?.state === 'running') &&
+    !teamMembersAllStopped(activity.team)
 
   // 分支只用于副标题与菜单；取不到就只显示项目名。
   useEffect(() => {
@@ -614,52 +682,89 @@ function ChatSession({
     }
   }
   const send = (message: ClientMessage) => dispatch(message)
-  /** 一次翻三页，长会话不用反复点；in-flight 只认 ref，避免连点重复请求。 */
-  function loadOlderBatch(mode: 'auto' | 'manual' = 'manual') {
+  /** 往前翻一批（两页）；in-flight 只认 ref，避免重复请求。更早的内容接在倒置列表末尾（画面顶部），阅读位置不动。 */
+  function loadOlderBatch() {
     if (olderInFlight.current) return
     const channel = transport.current
     if (!channel) return
     olderInFlight.current = true
-    autoLoadArmed.current = false
-    follow.current = false
-    holdScroll.current = true
+    olderFailedRef.current = false
     setLoadingOlder(true)
+    setOlderFailed(false)
     channel
-      .loadOlder(3)
+      .loadOlder(2)
       .then((result) => {
         if (!mounted.current) return
-        if (result === 'unavailable') showNotice('等这台电脑连上后再加载更早的消息。', true)
-        else if (result === 'end') setHasOlder(false)
-        else if (result === 'loaded' && mode === 'manual') {
-          scrollTopAfterLoad.current = true
-          // 没有可见新增（行被合并）时 onContentSizeChange 不会触发，别让它留到下一次。
-          setTimeout(() => {
-            scrollTopAfterLoad.current = false
-          }, 1200)
+        if (result === 'end') setHasOlder(false)
+        else if (result === 'unavailable') {
+          olderFailedRef.current = true
+          setOlderFailed(true)
         }
       })
-      .catch((e) => {
-        if (mounted.current) setError(errorText(e))
+      .catch(() => {
+        olderFailedRef.current = true
+        if (mounted.current) setOlderFailed(true)
       })
       .finally(() => {
         olderInFlight.current = false
-        holdScroll.current = false
-        follow.current = false
-        if (mounted.current) setLoadingOlder(false)
+        if (!mounted.current) return
+        setLoadingOlder(false)
+        // 整批都并进了已有的折叠行时内容高度不变，不会再有布局回调，这里补一次判断。
+        requestAnimationFrame(() => {
+          if (mounted.current) maybeLoadOlder()
+        })
       })
   }
-  /**
-   * 滚到接近顶部就自动接着翻，按钮仍保留给想手动加载的人。
-   * 一次只触发一批：要等用户先往下离开顶部再回来，回弹时不会连续补页。
-   */
-  function autoLoadOlder(offset: number) {
-    if (offset > 320) {
-      autoLoadArmed.current = true
+  /** 滑近顶部（已加载的最早内容）时提前往前翻。只读 ref 和传输层，加载结束的回调里调用也不会读到旧状态。 */
+  function maybeLoadOlder() {
+    const { viewport, content } = listSize.current
+    if (
+      olderInFlight.current ||
+      olderFailedRef.current ||
+      connectionRef.current !== 'ready' ||
+      !transport.current?.historyPage?.page?.nextCursor ||
+      !shouldPrefetchOlder({
+        viewport,
+        content,
+        toOldest: Math.max(0, content - viewport - scrollMetrics.current.offset),
+        batches: autoBatches.current,
+      })
+    )
       return
-    }
-    if (offset >= 160 || !autoLoadArmed.current || olderInFlight.current || !hasOlder || !ready) return
-    loadOlderBatch('auto')
+    autoBatches.current++
+    loadOlderBatch()
   }
+  function trackScroll(value: NativeScrollEvent) {
+    const offset = value.contentOffset.y
+    scrollMetrics.current = { offset }
+    listSize.current = { viewport: value.layoutMeasurement.height, content: value.contentSize.height }
+    const near = offset < LATEST_SLOP
+    if (near !== atLatest) setAtLatest(near)
+    const away = offset > value.layoutMeasurement.height
+    if (away !== awayFromLatest) setAwayFromLatest(away)
+    maybeLoadOlder()
+  }
+  function retryOlder() {
+    olderFailedRef.current = false
+    autoBatches.current = 0
+    loadOlderBatch()
+  }
+  /** 回到最新处（倒置列表的起点）：发消息、点「回到最新」时用。 */
+  function showLatest(animated = true) {
+    list.current?.scrollToOffset({ offset: 0, animated })
+  }
+  function jumpToLatest() {
+    setAwayFromLatest(false)
+    showLatest()
+  }
+  // 列表往往在连上电脑之前就量好了尺寸；连上之后没有新的布局或滚动事件，要补一次判断，
+  // 否则不满一屏的会话会停在「加载更早的消息」上不动。
+  const prefetchWhenReady = useEffectEvent(() => maybeLoadOlder())
+  useEffect(() => {
+    if (!ready) return
+    const frame = requestAnimationFrame(() => prefetchWhenReady())
+    return () => cancelAnimationFrame(frame)
+  }, [ready])
   function showNotice(text: string, transient = false) {
     clearTimeout(noticeTimer.current)
     setNotice(text)
@@ -711,7 +816,6 @@ function ChatSession({
         setAttachments([])
         setTeam(false)
         drafts.delete(draftKey)
-        follow.current = true
         setError('')
         return
       }
@@ -723,7 +827,7 @@ function ChatSession({
         drafts.delete(draftKey)
         clearPendingTask(hostId, id)
         handoff.current.phase = 'done'
-        follow.current = true
+        showLatest()
         setNotice('')
       }
     } catch (e) {
@@ -842,15 +946,16 @@ function ChatSession({
   }
   /** 会话记录在别处被改写（回退）后，丢掉本地状态、重新连接并读取历史。 */
   const reloadSession = useCallback(() => {
+    sessionHistory.forget(hostId, id)
     setState(createChatState(id))
-    setUi({ expanded: new Set(), open: new Set(), revealed: new Set() })
+    setUi({ expanded: new Set(), open: new Set(), closed: new Set(), revealed: new Set() })
     setConnection('connecting')
     connectionRef.current = 'connecting'
     clockRef.current = undefined
     setTurnClock({})
     setCheckpoints([])
     setRevision((value) => value + 1)
-  }, [id])
+  }, [hostId, id])
   useFocusEffect(
     useCallback(() => {
       if (!takeSessionStale(hostId, id)) return
@@ -883,6 +988,8 @@ function ChatSession({
       ),
     [state.items, state.turnActive, turnClock, ui.open]
   )
+  // 倒置列表从最新的一行排起。
+  const latestFirst = useMemo(() => [...rows].reverse(), [rows])
   const waitingKey = state.permissions.map((request) => request.toolUseId ?? '').join('\n')
   const runningBackgroundKey = backgroundCount
     ? backgroundTasks
@@ -905,7 +1012,7 @@ function ChatSession({
     []
   )
   const toggleOpen = useCallback(
-    (key: string) => setUi((value) => ({ ...value, open: toggle(value.open, key) })),
+    (key: string, live = false) => setUi((value) => toggleGroupOpen(value, key, live)),
     []
   )
   const reveal = useCallback(
@@ -918,7 +1025,7 @@ function ChatSession({
       row.kind === 'message' ? (
         <Message item={row.item} onLongPress={longPress} />
       ) : row.kind === 'turn' ? (
-        <TurnFold label={row.label} open={ui.open.has(row.key)} onToggle={() => toggleOpen(row.key)} />
+        <TurnFold label={row.label} images={row.images} open={ui.open.has(row.key)} onToggle={() => toggleOpen(row.key)} />
       ) : (
         <StepGroup
           row={row}
@@ -977,13 +1084,14 @@ function ChatSession({
             {connectionProblem.text}
           </Text>
           <Button
-            title={connectionProblem.action === 'hosts' ? '管理电脑' : '重试'}
+            title={connectionProblem.action === 'hosts' ? (isH5 ? '重新连接' : '管理电脑') : '重试'}
             size="sm"
             variant="outline"
             pill
             onPress={() => {
-              if (connectionProblem.action === 'hosts') router.push('/hosts')
-              else reconnect()
+              if (connectionProblem.action !== 'hosts') reconnect()
+              else if (isH5) reconnectH5(host?.auth === 'remote')
+              else router.push('/hosts')
             }}
           />
         </View>
@@ -1004,6 +1112,16 @@ function ChatSession({
       <Callout key="config" tone="info">
         正在等电脑确认新的运行配置…
       </Callout>
+    ) : null,
+    teamPlan.plan && teamSurface ? (
+      <TeamPlanCard
+        key={`team:${teamPlan.plan.planId}`}
+        plan={teamPlan.plan}
+        surface={teamSurface}
+        team={teamPlan}
+        ready={ready}
+        onOpen={() => setTeamSheet({ planId: teamPlan.plan?.planId, open: true })}
+      />
     ) : null,
   ].filter(Boolean)
   const runStartedAt = state.turnActive
@@ -1070,7 +1188,7 @@ function ChatSession({
   const elapsed = runStartedAt && state.turnActive ? elapsedLabel(runStartedAt, sheetNow) : undefined
 
   // 菜单锚在导航栏下沿（kit 的 Menu 在 Android 上不覆盖状态栏）。
-  const menuTop = (Platform.OS === 'web' ? 54 : insets.top) + 46
+  const menuTop = (simulatedPhoneChrome ? 54 : insets.top) + 46
   const changedCount = latest?.code.filesChanged.length ?? 0
   const menuItems: ActionMenuItem[] = [
     {
@@ -1178,6 +1296,7 @@ function ChatSession({
         : undefined
 
   return (
+    <ToolImageLoaderContext.Provider value={toolImages}>
     <ScreenView>
       <NavBar
         floating
@@ -1192,6 +1311,7 @@ function ChatSession({
               tone={activity.tone}
               active={activity.active}
               visible={activity.capsuleVisible}
+              launching={teamLaunching !== undefined}
               onPress={() => openPanel('activity')}
             />
             <FloatingButton
@@ -1203,94 +1323,88 @@ function ChatSession({
           </View>
         }
       />
+      <Toast text={teamToast} top={menuTop + 8} />
       <KeyboardViewport style={{ flex: 1 }}>
-        <FlatList
-          ref={list}
-          data={rows}
-          extraData={ui}
-          keyExtractor={(row) => row.key}
-          renderItem={renderRow}
-          style={{ flex: 1 }}
-          contentContainerStyle={{
-            paddingHorizontal: 16,
-            paddingTop: 12,
-            paddingBottom: 16,
-            gap: 16,
-            flexGrow: 1,
-            width: '100%',
-            maxWidth: 800,
-            alignSelf: 'center',
-          }}
-          keyboardShouldPersistTaps="handled"
-          // 自动补历史时保持正在阅读的位置；手动按钮补完后会显式回到顶部。
-          maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
-          onScroll={({ nativeEvent: value }) => {
-            // 贴底时继续跟随；只有用户往上滚才停止跟随。内容变短（一轮结束后整组折叠、
-            // 历史重载）引起的位置回弹不算用户操作。
-            if (holdScroll.current) return
-            const previous = scrollMetrics.current
-            const distance =
-              value.contentSize.height - value.contentOffset.y - value.layoutMeasurement.height
-            const shrank = value.contentSize.height < previous.height - 1
-            if (distance < 150) follow.current = true
-            else if (!shrank && value.contentOffset.y < previous.offset - 1) follow.current = false
-            scrollMetrics.current = { height: value.contentSize.height, offset: value.contentOffset.y }
-            autoLoadOlder(value.contentOffset.y)
-          }}
-          scrollEventThrottle={100}
-          onContentSizeChange={() => {
-            if (scrollTopAfterLoad.current) {
-              scrollTopAfterLoad.current = false
-              list.current?.scrollToOffset({ offset: 0, animated: false })
-              return
+        <View style={{ flex: 1 }}>
+          <FlatList
+            ref={list}
+            inverted
+            // Android's native clipping can detach transformed cells during
+            // entry/layout and only reattach them on scroll. A two-message
+            // conversation must show its first message without that gesture.
+            // Keep FlatList virtualization, without the extra native clipping.
+            removeClippedSubviews={false}
+            data={latestFirst}
+            extraData={ui}
+            keyExtractor={(row) => row.key}
+            renderItem={renderRow}
+            style={{ flex: 1 }}
+            // 倒置后 paddingTop 在画面底部、paddingBottom 在画面顶部。
+            contentContainerStyle={{
+              paddingHorizontal: 16,
+              paddingTop: 16,
+              paddingBottom: 12,
+              gap: 16,
+              flexGrow: 1,
+              // Inversion flips the main axis: put spare space below the
+              // oldest message on screen, keeping short conversations at top.
+              justifyContent: 'flex-end',
+              width: '100%',
+              maxWidth: 800,
+              alignSelf: 'center',
+            }}
+            keyboardShouldPersistTaps="handled"
+            // 往上翻着看时，最新那条还在变长（流式输出、一轮结束后折叠）也不挪动正在看的内容；
+            // 锚点跳过正在变化的最新一行（列表头部由 VirtualizedList 单独计入）。停在最新处时不开，
+            // 新内容自然贴底。
+            maintainVisibleContentPosition={atLatest ? undefined : { minIndexForVisible: 1 }}
+            onLayout={({ nativeEvent }) => {
+              listSize.current.viewport = nativeEvent.layout.height
+              maybeLoadOlder()
+            }}
+            onScrollBeginDrag={() => {
+              autoBatches.current = 0
+            }}
+            onScroll={({ nativeEvent }) => trackScroll(nativeEvent)}
+            // 滚动事件有节流，一次快速甩到顶时最后的位置可能收不到；停下时再按最终位置判断一次。
+            onScrollEndDrag={({ nativeEvent }) => trackScroll(nativeEvent)}
+            onMomentumScrollEnd={({ nativeEvent }) => trackScroll(nativeEvent)}
+            scrollEventThrottle={100}
+            onContentSizeChange={(_, height) => {
+              listSize.current.content = height
+              maybeLoadOlder()
+            }}
+            // 倒置列表的尾部在画面顶部。头尾始终挂着、没内容时只隐藏，保持位置用的下标才不会变。
+            ListFooterComponentStyle={hasOlder ? undefined : { display: 'none' }}
+            ListFooterComponent={
+              <OlderHistoryStatus
+                loading={loadingOlder}
+                failed={olderFailed}
+                ready={ready}
+                onLoad={retryOlder}
+              />
             }
-            if (follow.current && !holdScroll.current) list.current?.scrollToEnd({ animated: false })
-          }}
-          ListHeaderComponent={
-            hasOlder ? (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="加载更早的消息"
-                accessibilityState={{ disabled: loadingOlder || !ready, busy: loadingOlder }}
-                disabled={loadingOlder || !ready}
-                hitSlop={8}
-                onPress={() => loadOlderBatch('manual')}
-                style={({ pressed }) => ({
-                  alignSelf: 'center',
-                  minHeight: 44,
-                  justifyContent: 'center',
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 8,
-                  paddingHorizontal: 16,
-                  opacity: loadingOlder ? 0.6 : pressed ? 0.5 : ready ? 1 : 0.45,
-                })}
-              >
-                {loadingOlder ? <Spinner size={14} /> : null}
-                <Text style={{ fontSize: 14, color: colors.ink2 }}>
-                  {loadingOlder ? '正在加载…' : ready ? '加载更早的消息' : '等电脑连接后加载'}
-                </Text>
-              </Pressable>
-            ) : undefined
-          }
-          ListEmptyComponent={
-            ready ? (
-              <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32, gap: 8 }}>
-                <Text style={{ fontSize: 16, lineHeight: 22, fontWeight: '600', color: colors.ink, textAlign: 'center' }}>
-                  从这里开始
-                </Text>
-                <Text style={{ fontSize: 14, lineHeight: 21, color: colors.ink3, textAlign: 'center' }}>
-                  {`说说你想做什么，任务会在 ${host?.name ?? '电脑'} 上执行。下面可以换模型和权限模式。`}
-                </Text>
-              </View>
-            ) : connectionProblem ? undefined : (
-              <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-                <Spinner size={20} />
-              </View>
-            )
-          }
-          ListFooterComponent={
-            state.computerUsePermissions.length || (turnSettled && (latest || meta)) ? (
+            ListEmptyComponent={
+              ready ? (
+                <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32, gap: 8 }}>
+                  <Text style={{ fontSize: 16, lineHeight: 22, fontWeight: '600', color: colors.ink, textAlign: 'center' }}>
+                    从这里开始
+                  </Text>
+                  <Text style={{ fontSize: 14, lineHeight: 21, color: colors.ink3, textAlign: 'center' }}>
+                    {`说说你想做什么，任务会在 ${host?.name ?? '电脑'} 上执行。下面可以换模型和权限模式。`}
+                  </Text>
+                </View>
+              ) : connectionProblem ? undefined : (
+                <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+                  <Spinner size={20} />
+                </View>
+              )
+            }
+            // 头部在画面底部，紧挨着最新一条：操作电脑的确认、本轮改动和用时。
+            ListHeaderComponentStyle={
+              state.computerUsePermissions.length || (turnSettled && (latest || meta)) ? undefined : { display: 'none' }
+            }
+            ListHeaderComponent={
               <View style={{ gap: 14 }}>
                 {state.computerUsePermissions.map((request) => (
                   <Card key={request.requestId}>
@@ -1333,23 +1447,28 @@ function ChatSession({
                               userConsented: false,
                             },
                           })
-                        }
-                      />
-                    </View>
-                  </Card>
-                ))}
-                {turnSettled ? (
-                  <SessionChangesCard
-                    checkpoint={latest}
-                    onOpen={() => openFiles('changed')}
-                    onUndo={() => openRoute('/changes')}
-                  />
-                ) : null}
-                {meta ? <Mono style={{ fontSize: 12, color: colors.ink3 }}>{meta}</Mono> : null}
-              </View>
-            ) : undefined
-          }
-        />
+                          }
+                        />
+                      </View>
+                    </Card>
+                  ))}
+                  {turnSettled ? (
+                    <SessionChangesCard
+                      checkpoint={latest}
+                      onOpen={() => openFiles('changed')}
+                      onUndo={() => openRoute('/changes')}
+                    />
+                  ) : null}
+                  {meta ? <Mono style={{ fontSize: 12, color: colors.ink3 }}>{meta}</Mono> : null}
+                </View>
+            }
+          />
+          {awayFromLatest ? (
+            <View pointerEvents="box-none" style={{ position: 'absolute', left: 0, right: 0, bottom: 12, alignItems: 'center' }}>
+              <FloatingButton icon="arrow-down" label="回到最新" onPress={jumpToLatest} />
+            </View>
+          ) : null}
+        </View>
         {approval ? (
           <>
             {above || caption ? (
@@ -1396,6 +1515,7 @@ function ChatSession({
             lean={lean}
             empty={!hasItems}
             busy={busy}
+            background={teamWorking}
             queueing={busy}
             disabled={!ready || state.configPending || workspaceMissing || working}
             run={runCapsule({
@@ -1414,6 +1534,18 @@ function ChatSession({
           />
         )}
       </KeyboardViewport>
+      {teamPlan.plan && teamSurface === 'review' ? (
+        <TeamPlanSheet
+          key={teamPlan.plan.planId}
+          visible={teamSheetOpen}
+          onClose={() => setTeamSheet((value) => ({ ...value, open: false }))}
+          plan={teamPlan.plan}
+          team={teamPlan}
+          client={client}
+          ready={ready}
+          leaderRuntime={runtime ? teamRuntime(runtime) : undefined}
+        />
+      ) : null}
       <ActionMenu
         visible={panel === 'menu'}
         onClose={() => setPanel(null)}
@@ -1462,6 +1594,11 @@ function ChatSession({
           // 和「停止这段会话」一样：停下来就不再自动追加，排队的内容回到输入框由用户决定要不要发。
           if (state.turnActive && dispatch({ type: 'stop_generation' })) withdrawQueued()
         }}
+        launching={teamLaunching}
+        onOpenMember={(_team, member) => {
+          setPanel(null)
+          router.push({ pathname: '/member', params: { host: hostId, id, agent: member.id } })
+        }}
       />
       <MessageMenu
         item={selected?.item ?? null}
@@ -1496,8 +1633,12 @@ function ChatSession({
       <ConfirmSheet
         visible={panel === 'stop'}
         onClose={closePanel}
-        title="停止这段会话？"
-        message="当前生成和后台任务都会停下，已经改好的文件会保留。"
+        title={teamWorking ? '停止团队？' : '停止这段会话？'}
+        message={
+          teamWorking
+            ? '成员会停在当前步骤，已经改好的文件会保留。之后发一条消息，团队就从这里接着做。'
+            : '当前生成和后台任务都会停下，已经改好的文件会保留。'
+        }
         confirmLabel="停止"
         destructive
         disabled={!ready}
@@ -1538,6 +1679,7 @@ function ChatSession({
             : undefined
         }
         error={sheetError}
+        workDir={session?.workDir ?? undefined}
       />
       <SelectTextSheet
         visible={panel === 'select'}
@@ -1561,5 +1703,6 @@ function ChatSession({
         onConfirm={() => void resendEdit()}
       />
     </ScreenView>
+    </ToolImageLoaderContext.Provider>
   )
 }

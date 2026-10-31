@@ -48,6 +48,13 @@ describe('desktop connection contracts', () => {
     })
   })
 
+  test.each(['https://workstation-fixture.trycloudflare.com', 'https://phone.fixture.example:8443'])('accepts a Cloudflare pairing origin without a VPN address: %s', origin => {
+    const parsed = parseConnectionInput(`${origin}/remote#pair=fixture-pair`)
+    expect(parsed).toEqual({ url: origin, auth: 'remote', pairSecret: 'fixture-pair' })
+    expect(buildSocketOptions({ ...remote, url: parsed.url }, 'native_fixture', 'session', 'native'))
+      .toEqual({ url: `${origin.replace('https:', 'wss:')}/ws/session?media=ref`, headers: { Authorization: 'Bearer native_fixture', Origin: origin } })
+  })
+
   test.each([
     'http://10.0.0.4:3456',
     'http://172.16.0.4',
@@ -94,13 +101,13 @@ describe('desktop connection contracts', () => {
     expect(
       buildSocketOptions(remote, 'native-token', 'session-id', 'native')
     ).toEqual({
-      url: 'wss://fixture.invalid/ws/session-id',
+      url: 'wss://fixture.invalid/ws/session-id?media=ref',
       headers: { Authorization: 'Bearer native-token', Origin: remote.url },
     })
     expect(
       buildSocketOptions(lan, 'fake-token', 'session-id', 'native')
     ).toEqual({
-      url: 'ws://192.168.1.12:3456/ws/session-id',
+      url: 'ws://192.168.1.12:3456/ws/session-id?media=ref',
       headers: { Authorization: 'Bearer fake-token', Origin: '' },
     })
   })
@@ -136,7 +143,7 @@ describe('desktop connection contracts', () => {
 
   test('only the LAN browser preview uses the existing token query contract', () => {
     expect(buildSocketOptions(lan, 'fake-token', 'session-id', 'web')).toEqual({
-      url: 'ws://192.168.1.12:3456/ws/session-id?token=fake-token',
+      url: 'ws://192.168.1.12:3456/ws/session-id?media=ref&token=fake-token',
     })
     expect(() =>
       buildSocketOptions(remote, 'native-token', 'session-id', 'web')
@@ -147,5 +154,17 @@ describe('desktop connection contracts', () => {
     expect(() =>
       buildSocketOptions(lan, 'fake-token', '../other', 'native')
     ).toThrow('标识')
+  })
+
+  test('an H5 page without a token lets the browser cookie or loopback authenticate the socket', () => {
+    // Remote browser: the device cookie rides along on a same-origin socket.
+    expect(buildSocketOptions(remote, '', 'session-id', 'web')).toEqual({
+      url: 'wss://fixture.invalid/ws/session-id?media=ref',
+    })
+    expect(buildSocketOptions(lan, '', 'session-id', 'web')).toEqual({
+      url: 'ws://192.168.1.12:3456/ws/session-id?media=ref',
+    })
+    // Native clients still have nothing else to authenticate with.
+    expect(() => buildSocketOptions(remote, '', 'session-id', 'native')).toThrow('凭据')
   })
 })

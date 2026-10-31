@@ -1,46 +1,74 @@
 import { describe, expect, it } from 'vitest'
-import { isNgrokDevOrigin, isPublicAccessConfiguration, normalizeNgrokDomain, normalizePublicAccessOrigin } from './publicAccessConfiguration'
+import { findCloudflareTunnelToken, isPublicAccessConfiguration, normalizePublicAccessOrigin, isCloudflareTunnelToken, readCloudflareTunnelToken } from './publicAccessConfiguration'
 
-describe('external tunnel configuration', () => {
-  it('preserves HTTPS IP and port origins and canonicalizes domain names', () => {
-    expect(normalizePublicAccessOrigin(' https://Relay.Example.test/ ')).toBe('https://relay.example.test')
-    expect(normalizePublicAccessOrigin('https://203.0.113.25:8443')).toBe('https://203.0.113.25:8443')
-    expect(normalizePublicAccessOrigin('https://[2001:db8::25]')).toBe('https://[2001:db8::25]')
+// Same shape cloudflared decodes; every value is fabricated.
+const tunnelId = '0d9c6c2e-4f5a-4b7e-9c1d-2e3f4a5b6c7d'
+const fakeToken = (id = tunnelId) => btoa(JSON.stringify({ a: '0123456789abcdef0123456789abcdef', t: id, s: btoa('fake-tunnel-secret-for-tests') }))
+
+describe('Cloudflare public access configuration', () => {
+  it('accepts zero-configuration quick mode and a named HTTPS origin', () => {
+    expect(isPublicAccessConfiguration({ mode: 'quick', customUrl: '', localPort: 17463 })).toBe(true)
+    expect(isPublicAccessConfiguration({ mode: 'named', customUrl: 'https://phone.example.com/', localPort: 17463, tunnelToken: 'fake_token_for_a_local_only_regression_fixture' })).toBe(true)
+    expect(isPublicAccessConfiguration({ mode: 'named', customUrl: '', localPort: 17463 })).toBe(true)
+    expect(normalizePublicAccessOrigin('https://PHONE.example.com:443/')).toBe('https://phone.example.com')
   })
 
-  it('rejects URLs that would send credentials to a path, redirect, or insecure origin', () => {
-    for (const value of [undefined, null, '', 'http://relay.test', 'https:relay.test', 'https://u:p@relay.test', 'https://@relay.test', 'https://relay.test/path', 'https://relay.test/?', 'https://relay.test/#', 'https://relay.test/?token=secret', 'https://relay.test\\path', 'https://relay.\ntest', 'https://' + 'x'.repeat(2048)]) {
-      expect(normalizePublicAccessOrigin(value)).toBeNull()
-    }
+  it('rejects retired modes, malformed origins, shell options and URL credentials', () => {
+    const config = { mode: 'named', customUrl: 'https://phone.example.com', localPort: 17463 }
+    for (const patch of [
+      { mode: 'tailscale' }, { mode: 'ngrok' }, { mode: 'custom' },
+      { customUrl: 'http://phone.example.com' }, { customUrl: 'https://phone.example.com/remote' },
+      { customUrl: 'https://phone.example.com?token=fake' }, { customUrl: 'https://user:fake@phone.example.com' },
+      { localPort: 80 }, { localPort: 65536 }, { localPort: '17463' }, { localPort: NaN },
+      { localHost: '0.0.0.0' }, { command: 'cloudflared tunnel run' }, { tunnelToken: 'fake\nsecret' },
+    ]) expect(isPublicAccessConfiguration({ ...config, ...patch })).toBe(false)
+    expect(isPublicAccessConfiguration({ ...config, mode: 'quick' })).toBe(false)
   })
 
-  it('accepts only the public origin and fixed port, never a different local binding or commands', () => {
-    const config = { mode: 'custom', customUrl: 'https://relay.example.test', localPort: 17463, ngrokDomain: '' }
-    expect(isPublicAccessConfiguration(config)).toBe(true)
-    expect(isPublicAccessConfiguration({ mode: 'ngrok', customUrl: '', localPort: 17463, ngrokDomain: '' })).toBe(true)
-    for (const patch of [{ mode: 'cloudflare' }, { customUrl: '' }, { localPort: 1023 }, { localPort: 65536 }, { localPort: NaN }, { localPort: '17463' }, { localPort: 17463.5 }, { localHost: '0.0.0.0' }, { command: 'tunnel start' }]) {
-      expect(isPublicAccessConfiguration({ ...config, ...patch })).toBe(false)
-    }
+  it('bounds opaque tokens and permits retaining a saved token', () => {
+    expect(isCloudflareTunnelToken('')).toBe(true)
+    expect(isCloudflareTunnelToken(undefined)).toBe(true)
+    expect(isCloudflareTunnelToken('eyJhIjoiZmFrZS1maXh0dXJlLXRva2VuIiwicyI6ImZha2UifQ==')).toBe(true)
+    for (const value of [null, 7, ' short ', 'x'.repeat(8193), 'fake token', 'fake\0token']) expect(isCloudflareTunnelToken(value)).toBe(false)
+  })
+})
+
+describe('Tunnel Token pasted from Cloudflare', () => {
+  const token = fakeToken()
+
+  it.each([
+    ['bare token', `  ${token}\n`],
+    ['macOS install', `brew install cloudflared && \n\nsudo cloudflared service install ${token}`],
+    ['service install', `sudo cloudflared service install ${token}`],
+    ['manual run', `cloudflared tunnel run --token ${token}`],
+    ['Windows', `cloudflared.exe service install ${token}`],
+    ['Docker', `docker run cloudflare/cloudflared:latest tunnel --no-autoupdate run --token ${token}`],
+    ['Debian', `curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb && \n\nsudo dpkg -i cloudflared.deb && \n\nsudo cloudflared service install ${token}`],
+    ['flag assignment', `cloudflared tunnel run --token=${token}`],
+    ['quoted environment', `TUNNEL_TOKEN="${token}" cloudflared tunnel run`],
+    ['two commands for the same tunnel', `sudo cloudflared service install ${token}\ncloudflared tunnel run --token ${token}`],
+  ])('keeps only the credential from %s', (_name, pasted) => {
+    expect(findCloudflareTunnelToken(pasted)).toEqual({ status: 'found', token, tunnelId })
   })
 
-  it('requires a complete HTTPS registered domain with no nonstandard port, IP or wildcard', () => {
-    expect(normalizeNgrokDomain(' https://Registered.Example.test/ ')).toBe('https://registered.example.test')
-    for (const value of [undefined, null, '', 'registered.example.test', 'http://registered.example.test', 'https://registered.example.test:8443', 'https://127.0.0.1', 'https://[::1]', 'https://localhost', 'https://*.example.test', 'https://bad_label.example.test', 'https://registered.example.test/path', 'https://registered.example.test?token=x']) {
-      expect(normalizeNgrokDomain(value)).toBeNull()
-    }
-    const config = { mode: 'ngrok', customUrl: '', localPort: 17463, ngrokDomain: '' }
-    expect(isPublicAccessConfiguration({ ...config, ngrokDomain: 'https://registered.example.test' })).toBe(true)
-    for (const ngrokDomain of [undefined, null, 'registered.example.test', 'http://registered.example.test', 'https://registered.example.test:8443']) {
-      expect(isPublicAccessConfiguration({ ...config, ngrokDomain })).toBe(false)
-    }
+  it('refuses commands for two different tunnels instead of guessing', () => {
+    const other = fakeToken('7f1e2d3c-4b5a-4c6d-8e7f-0a1b2c3d4e5f')
+    expect(findCloudflareTunnelToken(`cloudflared tunnel run --token ${token}\ncloudflared tunnel run --token ${other}`)).toEqual({ status: 'ambiguous' })
   })
 
-  it('identifies only assigned account dev domains as automatically reusable', () => {
-    for (const value of ['https://assigned-name.ngrok-free.app', 'https://assigned-name.ngrok-free.dev/']) {
-      expect(isNgrokDevOrigin(value)).toBe(true)
-    }
-    for (const value of [null, '', 'https://random.ngrok.app', 'https://random.ngrok.io', 'https://ngrok-free.dev', 'https://name.ngrok-free.app.evil.test', 'https://nested.name.ngrok-free.dev', 'https://name.ngrok-free.app:8443', 'http://name.ngrok-free.dev']) {
-      expect(isNgrokDevOrigin(value)).toBe(false)
-    }
+  it.each([
+    ['a command without a token', 'cloudflared service install private-token'],
+    ['an opaque string', 'x'.repeat(64)],
+    ['a token cut short by one character', token.slice(0, -1)],
+    ['a credential without a tunnel', 'eyJhIjoiZmFrZS1maXh0dXJlLXRva2VuIiwicyI6ImZha2UifQ=='],
+    ['a credential with a malformed tunnel ID', btoa(JSON.stringify({ a: 'account', t: 'not-a-uuid', s: btoa('secret') }))],
+    ['a credential whose secret is not base64', btoa(JSON.stringify({ a: 'account', t: tunnelId, s: 'not base64!' }))],
+  ])('reports no token for %s', (_name, pasted) => {
+    expect(findCloudflareTunnelToken(pasted)).toEqual({ status: 'missing' })
+  })
+
+  it('names the tunnel of a saved credential without exposing its secret', () => {
+    expect(readCloudflareTunnelToken(fakeToken(tunnelId.toUpperCase()))).toEqual({ tunnelId })
+    expect(readCloudflareTunnelToken('')).toBeNull()
   })
 })

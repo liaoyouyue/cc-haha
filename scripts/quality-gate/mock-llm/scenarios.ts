@@ -6,7 +6,7 @@
  * the failure paths a real provider cannot be made to produce on demand.
  */
 
-import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { PROVIDER_PRESETS } from '../../../src/server/config/providerPresets'
@@ -14,10 +14,12 @@ import type { LiveScenarioRunner } from '../agent-flow/live'
 import { LIVE_AGENT_FLOW_SCENARIOS } from '../agent-flow/liveScenarios'
 import { MOCK_IMAGE_PNG_BASE64, type MockLlmServer, type RecordedRequest } from './server'
 import { UPSTREAM_ERROR_TRIGGER, UPSTREAM_REFUSAL_TRIGGER } from './scriptedModel'
+import { createScheduleInput, newScheduleDraft } from '../../../mobile/src/core/scheduleDraft'
 
 export type MockAgentScenario = { id: string; title: string }
 
 export const MOCK_ONLY_SCENARIOS: readonly MockAgentScenario[] = [
+  { id: 'mock-cold-permission-switch', title: 'A cold permission switch reaches the real CLI before its first tool call' },
   { id: 'mock-team-task-owner', title: 'Real task tools reject an unknown teammate and recover with a valid assignment' },
   { id: 'mock-openrouter-required-thinking', title: 'OpenRouter Claude defaults preserve compatible thinking and effort through the real CLI' },
   { id: 'mock-deepseek-web-search', title: 'DeepSeek standalone search returns summaries through the real CLI to the model' },
@@ -26,6 +28,7 @@ export const MOCK_ONLY_SCENARIOS: readonly MockAgentScenario[] = [
   { id: 'mock-scheduled-task-roundtrip', title: 'Real CLI creates a desktop schedule and reads a persisted execution result through the scheduled task tool' },
   { id: 'mock-scheduled-task-session-resume', title: 'Desktop scheduler resumes the actual original CLI conversation and persists scheduled provenance' },
   { id: 'mock-scheduled-task-default-runtime', title: 'A task-page new conversation without model overrides runs on the active custom provider' },
+  { id: 'mock-scheduled-task-native-runtime', title: 'A mobile schedule using native API-key settings completes through the real CLI' },
   {
     id: 'mock-image-provider-protocols',
     title: 'Configured image protocols generate and edit real files through the CLI and return their paths to the model',
@@ -96,6 +99,43 @@ export function createMockOnlyRunners(
   searchRequests: MockLlmServer['searchRequests'] = [],
 ): Record<string, LiveScenarioRunner> {
   return {
+    async 'mock-cold-permission-switch'(ctx) {
+      const sessionId = await ctx.createSession()
+      const socket = await ctx.openSocket(sessionId)
+      // Outside the workspace, but still inside the disposable config fixture.
+      const target = join(ctx.configDir, `cold-permission-${sessionId}.txt`)
+      const deniedTarget = join(ctx.configDir, `default-permission-${sessionId}.txt`)
+      const writePrompt = (filePath: string) => `MOCK_TEAM_OWNER ${JSON.stringify({
+        tool: 'Write', input: { file_path: filePath, content: 'PERMISSION_MODE_REACHED_CLI' },
+      })}`
+      try {
+        ctx.pinRuntime(socket)
+        socket.send({ type: 'set_permission_mode', mode: 'bypassPermissions' })
+        socket.send({ type: 'prewarm_session' })
+        const since = requests.length
+        socket.send({ type: 'user_message', content: writePrompt(target) })
+        const settled = await socket.waitFor(message =>
+          ['permission_request', 'message_complete', 'error'].includes(message.type),
+        ctx.stepTimeoutMs, 'first tool after cold permission switch')
+        if (settled.type !== 'message_complete' || !existsSync(target) ||
+          readFileSync(target, 'utf8') !== 'PERMISSION_MODE_REACHED_CLI' ||
+          !toolResultsSentUpstream(requests, since).some(result => !result.is_error)) {
+          throw new Error(`The bypass turn did not write without approval: ${JSON.stringify(settled)}`)
+        }
+
+        const resetStart = socket.messages.length
+        socket.send({ type: 'set_permission_mode', mode: 'default' })
+        await socket.waitFor(message => message.type === 'permission_mode_changed' && message.mode === 'default',
+          ctx.stepTimeoutMs, 'return to default permission mode', resetStart)
+        socket.send({ type: 'user_message', content: writePrompt(deniedTarget) })
+        const request = await socket.waitFor(message => message.type === 'permission_request',
+          ctx.stepTimeoutMs, 'default mode asks again', resetStart)
+        socket.send({ type: 'permission_response', requestId: request.requestId, allowed: false })
+        await socket.waitFor(message => message.type === 'message_complete',
+          ctx.stepTimeoutMs, 'denied default-mode turn', resetStart)
+        if (existsSync(deniedTarget)) throw new Error('Default mode unexpectedly kept bypass permissions')
+      } finally { socket.close() }
+    },
     async 'mock-team-task-owner'(ctx) {
       const sessionId = await ctx.createSession()
       const teamName = `owner-${sessionId}`
@@ -206,6 +246,53 @@ export function createMockOnlyRunners(
       } finally {
         if (taskId) await fetch(`${ctx.baseUrl}/api/scheduled-tasks/${taskId}`, { method: 'DELETE' })
         await fetch(providers.activeId ? `${ctx.baseUrl}/api/providers/${providers.activeId}/activate` : `${ctx.baseUrl}/api/providers/official`, { method: 'POST' })
+      }
+    },
+    async 'mock-scheduled-task-native-runtime'(ctx) {
+      const providers = await (await fetch(`${ctx.baseUrl}/api/providers`)).json() as { activeId: string | null }
+      const settingsPath = join(ctx.configDir, 'settings.json')
+      const originalSettings = existsSync(settingsPath) ? readFileSync(settingsPath, 'utf8') : undefined
+      let taskId: string | undefined
+      try {
+        const activated = await fetch(`${ctx.baseUrl}/api/providers/official`, { method: 'POST' })
+        if (!activated.ok) throw new Error('Cannot select the isolated native runtime')
+        const original = originalSettings ? JSON.parse(originalSettings) as Record<string, unknown> : {}
+        writeFileSync(settingsPath, JSON.stringify({ ...original, model: ctx.target.modelId, env: {
+          ...(original.env as Record<string, unknown> ?? {}),
+          ANTHROPIC_API_KEY: 'mock-native-api-key', ANTHROPIC_BASE_URL: ctx.target.host, ANTHROPIC_MODEL: ctx.target.modelId,
+        } }))
+        const catalog = await (await fetch(`${ctx.baseUrl}/api/models`)).json() as { provider: { id: string } | null; runtimeSource?: string }
+        const current = await (await fetch(`${ctx.baseUrl}/api/models/current`)).json() as { model: { id: string } }
+        if (catalog.provider || catalog.runtimeSource !== 'standalone') throw new Error('Fixture did not select the native API-key source')
+        const payload = createScheduleInput({ name: 'Mobile native runtime fixture', prompt: 'Reply with Ready when you are.',
+          execution: { kind: 'new-session' }, folderPath: ctx.workRoot, useWorktree: false, notificationPolicy: 'none', channels: [],
+          runtime: { providerId: null, modelId: current.model.id }, followDefaultRuntime: true,
+        }, { ...newScheduleDraft('UTC'), frequency: 'once', runAt: '2099-01-01T00:00' })
+        const response = await fetch(`${ctx.baseUrl}/api/scheduled-tasks`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+        })
+        if (!response.ok) throw new Error(`Native mobile schedule creation failed: ${response.status}`)
+        const { task } = await response.json() as { task: { id: string; model?: string; providerId?: string | null } }
+        taskId = task.id
+        if (task.model !== undefined || task.providerId !== undefined) throw new Error('The native source was incorrectly persisted as an explicit OAuth selection')
+        const since = requests.length
+        const started = await fetch(`${ctx.baseUrl}/api/scheduled-tasks/${taskId}/run`, { method: 'POST' })
+        if (!started.ok) throw new Error(`Native task start failed: ${started.status}`)
+        const deadline = Date.now() + ctx.stepTimeoutMs
+        let run: { status: string; sessionId?: string; output?: string; error?: string } | undefined
+        do {
+          const page = await (await fetch(`${ctx.baseUrl}/api/scheduled-tasks/${taskId}/runs?limit=5`)).json() as { runs: typeof run[] }
+          run = page.runs[0]
+          if (run && run.status !== 'running') break
+          await Bun.sleep(50)
+        } while (Date.now() < deadline)
+        if (run?.status !== 'completed' || !run.sessionId || !run.output) throw new Error(`Native mobile schedule did not complete: ${JSON.stringify(run)}`)
+        if (!requests.slice(since).some(request => request.body.model === ctx.target.modelId)) throw new Error('The native scheduled CLI did not reach the loopback model')
+      } finally {
+        if (taskId) await fetch(`${ctx.baseUrl}/api/scheduled-tasks/${taskId}`, { method: 'DELETE' })
+        await fetch(providers.activeId ? `${ctx.baseUrl}/api/providers/${providers.activeId}/activate` : `${ctx.baseUrl}/api/providers/official`, { method: 'POST' })
+        if (originalSettings !== undefined) writeFileSync(settingsPath, originalSettings)
+        else rmSync(settingsPath, { force: true })
       }
     },
     async 'mock-scheduled-task-session-resume'(ctx) {

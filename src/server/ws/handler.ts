@@ -14,6 +14,7 @@ import { readScheduledTaskMetadata, scheduledTaskDisplayText, type ScheduledTask
 import { sessionMessageUuid } from '../../utils/sessionMessageInbox.js'
 import { parseSessionCollaborationEnvelope } from '../../utils/sessionCollaborationEnvelope.js'
 import { isShutdownTeamPrompt } from '../../utils/swarm/teamShutdownPrompt.js'
+import { isTeamLeadNotice } from '../../utils/swarm/teamLeadNotice.js'
 import { admitSessionUserTurn, emitSessionTurnEvent } from '../services/sessionTurnEvents.js'
 import { ApiError } from '../middleware/errorHandler.js'
 import type { SessionRuntimeSelection } from '../../shared/sessionDelegation.js'
@@ -36,7 +37,7 @@ import {
   ConversationStartupError,
   conversationService,
 } from '../services/conversationService.js'
-import { endTeamsForParent, hasActiveTeamWorkForParent, noteLeadUserMessage } from '../services/teamPlanRuntime.js'
+import { endTeamsForParent, hasActiveTeamWorkForParent, listTeamPlanRuntimeParentIds, noteLeadUserMessage } from '../services/teamPlanRuntime.js'
 import { computerUseApprovalService } from '../services/computerUseApprovalService.js'
 import {
   sessionService,
@@ -59,13 +60,13 @@ import {
   getOpenAIModelCatalogEntry,
   isOpenAIReasoningEffort,
 } from '../../services/openaiAuth/models.js'
-import { GROK_DEFAULT_MAIN_MODEL } from '../../services/grokAuth/models.js'
-import { getGrokModelCatalog } from '../../services/grokAuth/modelCatalog.js'
-import { hahaGrokOAuthService } from '../services/hahaGrokOAuthService.js'
+import { GROK_DEFAULT_MAIN_MODEL, resolveGrokModel } from '../../services/grokAuth/models.js'
+import { getDesktopGrokModelCatalog } from '../services/grokModelCatalog.js'
 import { resolveClaudeOfficialRuntimeModel } from '../services/claudeOfficialRuntime.js'
 import {
   getModelReasoningCapabilityOverride,
   isModelReasoningEffort,
+  MODEL_REASONING_EFFORTS,
   normalizeModelReasoningEffort,
   resolveModelReasoningProfile,
 } from '../../shared/modelReasoning.js'
@@ -145,6 +146,7 @@ import {
 import type {
   SessionStreamState,
 } from './streamBlocks.js'
+import { projectLiveToolResult } from '../services/toolImageMedia.js'
 
 const settingsService = new SettingsService()
 const providerService = new ProviderService()
@@ -572,21 +574,30 @@ export type LiveSessionActivity = {
  * Every session that is working or waiting on the user right now, in one
  * answer. The phone's session list has to sort sessions it never opened a
  * socket to, and asking each one would cost a request per row. Team workers
- * are left out: their requests already surface on the lead.
+ * are left out by default: their requests already surface on the lead. The
+ * power aggregate also counts team runtime work, including retry backoff.
  */
-export function listLiveSessionActivity(): LiveSessionActivity[] {
+export function listLiveSessionActivity(options: { includeTeamWorkers?: boolean } = {}): LiveSessionActivity[] {
   const ids = new Set<string>([
     ...conversationService.getActiveSessions(),
     ...activeUserTurns.keys(),
     ...activeCliRuns,
     ...legacyQueuedSessionChats,
+    // Independent workers can keep working after their lead CLI exits.
+    ...(options.includeTeamWorkers ? listTeamPlanRuntimeParentIds() : []),
   ])
   const live: LiveSessionActivity[] = []
   for (const id of ids) {
-    if (conversationService.isTeamWorkerSession(id)) continue
+    // Power management must see workers even when their lead's turn is idle.
+    // The phone/pet projection still hides them by default.
+    if (!options.includeTeamWorkers && conversationService.isTeamWorkerSession(id)) continue
     const activityState = getSessionChatActivityState(id)
     if (activityState === 'running' || activityState === 'waiting') {
       live.push({ id, activityState })
+    } else if (options.includeTeamWorkers && hasActiveTeamWorkForParent(id)) {
+      // TeamPlanRuntime starts workers outside this handler's turn observer.
+      // Its own lifecycle also covers automatic continuation between turns.
+      live.push({ id, activityState: 'running' })
     }
   }
   return live
@@ -731,6 +742,8 @@ export type WebSocketData = {
   sdkToken: string | null
   serverPort: number
   serverHost: string
+  /** The client fetches tool-result images by reference (`?media=ref`). */
+  mediaRefs?: boolean
 }
 
 // Active WebSocket clients, grouped by session. Desktop, H5, and IM adapters can
@@ -749,6 +762,11 @@ const taskNotificationPersistence = new Map<string, Map<string, Promise<void>>>(
 const sessionTranscriptEpochs = new Map<string, number>()
 
 export const handleWebSocket = {
+  // SDK user-message replay retains original images even when the provider
+  // request uses uploaded file references. Ten 5 MiB images plus their envelope
+  // exceed Bun's default 16 MiB frame limit and otherwise reconnect forever,
+  // preventing the following result from reaching the renderer.
+  maxPayloadLength: 64 * 1024 * 1024,
   open(ws: SessionConnection) {
     const { sessionId, channel, sdkToken } = ws.data
 
@@ -833,6 +851,13 @@ export const handleWebSocket = {
         canAcceptPermissionRequest: (message) =>
           canAcceptPermissionRequestDuringStop(sessionId, message),
       })
+      return
+    }
+
+    // Raising the SDK receive budget must not raise the renderer input budget.
+    // The public-access gateway applies its own smaller limit before this handler.
+    if (Buffer.byteLength(rawMessage) > 16 * 1024 * 1024) {
+      ws.close(1009, 'Client message exceeds 16 MiB')
       return
     }
 
@@ -2166,27 +2191,24 @@ async function handleSetPermissionMode(
     sendMessage(ws, { type: 'error', message: 'Plan mode is unavailable in lean sessions. Choose another permission mode.', code: 'LEAN_CAPABILITY_UNAVAILABLE' })
     return
   }
-  const pendingStartup = sessionStartupPromises.get(sessionId)
-
-  if (pendingStartup) {
-    await enqueueRuntimeTransition(sessionId, async () => {
+  // Cold sessions must participate in the same transition queue: a following
+  // turn or prewarm must not start with stale metadata while this write waits.
+  await enqueueRuntimeTransition(sessionId, async () => {
+    const pendingStartup = sessionStartupPromises.get(sessionId)
+    if (pendingStartup) {
       await pendingStartup.catch(() => undefined)
       if (!conversationService.hasSession(sessionId)) return
-      await applyPermissionModeToActiveSession(ws, sessionId, message.mode)
-    })
-    return
-  }
-
-  if (!conversationService.hasSession(sessionId)) {
-    if (await persistSessionPermissionMode(sessionId, message.mode)) {
-      sendMessage(ws, { type: 'permission_mode_changed', mode: message.mode })
     }
-    return
-  }
 
-  await enqueueRuntimeTransition(sessionId, () =>
-    applyPermissionModeToActiveSession(ws, sessionId, message.mode),
-  )
+    if (!conversationService.hasSession(sessionId)) {
+      if (await persistSessionPermissionMode(sessionId, message.mode)) {
+        sendMessage(ws, { type: 'permission_mode_changed', mode: message.mode })
+      }
+      return
+    }
+
+    await applyPermissionModeToActiveSession(ws, sessionId, message.mode)
+  })
 }
 
 const BYPASS_CAPABILITY_UNAVAILABLE =
@@ -3934,6 +3956,12 @@ async function ensureCliSessionStarted(
   sessionId: string,
   reason: 'user_message' | 'prewarm_session',
 ): Promise<void> {
+  // Wait before registering startup; a transition may itself await an existing
+  // startup. Registering a startup that waits on that transition would deadlock.
+  while (runtimeTransitionPromises.has(sessionId)) {
+    await runtimeTransitionPromises.get(sessionId)
+  }
+
   const pendingStartup = sessionStartupPromises.get(sessionId)
   if (pendingStartup) {
     await pendingStartup
@@ -3976,6 +4004,10 @@ export async function ensureCliSessionStartedForControl(
   sessionId: string,
   requestUrl: URL,
 ): Promise<void> {
+  while (runtimeTransitionPromises.has(sessionId)) {
+    await runtimeTransitionPromises.get(sessionId)
+  }
+
   const pendingStartup = sessionStartupPromises.get(sessionId)
   if (pendingStartup) {
     await pendingStartup
@@ -3991,14 +4023,23 @@ export async function ensureCliSessionStartedForControl(
     const workDir = await resolveSessionWorkDir(sessionId)
     lastResolvedStartupWorkDirs.set(sessionId, workDir)
     const runtimeSettings = await getRuntimeSettings(sessionId)
-    const protocol = requestUrl.protocol === 'https:' ? 'wss:' : 'ws:'
-    const authority = requestUrl.hostname === '0.0.0.0'
-      ? `127.0.0.1${requestUrl.port ? `:${requestUrl.port}` : ''}`
-      : requestUrl.host
-    const sdkUrl = new URL(
-      `${protocol}//${authority}/sdk/${encodeURIComponent(sessionId)}`,
-    )
-    sdkUrl.searchParams.set('token', crypto.randomUUID())
+    // A control request can arrive through the paired-phone listener, whose
+    // host the CLI cannot connect back to (/sdk needs a local, unpaired
+    // socket). A client watching this session already knows the local endpoint.
+    const watcher = activeSessions.get(sessionId)?.values().next().value as SessionConnection | undefined
+    let sdkUrl: URL
+    if (watcher) {
+      sdkUrl = new URL(buildSdkWebSocketUrl(watcher, sessionId))
+    } else {
+      const protocol = requestUrl.protocol === 'https:' ? 'wss:' : 'ws:'
+      const authority = requestUrl.hostname === '0.0.0.0'
+        ? `127.0.0.1${requestUrl.port ? `:${requestUrl.port}` : ''}`
+        : requestUrl.host
+      sdkUrl = new URL(
+        `${protocol}//${authority}/sdk/${encodeURIComponent(sessionId)}`,
+      )
+      sdkUrl.searchParams.set('token', crypto.randomUUID())
+    }
 
     console.log(`[WS] Starting CLI for ${sessionId} due to agent_message`)
     await conversationService.startSession(
@@ -4185,7 +4226,13 @@ export function translateCliMessage(cliMsg: any, sessionId: string): ServerMessa
       const replayText = extractReplayUserText(cliMsg)
       if (scheduledTask && replayText) {
         messages.push({ type: 'user_message_replay', content: String(scheduledTaskDisplayText(replayText)), scheduledTask })
-      } else if (replayText && !isShutdownTeamPrompt(cliMsg.message?.content) && (!cliMsg.isMeta || parseSessionCollaborationEnvelope(replayText))) {
+      } else if (
+        replayText &&
+        !isShutdownTeamPrompt(cliMsg.message?.content) &&
+        // The server's own team notices to the lead are not the user's words.
+        !isTeamLeadNotice(cliMsg.message?.content) &&
+        (!cliMsg.isMeta || parseSessionCollaborationEnvelope(replayText))
+      ) {
         const collaborationEnvelope = parseSessionCollaborationEnvelope(replayText)
         messages.push(collaborationEnvelope
           ? {
@@ -4707,9 +4754,12 @@ export function translateCliMessage(cliMsg: any, sessionId: string): ServerMessa
 
 
 function sendMessage(ws: SessionConnection, message: ServerMessage) {
-  const outgoing = ws.data.clientKind === 'pet'
+  let outgoing = ws.data.clientKind === 'pet'
     ? toPetServerMessage(message)
     : message
+  if (outgoing?.type === 'tool_result' && ws.data.mediaRefs) {
+    outgoing = projectLiveToolResult(outgoing, ws.data.sessionId)
+  }
   if (outgoing) ws.send(JSON.stringify(outgoing))
 }
 
@@ -5447,18 +5497,18 @@ async function getGrokReasoningEfforts(modelId: string): Promise<{
   defaultEffort?: string
   supportedEfforts: string[]
 }> {
-  const tokens = await hahaGrokOAuthService.ensureFreshTokens()
-  const catalog = await getGrokModelCatalog({
-    ...(tokens?.accessToken ? { accessToken: tokens.accessToken } : {}),
-    accountKey: tokens?.email ?? (tokens ? 'authenticated-default' : 'logged-out'),
-  })
-  const model = catalog.find((entry) => entry.value === modelId)
-    ?? catalog.find((entry) => entry.value === GROK_DEFAULT_MAIN_MODEL)
-    ?? catalog[0]
+  const catalog = await getDesktopGrokModelCatalog()
+  const resolvedModelId = resolveGrokModel(modelId)
+  const model = catalog.find((entry) => entry.value === resolvedModelId)
   return {
-    modelId: model?.value ?? GROK_DEFAULT_MAIN_MODEL,
+    // A refreshed selection can outlive the in-memory catalog. Only known
+    // compatibility aliases may change its ID; another model's metadata must
+    // never turn a concrete saved model into the bundled default.
+    modelId: resolvedModelId,
     ...(model?.reasoningEffort ? { defaultEffort: model.reasoningEffort } : {}),
-    supportedEfforts: model?.reasoningEfforts ?? [],
+    supportedEfforts: model?.supportsReasoningEffort === false
+      ? []
+      : model?.reasoningEfforts ?? [...MODEL_REASONING_EFFORTS],
   }
 }
 

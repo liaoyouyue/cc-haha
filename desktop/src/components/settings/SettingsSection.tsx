@@ -118,6 +118,12 @@ export function SettingsGroup({ className, children, ...rest }: SettingsGroupPro
 export type SettingsRowProps = {
   title: ReactNode
   description?: ReactNode
+  /**
+   * Sits right after the title — a `SettingsHelp` for a setting whose name
+   * needs explaining. Kept beside the title rather than inside it so it never
+   * becomes part of the row's accessible name.
+   */
+  help?: ReactNode
   /** The control, pinned right. */
   children?: ReactNode
   /** Content under the title/control line, full row width (inline errors, expanded fields). */
@@ -155,6 +161,7 @@ const CONTROL_LAYOUT = {
 export function SettingsRow({
   title,
   description,
+  help,
   children,
   footer,
   layout = 'responsive',
@@ -165,17 +172,25 @@ export function SettingsRow({
   'data-testid': testId,
 }: SettingsRowProps) {
   const TitleTag = htmlFor ? 'label' : 'div'
+  const titleNode = (
+    <TitleTag
+      id={titleId}
+      htmlFor={htmlFor}
+      className="block text-[13px] font-medium leading-5 text-[var(--color-text-primary)]"
+    >
+      {title}
+    </TitleTag>
+  )
   return (
     <div data-testid={testId} className={cx('min-h-[52px] px-4 py-3', className)}>
       <div className={cx('flex gap-x-6 gap-y-2.5', ROW_LAYOUT[layout])}>
         <div className="min-w-0 flex-1">
-          <TitleTag
-            id={titleId}
-            htmlFor={htmlFor}
-            className="block text-[13px] font-medium leading-5 text-[var(--color-text-primary)]"
-          >
-            {title}
-          </TitleTag>
+          {help ? (
+            <div className="flex min-w-0 items-center gap-1">
+              {titleNode}
+              {help}
+            </div>
+          ) : titleNode}
           {description ? (
             // Capped so a description stays a readable line on the wide frame.
             <div id={descriptionId} className="mt-0.5 max-w-[68ch] text-xs leading-[1.5] text-[var(--color-text-tertiary)]">
@@ -196,6 +211,8 @@ export type SettingsSwitchRowProps = {
   /** Visible title; also the switch's accessible name. */
   title: string
   description?: ReactNode
+  /** See `SettingsRowProps.help`. */
+  help?: ReactNode
   checked: boolean
   onChange: (checked: boolean) => void
   disabled?: boolean
@@ -211,6 +228,7 @@ export type SettingsSwitchRowProps = {
 export function SettingsSwitchRow({
   title,
   description,
+  help,
   checked,
   onChange,
   disabled,
@@ -222,6 +240,7 @@ export function SettingsSwitchRow({
     <SettingsRow
       title={title}
       description={description}
+      help={help}
       footer={footer}
       layout="inline"
       className={className}

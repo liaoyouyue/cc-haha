@@ -66,6 +66,7 @@ import {
   PET_SESSION_LIMIT,
 } from './petAccessPolicy.js'
 import { PublicAccessServer, isPublicAccessControlPath } from './publicAccess.js'
+import { resolveRemoteAccessProxy, verifyRemoteAccessGateway } from './services/remoteAccessConnectivity.js'
 import { getMobilePushService, stopMobilePushServices } from './services/mobilePushRuntime.js'
 import { settleResponseOnRequestAbort } from './requestLifecycle.js'
 
@@ -273,6 +274,8 @@ export function startServer(port = PORT, host = HOST) {
   const h5AccessService = new H5AccessService()
 
   const publicAccess = new PublicAccessServer({
+    resolveProxy: resolveRemoteAccessProxy,
+    verifyGateway: verifyRemoteAccessGateway,
     handleApiRequest: (request, url, context) => migrationMaintenance.isActive
       ? Promise.resolve(migrationUnavailableResponse())
       : migrationMaintenance.track(handleApiRequest(request, url, context)),
@@ -480,6 +483,7 @@ export function startServer(port = PORT, host = HOST) {
               sdkToken: null,
               serverPort,
               serverHost: localConnectHost,
+              mediaRefs: url.searchParams.get('media') === 'ref',
             },
           })
           if (upgraded) return undefined

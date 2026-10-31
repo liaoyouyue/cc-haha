@@ -9,6 +9,10 @@ type Check = {
 const rootDir = process.cwd()
 const checks: Check[] = [
   {
+    title: 'Issue router shared SQLite schema migration and consistent backup recovery',
+    command: ['bun', '--no-env-file', 'test', './scripts/issue-router/persistence.test.ts'],
+  },
+  {
     title: 'Desktop scheduled tasks preserve legacy definitions and replay scheduled provenance',
     command: ['bun', 'test', './src/server/services/scheduledTaskRuntime.test.ts', './src/server/services/sessionService.scheduledTask.test.ts'],
   },
@@ -63,7 +67,7 @@ const checks: Check[] = [
     command: ['bun', 'test', './src/server/publicAccess.test.ts', '--test-name-pattern', 'old store migration'],
   },
   {
-    title: 'Private ngrok credential store migration',
+    title: 'Private remote access settings migrate from legacy tunnels to Cloudflare',
     command: ['bun', 'run', 'test', '--', '--run', 'electron/services/publicAccess.test.ts', '-t', 'migrat'],
     cwd: 'desktop',
   },

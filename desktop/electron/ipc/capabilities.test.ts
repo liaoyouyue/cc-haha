@@ -9,6 +9,15 @@ import {
 } from './capabilities'
 
 describe('Electron IPC capabilities', () => {
+  it('accepts only boolean power preferences and denies the pet renderer access', () => {
+    const channel = ELECTRON_IPC_CHANNELS.powerSetPreventSleepWhileRunning
+    expect(validateElectronIpcPayload(channel, true)).toBe(true)
+    expect(validateElectronIpcPayload(channel, false)).toBe(true)
+    for (const payload of [undefined, null, 'true', 1, {}, { enabled: true }]) {
+      expect(validateElectronIpcPayload(channel, payload)).toBe(false)
+    }
+    expect(isElectronIpcChannelAllowedForPetWindow(channel)).toBe(false)
+  })
   it('validates migration paths and identities and keeps migration IPC unavailable to pet windows', () => {
     expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.migrationPrepare, { targetDir: 'D:\\cc-haha-data' })).toBe(true)
     for (const payload of [undefined, {}, { targetDir: '' }, { targetDir: '   ' }, { targetDir: 2 }, { targetDir: 'bad\u0000path' }, { targetDir: 'D:\\data', sourceDir: 'C:\\data' }]) {
@@ -27,13 +36,12 @@ describe('Electron IPC capabilities', () => {
     }
   })
 
-  it('restricts public access credentials and consent to validated desktop IPC', () => {
-    expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.publicAccessSaveCredential, 'fake-token')).toBe(true)
-    for (const value of ['', 'a b', 'x'.repeat(4097), {}, null]) {
-      expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.publicAccessSaveCredential, value)).toBe(false)
+  it('restricts public tunnel consent to validated desktop IPC and retires credential channels', () => {
+    for (const channel of ['desktop:public-access:save-credential', 'desktop:public-access:delete-credential']) {
+      expect(isElectronIpcChannel(channel)).toBe(false)
     }
     expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.publicAccessStart, PUBLIC_ACCESS_CONSENT_VERSION)).toBe(true)
-    for (const value of [0, PUBLIC_ACCESS_CONSENT_VERSION - 1, PUBLIC_ACCESS_CONSENT_VERSION + 1, '2', null]) {
+    for (const value of [0, PUBLIC_ACCESS_CONSENT_VERSION - 1, PUBLIC_ACCESS_CONSENT_VERSION + 1, '3', null]) {
       expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.publicAccessStart, value)).toBe(false)
     }
     for (const channel of Object.values(ELECTRON_IPC_CHANNELS).filter(value => value.startsWith('desktop:public-access:'))) {
@@ -41,16 +49,12 @@ describe('Electron IPC capabilities', () => {
     }
   })
 
-  it('accepts only a root HTTPS custom tunnel and a nonprivileged fixed local port', () => {
+  it('accepts only typed Cloudflare configuration and a fixed local port', () => {
     const channel = ELECTRON_IPC_CHANNELS.publicAccessConfigure
-    const configuration = { mode: 'custom', customUrl: 'https://relay.example.test', localPort: 17463, ngrokDomain: '' }
+    const configuration = { mode: 'named', customUrl: 'https://phone.example.test', localPort: 17463 }
     expect(validateElectronIpcPayload(channel, configuration)).toBe(true)
-    expect(validateElectronIpcPayload(channel, { mode: 'ngrok', customUrl: '', localPort: 17463, ngrokDomain: '' })).toBe(true)
-    expect(validateElectronIpcPayload(channel, { ...configuration, ngrokDomain: 'https://registered.ngrok.app' })).toBe(true)
-    for (const ngrokDomain of [undefined, null, 'registered.ngrok.app', 'http://registered.ngrok.app', 'https://registered.ngrok.app:8443', 'https://registered.ngrok.app/path']) {
-      expect(validateElectronIpcPayload(channel, { ...configuration, ngrokDomain })).toBe(false)
-    }
-    for (const value of [undefined, {}, { ...configuration, customUrl: 'http://relay.example.test' }, { ...configuration, customUrl: 'https://relay.example.test/remote' }, { ...configuration, customUrl: 'https://user:password@relay.example.test' }, { ...configuration, localPort: 80 }, { ...configuration, localPort: '17463' }, { ...configuration, mode: 'unknown' }, { ...configuration, localHost: '0.0.0.0' }]) {
+    expect(validateElectronIpcPayload(channel, { mode: 'quick', customUrl: '', localPort: 17463 })).toBe(true)
+    for (const value of [undefined, {}, { ...configuration, customUrl: 'http://phone.example.test' }, { ...configuration, customUrl: 'https://phone.example.test/remote' }, { ...configuration, customUrl: 'https://user:password@phone.example.test' }, { ...configuration, localPort: 80 }, { ...configuration, localPort: '17463' }, { ...configuration, mode: 'ngrok' }, { ...configuration, mode: 'tailscale' }, { ...configuration, localHost: '0.0.0.0' }, { ...configuration, command: 'cloudflared tunnel run' }]) {
       expect(validateElectronIpcPayload(channel, value)).toBe(false)
     }
     expect(isElectronIpcChannelAllowedForPetWindow(channel)).toBe(false)

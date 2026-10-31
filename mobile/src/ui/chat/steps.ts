@@ -1,4 +1,4 @@
-import type { ChatItem } from '../../core/types'
+import type { ChatItem, ToolImage } from '../../core/types'
 import type { DiffLine } from '../../core/operations'
 import type { IconName } from '../icons'
 
@@ -20,7 +20,7 @@ export type ChatRow =
       kind: 'steps'
       key: string
       steps: ChatItem[]
-      /** 属于正在进行的这一轮：当前步骤由顶栏下方的状态行显示，这里不重复。 */
+      /** 属于正在进行的这一轮，步骤时间线默认展开。 */
       live: boolean
       segments: ActivitySegment[]
       /** 属于哪一轮的折叠条（折叠条的 key）；没有就始终显示。 */
@@ -34,7 +34,23 @@ export type ChatRow =
       label: string
       /** 折叠起来的行数（消息 + 步骤组）。 */
       hidden: number
+      /** 折起来的步骤里读到的图片：回合收起时仍显示在折叠条下面。 */
+      images?: NamedToolImage[]
     }
+
+export type NamedToolImage = { image: ToolImage; name: string }
+
+/** 工具结果里的图片，名字取自读取的文件。 */
+export function stepImages(item: ChatItem): NamedToolImage[] {
+  if (!item.images?.length) return []
+  const input = record(item.input)
+  const path = str(input?.file_path) ?? str(input?.path) ?? ''
+  const base = path.split(/[\\/]/).filter(Boolean).pop()
+  return item.images.map((image, index) => ({
+    image,
+    name: base ? (item.images!.length > 1 ? `${base} (${index + 1})` : base) : `图片 ${index + 1}`,
+  }))
+}
 
 const isStep = (item: ChatItem) => item.type === 'tool' || item.type === 'thinking'
 
@@ -158,13 +174,24 @@ export function activityLabel(segments: readonly ActivitySegment[]) {
   return segments.map((segment) => segment.text).join(' · ')
 }
 
-/**
- * 进行中的组最后一步（还没结果的工具、正在想的思考）由顶栏下方的状态行显示，
- * 摘要里不重复；等审批、后台进行中的步骤仍然保留。
- */
-export function stepsBehindCaption<T>(steps: readonly T[], isCurrent: (step: T) => boolean): T[] {
-  const last = steps.at(-1)
-  return last !== undefined && isCurrent(last) ? steps.slice(0, -1) : [...steps]
+type GroupDisclosure = { open: ReadonlySet<string>; closed: ReadonlySet<string> }
+
+/** 运行中默认展开，读者手动选择的开合状态在后续流式更新中优先。 */
+export function groupIsOpen(ui: GroupDisclosure, key: string, live = false): boolean {
+  return ui.open.has(key) || (live && !ui.closed.has(key))
+}
+
+export function toggleGroupOpen<T extends GroupDisclosure>(ui: T, key: string, live = false): T {
+  const open = new Set(ui.open)
+  const closed = new Set(ui.closed)
+  if (groupIsOpen(ui, key, live)) {
+    open.delete(key)
+    closed.add(key)
+  } else {
+    open.add(key)
+    closed.delete(key)
+  }
+  return { ...ui, open, closed }
 }
 
 /** done = 有结果；missing = 这一轮已经结束却没拿到结果（例如被停止）。 */
@@ -303,11 +330,15 @@ export function buildChatRows(
       )
       const key = `turn:${turn.find((entry) => folded.has(entry.row))?.row.key}`
       const turnItems = items.slice(turn[0].index, end < base.length ? base[end].index : items.length)
+      const images = turn.flatMap((entry) =>
+        entry.row.kind === 'steps' && folded.has(entry.row) ? entry.row.steps.flatMap(stepImages) : []
+      )
       rows.push({
         kind: 'turn',
         key,
         label: turnFoldLabel(user, turnItems, end === base.length ? options.clock : undefined),
         hidden: folded.size,
+        ...(images.length ? { images } : {}),
       })
       turn.forEach((entry, position) => {
         if (!folded.has(entry.row)) rows.push(entry.row)

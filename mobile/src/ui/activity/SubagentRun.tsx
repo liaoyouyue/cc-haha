@@ -26,7 +26,7 @@ import { Text } from '../Text'
 import { Message } from '../Message'
 import { StepGroup, TurnFold, type StepContext, type StepUi } from '../chat/StepGroup'
 import { StatusCaption } from '../chat/StatusCaption'
-import { visibleChatRows, type ChatRow } from '../chat/steps'
+import { toggleGroupOpen, visibleChatRows, type ChatRow } from '../chat/steps'
 import { ConfirmSheet } from './ConfirmSheet'
 import { agentStatusText, clock } from './activityView'
 import { subagentHeader, subagentRunView } from './subagentView'
@@ -43,8 +43,8 @@ const toggle = (set: ReadonlySet<string>, key: string) => {
   return next
 }
 
-/** 主 Agent 交给子 Agent 的任务往往有几十行：默认只显示前几行，点一下展开。 */
-function TaskPrompt({ text }: { text: string }) {
+/** 主 Agent 交给子 Agent（或队长交给成员）的任务往往有几十行：默认只显示前几行，点一下展开。 */
+export function TaskPrompt({ text }: { text: string }) {
   const colors = useColors()
   const [open, setOpen] = useState(false)
   const long = text.length > 220 || text.split('\n').length > 6
@@ -77,6 +77,32 @@ function LockIcon({ color }: { color: string }) {
   )
 }
 
+/** 底部固定的「只读」提示：这里看得到记录，但不能回复。 */
+export function ReadOnlyBar() {
+  const colors = useColors()
+  const insets = useSafeAreaInsets()
+  return (
+    <View style={{ paddingHorizontal: 12, paddingBottom: Math.max(insets.bottom, 12), paddingTop: 6 }}>
+      <View
+        accessibilityRole="text"
+        accessibilityLabel="只读，在这里不能回复"
+        style={{
+          height: 44,
+          borderRadius: 22,
+          backgroundColor: colors.fill,
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 7,
+        }}
+      >
+        <LockIcon color={colors.ink3} />
+        <Text style={{ fontSize: 14, color: colors.ink3 }}>只读 · 在这里不能回复</Text>
+      </View>
+    </View>
+  )
+}
+
 /**
  * 子 Agent 全屏页：只读 transcript。顶栏是名称 + 状态 + 耗时，运行中右上有「停止」；
  * 内容和主对话同一种时间线（交给它的任务、聚合的工具行、当前一步、回复）。
@@ -94,7 +120,6 @@ export function SubagentRun({
   toolUseId: string
 }) {
   const colors = useColors()
-  const insets = useSafeAreaInsets()
   const { client, error: connectionError } = useConnection(hostId)
   const [running, setRunning] = useState(true)
   const resource = useFocusedResource<Loaded>(
@@ -123,7 +148,7 @@ export function SubagentRun({
   if (resource.value && live !== running) setRunning(live)
   const now = useNow(live)
   const view = subagentRunView(resource.value?.output ?? null, live)
-  const [ui, setUi] = useState<StepUi>({ expanded: new Set(), open: new Set(), revealed: new Set() })
+  const [ui, setUi] = useState<StepUi>({ expanded: new Set(), open: new Set(), closed: new Set(), revealed: new Set() })
   const context: StepContext = {
     workDir: undefined,
     waiting: new Set(),
@@ -266,31 +291,14 @@ export function SubagentRun({
                 context={context}
                 ui={ui}
                 onToggleStep={(key) => setUi((value) => ({ ...value, expanded: toggle(value.expanded, key) }))}
-                onToggleOpen={(key) => setUi((value) => ({ ...value, open: toggle(value.open, key) }))}
+                onToggleOpen={(key, live) => setUi((value) => toggleGroupOpen(value, key, live))}
                 onReveal={(key) => setUi((value) => ({ ...value, revealed: toggle(value.revealed, key) }))}
               />
             )
           }
         />
       )}
-      <View style={{ paddingHorizontal: 12, paddingBottom: Math.max(insets.bottom, 12), paddingTop: 6 }}>
-        <View
-          accessibilityRole="text"
-          accessibilityLabel="只读，在这里不能回复"
-          style={{
-            height: 44,
-            borderRadius: 22,
-            backgroundColor: colors.fill,
-            flexDirection: 'row',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 7,
-          }}
-        >
-          <LockIcon color={colors.ink3} />
-          <Text style={{ fontSize: 14, color: colors.ink3 }}>只读 · 在这里不能回复</Text>
-        </View>
-      </View>
+      <ReadOnlyBar />
       <ConfirmSheet
         visible={confirm}
         title="停止这个子 Agent？"

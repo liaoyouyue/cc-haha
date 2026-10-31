@@ -1883,6 +1883,7 @@ export function ChatInput({ variant = 'default', compact = false, sessionId, vis
                   chatState={chatState}
                   messageCount={messageCount}
                   streamingTextChars={sessionState?.streamingTextChars}
+                  contentRevision={sessionState?.historyMutationEpoch ?? 0}
                   runtimeSelectionKey={runtimeSelectionKey}
                   fallbackModelLabel={runtimeModelLabel}
                   compact={useCompactControls}

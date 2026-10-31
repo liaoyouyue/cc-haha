@@ -8,14 +8,18 @@
         "projectId": "4e75f835-1b64-463c-a196-cc181b4c83ec"
       }
     },
-    "version": "0.1.0",
+    "version": "0.1.2",
     "orientation": "portrait",
     "scheme": "cchaha",
     "userInterfaceStyle": "automatic",
     "icon": "./assets/icon.png",
     "ios": {
+      "icon": "./assets/icon-ios.png",
       "supportsTablet": true,
       "bundleIdentifier": "com.yunce.cchaha.mobile",
+      "entitlements": {
+        "com.apple.developer.usernotifications.time-sensitive": true
+      },
       "infoPlist": {
         "NSLocalNetworkUsageDescription": "连接同一局域网中运行 cc-haha 的电脑。",
         "NSAppTransportSecurity": {
@@ -83,7 +87,20 @@
         {
           "photosPermission": "选择图片和截图，作为任务材料发送到你连接的电脑。",
           "cameraPermission": "拍摄照片，作为任务材料发送到你连接的电脑。",
-          "microphonePermission": false
+          "microphonePermission": "仅在你点击语音输入后录音，音频会发送到你连接的电脑进行转写。"
+        }
+      ],
+      [
+        "react-native-audio-api",
+        {
+          "iosMicrophonePermission": "仅在你点击语音输入后录音，音频会发送到你连接的电脑进行转写。",
+          "iosBackgroundMode": false,
+          "androidPermissions": [
+            "android.permission.RECORD_AUDIO"
+          ],
+          "androidForegroundService": false,
+          "androidFSTypes": [],
+          "disableFFmpeg": true
         }
       ]
     ],

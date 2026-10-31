@@ -38,6 +38,10 @@ export function isPublicBusinessPathAllowed(url: URL, method: string): boolean {
   const parts = url.pathname.split('/').filter(Boolean)
   if (parts[0] === 'ws') return parts.length === 2 && /^[\w-]{1,64}$/.test(parts[1]!)
   if (parts[0] !== 'api') return false
+  // Only the profile projection is shared with phones, never the full preferences or mutations.
+  if (parts[1] === 'desktop-ui') {
+    return method === 'GET' && url.pathname === '/api/desktop-ui/preferences/profile' && !url.search
+  }
   // Native project selection needs directory names, not the broader filesystem
   // file/search surface. Keep the exact route and its query contract read-only.
   if (parts[1] === 'filesystem') {
@@ -48,6 +52,18 @@ export function isPublicBusinessPathAllowed(url: URL, method: string): boolean {
   // connector action (authenticate, prepare, remove…) and every workflow
   // mutation or run detail remain desktop-only.
   if (parts[1] === 'connectors' || parts[1] === 'workflows') return parts.length === 2 && method === 'GET'
+  if (parts[1] === 'voice') {
+    // Phones reuse the host's prepared recognizer. Download, deletion and
+    // shared preference changes stay on the desktop's settings surface.
+    if (method === 'GET') {
+      return !url.search && (url.pathname === '/api/voice/catalog' ||
+        /^\/api\/voice\/providers\/[^/]+\/status$/.test(url.pathname))
+    }
+    return method === 'POST' && url.pathname === '/api/voice/transcribe' &&
+      [...url.searchParams.keys()].every(key =>
+        (key === 'provider' || key === 'language') && url.searchParams.getAll(key).length === 1,
+      )
+  }
   if (parts[1] === 'skills') return parts.length === 3 &&
     (parts[2] === 'mentions' || parts[2] === 'commands') && method === 'GET'
   if (parts[1] === 'computer-use') {
@@ -56,10 +72,12 @@ export function isPublicBusinessPathAllowed(url: URL, method: string): boolean {
       (parts[2] === 'authorized-apps' && (method === 'GET' || method === 'PUT')) ||
       (parts[2] === 'open-permission-card' && method === 'POST')
   }
-  if (parts[1] === 'sessions' && parts[2] === 'mobile-push') return parts.length === 3 ? method === 'GET' || method === 'PUT' || method === 'DELETE' : parts.length === 4 && method === 'DELETE'
+  if (parts[1] === 'sessions' && parts[2] === 'mobile-push') return parts.length === 3 ? method === 'GET' || method === 'PUT' || method === 'DELETE' : parts.length === 4 && (method === 'DELETE' || (parts[3] === 'test' && method === 'POST'))
   if (parts[1] === 'providers') return remoteProviderRouteAllowed(parts, method)
   if (parts[1] === 'settings') return remoteSettingsRouteAllowed(parts, method)
   if (parts[1] === 'scheduled-tasks') {
+    if (parts[2] === 'notification-capabilities') return method === 'GET' &&
+      url.pathname === '/api/scheduled-tasks/notification-capabilities' && !url.search
     if (parts.length === 2) return method === 'GET' || method === 'POST'
     if (parts[2] === 'runs') return method === 'GET' && (parts.length === 3 || parts.length === 4)
     if (parts.length === 3) return method === 'PUT' || method === 'DELETE'
@@ -68,6 +86,12 @@ export function isPublicBusinessPathAllowed(url: URL, method: string): boolean {
   if (method === 'PUT' && ['/api/models/current', '/api/effort'].includes('/' + parts.join('/'))) return true
   if (method === 'GET' && ['/api/settings/user', '/api/permissions/mode', '/api/providers/auth-status'].includes('/' + parts.join('/'))) return true
   if (['sessions', 'conversations'].includes(parts[1] ?? '')) return true
+  // A submitted team waits on a human review of its plan; the phone must be
+  // able to finish it. Members, messages and team deletion stay desktop-only.
+  if (parts[1] === 'teams' && parts.length >= 4 && parts[3] === 'plan') {
+    if (parts.length === 4) return method === 'PATCH'
+    return parts.length === 5 && method === 'POST' && ['approve', 'return', 'cancel', 'retry', 'end'].includes(parts[4]!)
+  }
   // Agent 只有列表和单项两种 GET；路由器会忽略单项名字后面多出来的段，所以多出来的段不能放行。
   if (parts[1] === 'agents') return method === 'GET' && parts.length <= 3
   return method === 'GET' && ['models', 'effort', 'search', 'tasks', 'teams', 'activity-stats'].includes(parts[1] ?? '')
@@ -104,12 +128,15 @@ type Dependencies = {
   serverPort: () => number
   storePath?: string
   now?: () => number
+  resolveProxy?: () => Promise<{ proxyUrl: string | null }>
+  verifyGateway?: (origin: string, gatewayId: string) => Promise<boolean>
 }
 
 /** The listener, not attacker-controlled headers, establishes the remote trust boundary. */
 export class PublicAccessServer {
   private server: Server<RemoteData> | null = null
   private publicUrl: string | null = null
+  private gatewayId: string | null = null
   private stored: Stored = { version: 1, devices: [] }
   private loaded = false
   private pairing: { hash: string, expiresAt: number } | null = null
@@ -149,6 +176,7 @@ export class PublicAccessServer {
       enabled: this.server !== null,
       port: this.server?.port ?? null,
       publicUrl: this.publicUrl,
+      gatewayId: this.gatewayId,
       pending: [...this.pending.values()].filter(p => p.status === 'pending').map(({ id, name }) => ({ id, name })),
       devices: this.stored.devices.map(({ id, name, createdAt, expiresAt }) => ({ id, name, createdAt, expiresAt })),
     }
@@ -209,6 +237,7 @@ export class PublicAccessServer {
     this.load()
     if (publicUrl !== undefined) this.setOrigin(publicUrl)
     if (this.server) return this.status()
+    this.gatewayId = secret()
     this.server = Bun.serve<RemoteData>({
       hostname: '127.0.0.1', port: port ?? 0, idleTimeout: 0, maxRequestBodySize: 16 * 1024 * 1024,
       fetch: (req, server) => this.fetch(req, server),
@@ -242,6 +271,7 @@ export class PublicAccessServer {
     const listener = this.server
     this.server = null
     this.publicUrl = null
+    this.gatewayId = null
     this.pairing = null
     this.pending.clear()
     this.rates.clear()
@@ -260,6 +290,12 @@ export class PublicAccessServer {
       this.load()
       const route = new URL(request.url).pathname.split('/').filter(Boolean).slice(2).join('/')
       if ((route === 'status' || route === '') && request.method === 'GET') return json(this.status())
+      if (route === 'network' && request.method === 'GET') {
+        try {
+          if (!this.deps.resolveProxy) throw new Error('Network settings unavailable')
+          return json(await this.deps.resolveProxy())
+        } catch { return json({ error: 'Network proxy unavailable', code: 'proxy' }, 503) }
+      }
       const input = request.method === 'GET' ? {} : await this.readInput(request)
       if (route === 'enable' && request.method === 'POST') {
         if (input.publicUrl !== undefined && typeof input.publicUrl !== 'string') throw new Error('HTTPS origin required')
@@ -267,6 +303,10 @@ export class PublicAccessServer {
         return json(this.enable(input.publicUrl as string | undefined, input.port as number | undefined))
       }
       if (route === 'origin' && request.method === 'PUT') { this.setOrigin(input.publicUrl); return json(this.status()) }
+      if (route === 'verify' && request.method === 'POST') {
+        if (!this.server || !this.publicUrl || !this.gatewayId || !this.deps.verifyGateway) return json({ ok: false })
+        return json({ ok: await this.deps.verifyGateway(this.publicUrl, this.gatewayId) })
+      }
       if (route === 'disable' && request.method === 'POST') return json(this.disable())
       if (route === 'pairing' && request.method === 'POST') {
         if (!this.server || !this.publicUrl) return json({ error: 'Remote access is not ready' }, 409)
@@ -312,7 +352,7 @@ export class PublicAccessServer {
       if ((request.method !== 'GET' && request.method !== 'HEAD') || url.pathname.startsWith('/ws/')) {
         if (origin !== this.publicUrl) return json({ error: 'Origin required' }, 403)
       }
-      if (url.pathname === '/health' && request.method === 'GET') return json({ status: 'ok' })
+      if (url.pathname === '/health' && request.method === 'GET') return json({ status: 'ok', gatewayId: this.gatewayId })
       const route = url.pathname.split('/').filter(Boolean).join('/')
       if (route.startsWith('api/public-access/')) {
         if (!this.rate('pairing-global', 180)) return json({ error: 'Too many requests' }, 429)
@@ -364,7 +404,7 @@ export class PublicAccessServer {
         }
         if (!this.rate(`api:${device.id}`, 1200)) return json({ error: 'Too many requests' }, 429)
         if (url.pathname.startsWith('/ws/')) {
-          const upgraded = server.upgrade(request, { data: { sessionId: url.pathname.split('/').pop()!, connectedAt: this.now(), channel: 'client', clientKind: 'full', sdkToken: null, serverPort: this.deps.serverPort(), serverHost: '127.0.0.1', remoteDeviceId: device.id } })
+          const upgraded = server.upgrade(request, { data: { sessionId: url.pathname.split('/').pop()!, connectedAt: this.now(), channel: 'client', clientKind: 'full', sdkToken: null, serverPort: this.deps.serverPort(), serverHost: '127.0.0.1', remoteDeviceId: device.id, mediaRefs: url.searchParams.get('media') === 'ref' } })
           return upgraded ? undefined : json({ error: 'Upgrade failed' }, 400)
         }
         const response = await this.deps.handleApiRequest(request, url, { remoteBrowser: true, remoteDeviceId: device.id, remoteDeviceExpiresAt: device.expiresAt })

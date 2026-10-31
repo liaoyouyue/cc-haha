@@ -9,13 +9,15 @@ import {
   groupTail,
   editDiff,
   formatInput,
+  groupIsOpen,
   outputTail,
+  stepImages,
   stepInput,
-  stepsBehindCaption,
-  summarizeActivity,
   type ChatRow,
+  type NamedToolImage,
   type StepState,
 } from './steps'
+import { ToolImageStrip } from './ToolImages'
 
 export type StepContext = {
   workDir?: string | null
@@ -30,6 +32,8 @@ export type StepContext = {
 export type StepUi = {
   expanded: ReadonlySet<string>
   open: ReadonlySet<string>
+  /** 手动收起的运行中步骤组，不随下一步的流式更新重新展开。 */
+  closed: ReadonlySet<string>
   /** 不再使用（摘要行取代了“前面还有 N 步”）；保留字段让聊天页的 state 形状不变。 */
   revealed: ReadonlySet<string>
 }
@@ -333,13 +337,16 @@ export const TurnFold = memo(function TurnFold({
   label,
   open,
   onToggle,
+  images,
 }: {
   label: string
   open: boolean
   onToggle(): void
+  /** 收起时仍要看得到的图片（让电脑截图发过来，就是为了看这张图）。 */
+  images?: NamedToolImage[]
 }) {
   const colors = useColors()
-  return (
+  const fold = (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={open ? '收起处理过程' : `展开处理过程，${label}`}
@@ -360,11 +367,18 @@ export const TurnFold = memo(function TurnFold({
       <Icon name={open ? 'chevron-down' : 'chevron-right'} size={15} color={colors.ink3} strokeWidth={2.2} />
     </Pressable>
   )
+  if (open || !images?.length) return fold
+  return (
+    <View>
+      {fold}
+      <ToolImageStrip images={images} />
+    </View>
+  )
 })
 
 /**
- * 工具调用在消息流里是一行灰字摘要“已读 3 个文件 · 运行 2 条命令 ›”，点一下在原地展开成
- * 步骤时间线。进行中的组同样是摘要行，当前这一步由顶栏下方的状态行显示，这里不重复。
+ * 运行中在消息流里展开完整步骤时间线，包含正在执行的一步；读者仍可手动收起。
+ * 结束后的历史组默认折成“已读 3 个文件 · 运行 2 条命令 ›”，点一下在原地展开。
  */
 export const StepGroup = memo(function StepGroup({
   row,
@@ -377,17 +391,15 @@ export const StepGroup = memo(function StepGroup({
   context: StepContext
   ui: StepUi
   onToggleStep(id: string): void
-  onToggleOpen(key: string): void
+  onToggleOpen(key: string, live?: boolean): void
   /** @deprecated 不再需要“前面还有 N 步”；保留是为了聊天页接线不变。 */
   onReveal?(key: string): void
 }) {
   const colors = useColors()
-  const open = ui.open.has(row.key)
+  const open = groupIsOpen(ui, row.key, row.live)
   const states = new Map(row.steps.map((item) => [item, stepState(item, row.live, context)] as const))
-  const shown = row.live
-    ? stepsBehindCaption(row.steps, (item) => states.get(item) === 'running')
-    : row.steps
-  const segments = shown.length === row.steps.length ? row.segments : summarizeActivity(shown)
+  const shown = row.steps
+  const segments = row.segments
   const tail = groupTail(shown.map((item) => states.get(item) ?? 'done'))
   const label = activityLabel(segments)
   const divider = row.turnEnd ? (
@@ -395,6 +407,8 @@ export const StepGroup = memo(function StepGroup({
   ) : null
   if (!shown.length) return divider
   const tailColor = tail?.tone === 'err' ? colors.err : tail?.tone === 'run' ? colors.run : colors.attn
+  // 和桌面一致：展开时图挂在对应步骤下，收起后集中放在摘要行下方。
+  const folded = open ? [] : shown.flatMap(stepImages)
   return (
     <View>
       <Pressable
@@ -402,7 +416,7 @@ export const StepGroup = memo(function StepGroup({
         accessibilityLabel={[label, tail?.text].filter(Boolean).join('，')}
         accessibilityHint={open ? '收起步骤' : '展开步骤'}
         accessibilityState={{ expanded: open }}
-        onPress={() => onToggleOpen(row.key)}
+        onPress={() => onToggleOpen(row.key, row.live)}
         hitSlop={4}
         style={({ pressed }) => ({
           minHeight: 32,
@@ -426,6 +440,7 @@ export const StepGroup = memo(function StepGroup({
           <Text style={{ fontSize: 12.5, color: tailColor, flexShrink: 0 }}>{tail.text}</Text>
         ) : null}
       </Pressable>
+      {folded.length ? <ToolImageStrip images={folded} /> : null}
       {open ? (
         <View
           style={{
@@ -436,15 +451,21 @@ export const StepGroup = memo(function StepGroup({
             paddingLeft: 14,
           }}
         >
-          {shown.map((item) =>
-            ui.expanded.has(item.id) ? (
-              <View key={item.id} style={{ marginVertical: 4 }}>
-                <StepCard item={item} live={row.live} context={context} onToggle={onToggleStep} />
+          {shown.map((item) => {
+            const images = stepImages(item)
+            return (
+              <View key={item.id}>
+                {ui.expanded.has(item.id) ? (
+                  <View style={{ marginVertical: 4 }}>
+                    <StepCard item={item} live={row.live} context={context} onToggle={onToggleStep} />
+                  </View>
+                ) : (
+                  <StepRow item={item} live={row.live} context={context} onToggle={onToggleStep} />
+                )}
+                {images.length ? <ToolImageStrip images={images} /> : null}
               </View>
-            ) : (
-              <StepRow key={item.id} item={item} live={row.live} context={context} onToggle={onToggleStep} />
             )
-          )}
+          })}
         </View>
       ) : null}
       {divider}

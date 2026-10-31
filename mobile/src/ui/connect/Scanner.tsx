@@ -1,5 +1,5 @@
 import { useRef, useState, type ReactNode } from 'react'
-import { Linking, Platform, Pressable, StyleSheet, View } from 'react-native'
+import { Linking, Pressable, StyleSheet, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { CameraView, useCameraPermissions } from 'expo-camera'
 import { BrandMark, Icon, useColors, type IconName } from '../kit'
@@ -7,6 +7,7 @@ import { Text } from '../Text'
 import { dark } from '../palette'
 import { errorText } from '../theme'
 import { ScanLine } from './motion'
+import { simulatedPhoneChrome } from '../webChrome'
 
 /** 扫码页固定用暗色取景：相机画面之上只有白色线条与文字。 */
 const scannerBackground = '#121110'
@@ -41,7 +42,7 @@ export function Scanner({
   const colors = useColors()
   const insets = useSafeAreaInsets()
   // iOS card-style modals report no top inset; keep the header off the card edge.
-  const top = Platform.OS === 'web' ? 47 : Math.max(insets.top, 12)
+  const top = simulatedPhoneChrome ? 47 : Math.max(insets.top, 12)
   const [permission, requestPermission] = useCameraPermissions()
   const [cameraError, setCameraError] = useState('')
   const [torch, setTorch] = useState(false)
@@ -187,7 +188,7 @@ export function Scanner({
               textAlign: 'center',
             }}
           >
-            {'在电脑的 cc-haha 里打开\n「设置 → H5 访问」或「公网访问」'}
+            {'在电脑的 cc-haha 里打开\n「设置 → 手机连接」，选择局域网或 Cloudflare 外出连接'}
           </Text>
           {notice ? (
             // Absolutely placed under the copy so the scan frame never jumps.

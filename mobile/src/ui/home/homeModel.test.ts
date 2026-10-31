@@ -289,9 +289,27 @@ test('schedule summary counts enabled tasks and shows the next time only when ev
   expect(scheduleSummary([task('0 18 * * *'), task('*/10 * * * *')], saturday)).toBe('2 个开启')
 })
 
+test('schedule summary uses explicit one-time and server-projected occurrences', () => {
+  const now = new Date('2026-10-24T10:30:00')
+  const next = new Date('2026-10-24T18:00:00')
+  const task: ScheduledTask = { id: 'once', prompt: 'check', cron: '', createdAt: 0, schedule: { kind: 'once', runAt: next.toISOString(), timeZone: 'Asia/Shanghai' } }
+  expect(scheduleSummary([task], now)).toBe('1 个开启 · 下次 18:00')
+  expect(scheduleSummary([{ ...task, enabled: false, scheduleState: 'completed' }], now)).toBe('全部完成')
+  expect(scheduleSummary([{ ...task, cron: '0 9 * * *', schedule: { kind: 'cron', expression: '0 9 * * *', timeZone: 'America/New_York' }, nextRunAt: next.getTime() }], now)).toBe('1 个开启 · 下次 18:00')
+})
+
 test('search also matches the full working directory, like the previous home', () => {
   const r = row(session('整理发版说明', '/Users/me/code/cc-haha/mobile'))
   expect(matchesQuery(r, 'code/cc-haha')).toBe(true)
   expect(matchesQuery(r, 'mobile')).toBe(true)
   expect(matchesQuery(r, '不相关')).toBe(false)
+})
+
+test('a team plan waiting for approval is its own decision, opened from the session', () => {
+  const team: MobileActivity = { id: 's', activityState: 'waiting', decision: 'team_plan', preview: '要追加的成员等你确认' }
+  expect(decisionKind(team)).toBe('team')
+  expect(decisionAction(team)).toBe('要追加的成员等你确认')
+  expect(decisionAction({ ...team, preview: undefined })).toBe('团队组好了，等你确认')
+  // Never mistaken for a tool approval the list could allow or deny.
+  expect(decisionKind({ ...team, requestId: 'r', toolName: 'Bash' })).toBe('team')
 })

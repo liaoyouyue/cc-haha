@@ -151,6 +151,13 @@ jobs:
       - name: Install adapter dependencies
         working-directory: adapters
         run: bun install --frozen-lockfile
+      # `bun run build` also exports the phone app (mobile/) into dist/m, and Expo needs Node 22.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install mobile dependencies
+        working-directory: mobile
+        run: bun install --frozen-lockfile
       - name: Run desktop checks
         run: bun run check:desktop
 
@@ -333,6 +340,21 @@ jobs:
       - name: Install adapter dependencies
         working-directory: adapters
         run: bun install --frozen-lockfile
+      # The packaged app carries the phone H5 exported from mobile/; Expo needs Node 22.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install mobile dependencies
+        working-directory: mobile
+        run: bun install --frozen-lockfile
+      - name: Cache Cloudflare connector build dependency
+        uses: actions/cache@v4
+        with:
+          path: desktop/src-tauri/binaries/cloudflared-*
+          key: cloudflared-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('desktop/scripts/prepare-cloudflared.ts', 'desktop/scripts/cloudflared-licenses/*') }}
+      - name: Prepare bundled Cloudflare connector build dependency
+        working-directory: desktop
+        run: bun run prepare:cloudflared
       - name: Run desktop native checks
         run: bun run check:native
 

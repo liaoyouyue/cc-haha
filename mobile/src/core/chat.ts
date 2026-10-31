@@ -4,6 +4,7 @@ import type {
   HistoryEntry,
   HistoryPage,
   ServerEvent,
+  ToolImage,
 } from './types'
 import {
   applyImageMetadata,
@@ -13,6 +14,7 @@ import {
   restoreImageReplay,
 } from './chatComposer'
 import { reduceSubagents } from './subagentLive'
+import { isTeammateEnvelope, teammateMessages } from './teammateEnvelope'
 
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -202,8 +204,47 @@ export function parseServerEvent(raw: unknown): ServerEvent | null {
     case 'task_update':
       valid = string(v.taskId) && string(v.status)
       break
+    case 'team_plan_updated':
+      valid =
+        string(v.sessionId) &&
+        string(v.planId) &&
+        typeof v.revision === 'number' &&
+        string(v.state)
+      break
+    case 'team_deleted':
+      valid =
+        string(v.teamName) &&
+        (v.leadSessionId === undefined || string(v.leadSessionId)) &&
+        (v.incarnationId === undefined || string(v.incarnationId))
+      break
   }
   return valid ? (value as ServerEvent) : null
+}
+
+const TOOL_IMAGE_URL = /^\/api\/sessions\/[^/?#]+\/tool-images\/[^/?#]+\/\d+$/
+
+/** 工具结果里的图片：电脑给的引用，或旧版电脑内联的 base64。 */
+export function toolResultImages(value: unknown): ToolImage[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((block): ToolImage[] => {
+    const b = record(block)
+    const source = record(b?.source)
+    if (b?.type !== 'image' || !source || !string(source.media_type)) return []
+    const size = {
+      ...(typeof source.width === 'number' && source.width > 0 ? { width: source.width } : {}),
+      ...(typeof source.height === 'number' && source.height > 0 ? { height: source.height } : {}),
+    }
+    if (source.type === 'ref' && string(source.url) && TOOL_IMAGE_URL.test(source.url))
+      return [{ mimeType: source.media_type, url: source.url, ...size }]
+    if (source.type === 'base64' && string(source.data))
+      return [{ mimeType: source.media_type, data: source.data }]
+    return []
+  })
+}
+
+function resultImages(value: unknown): { images?: ToolImage[] } {
+  const images = toolResultImages(value)
+  return images.length ? { images } : {}
 }
 
 function resultText(value: unknown): string {
@@ -220,7 +261,11 @@ function resultText(value: unknown): string {
 }
 
 /** Normalizes real transcript blocks; never synthesizes an assistant answer. */
-export function normalizeHistory(entries: readonly HistoryEntry[]): ChatItem[] {
+export function normalizeHistory(
+  entries: readonly HistoryEntry[],
+  /** 成员之间的消息：队长主对话里不算用户发言（hide），成员页显示正文（show）。 */
+  options: { teammates?: 'hide' | 'show' } = {}
+): ChatItem[] {
   const items: ChatItem[] = []
   const seen = new Set<string>()
   for (const entry of entries) {
@@ -229,6 +274,25 @@ export function normalizeHistory(entries: readonly HistoryEntry[]): ChatItem[] {
     const blocks = Array.isArray(entry.content)
       ? entry.content
       : [entry.content]
+    const envelope =
+      entry.type === 'user' &&
+      blocks.every((block) => string(block) || (record(block)?.type === 'text' && string(record(block)?.text)))
+        ? teammateMessages(blocks.map((block) => (string(block) ? block : record(block)!.text)).join('\n'))
+        : null
+    if (envelope) {
+      if (options.teammates === 'show')
+        envelope.forEach((message, index) =>
+          items.push({
+            id: `${entry.id}:${index}`,
+            sourceMessageId: entry.id,
+            timestamp: entry.timestamp,
+            type: 'user',
+            text: message.text,
+            teammateFrom: message.from,
+          })
+        )
+      continue
+    }
     if (
       entry.type === 'user' &&
       blocks.some((block) => record(block)?.type === 'image') &&
@@ -362,6 +426,7 @@ export function normalizeHistory(entries: readonly HistoryEntry[]): ChatItem[] {
         const result = {
           result: block.content,
           text: resultText(block.content),
+          ...resultImages(block.content),
           isError: block.is_error === true,
           pending: false,
         }
@@ -436,6 +501,49 @@ export function mergeHistoryPages(
         !current.page.previousCursor &&
         omitted === 0 &&
         !truncated,
+    },
+  }
+}
+
+/**
+ * 用重新读到的最新一页刷新已经往前翻过的历史，不把翻过的部分丢掉。
+ * 会话只追加时，最新一页的第一条一定落在已加载的范围里：把更早的部分接回去，
+ * 继续沿用原来那条游标链（服务端校验首尾指纹，只追加时它仍然有效）。
+ * 接不上（新增超过一页、或会话被改写）时返回 undefined，由调用方决定补页还是只用最新一页。
+ */
+export function stitchLatestPage(
+  loaded: HistoryPage | undefined,
+  latest: HistoryPage
+): HistoryPage | undefined {
+  const first = latest.messages[0]
+  if (!loaded?.page || !loaded.messages.length || !latest.page?.nextCursor || !first)
+    return latest
+  const start = loaded.messages.findIndex((entry) => entry.id === first.id)
+  if (start < 0) return undefined
+  const overlap = loaded.messages.slice(start)
+  if (
+    overlap.length > latest.messages.length ||
+    overlap.some((entry, index) => entry.id !== latest.messages[index]!.id)
+  )
+    return undefined
+  if (start === 0) return latest
+  const omitted = Math.max(
+    loaded.page.omittedOversizedEntries,
+    latest.page.omittedOversizedEntries
+  )
+  const truncated = !!loaded.page.contentTruncated || !!latest.page.contentTruncated
+  return {
+    messages: [...loaded.messages.slice(0, start), ...latest.messages],
+    taskNotifications: latest.taskNotifications,
+    page: {
+      ...latest.page,
+      nextCursor: loaded.page.nextCursor,
+      hasMore: loaded.page.hasMore,
+      // 再往前翻拿到的页带着游标链的版本，合并时要对得上。
+      sourceVersion: loaded.page.sourceVersion,
+      omittedOversizedEntries: omitted,
+      contentTruncated: truncated,
+      historyComplete: !loaded.page.nextCursor && omitted === 0 && !truncated,
     },
   }
 }
@@ -690,6 +798,7 @@ function reduceChat(state: ChatState, event: ServerEvent): ChatState {
       const patch = {
         result: event.content,
         text: resultText(event.content),
+        ...resultImages(event.content),
         isError: event.isError,
         pending: false,
       }
@@ -754,6 +863,13 @@ function reduceChat(state: ChatState, event: ServerEvent): ChatState {
       return { ...next, status: permissionStatus(next) }
     }
     case 'user_message_replay': {
+      // 成员发给队长的消息开启了队长的新一轮，但不是用户发言（和桌面端一致）。
+      if (isTeammateEnvelope(event.content))
+        return {
+          ...clearActive(state),
+          turnActive: true,
+          status: state.status === 'idle' ? ('thinking' as const) : state.status,
+        }
       const restored = restoreFileReferences(event.content)
       let matchedText = restored.text
       let metadata: { path?: string }[] = []
@@ -877,6 +993,18 @@ function reduceChat(state: ChatState, event: ServerEvent): ChatState {
       return event.sessionId === state.sessionId
         ? { ...state, title: event.title }
         : state
+    // 方案本身走 REST 读取；这里只记下“变了”，让审批入口重新读一次。
+    case 'team_plan_updated': {
+      if (event.sessionId !== state.sessionId) return state
+      const signal = `${event.planId}:${event.revision}:${event.state}`
+      return signal === state.teamPlanSignal ? state : { ...state, teamPlanSignal: signal }
+    }
+    // 团队目录被删时方案也没了；删得太快时电脑来不及推 team_plan_updated，只有这一条。
+    case 'team_deleted': {
+      if (event.leadSessionId && event.leadSessionId !== state.sessionId) return state
+      const signal = `deleted:${event.teamName}:${event.incarnationId ?? event.createdAt ?? ''}`
+      return signal === state.teamPlanSignal ? state : { ...state, teamPlanSignal: signal }
+    }
     case 'system_notification': {
       const data = record(event.data)
       const taskId = string(data?.task_id) ? data.task_id.trim() : ''

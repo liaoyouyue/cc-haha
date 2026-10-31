@@ -10,12 +10,13 @@ import {
   formatInput,
   formatTurnDuration,
   groupTail,
+  groupIsOpen,
   isSubstantialReply,
   lineDiff,
   outputTail,
   relativePath,
-  stepsBehindCaption,
   summarizeActivity,
+  toggleGroupOpen,
   turnFoldLabel,
   visibleChatRows,
 } from './steps'
@@ -54,6 +55,25 @@ describe('step grouping', () => {
     expect(group.kind === 'steps' && group.steps.map((step) => step.id)).toEqual(['t1', 'r1', 'b1'])
     expect(group.key).toBe('steps:t1')
     expect(group.kind === 'steps' && activityLabel(group.segments)).toBe('思考 · 已读 1 个文件 · 运行 1 条命令')
+  })
+
+  test('a finished turn keeps the screenshots it read visible on its fold line', () => {
+    const shot = { mimeType: 'image/png', url: '/api/sessions/s/tool-images/r1/0', width: 1920, height: 1139 }
+    const items: ChatItem[] = [
+      user('u1'),
+      { ...tool('r1', 'Read', { file_path: '/tmp/todo/shot-final.png' }), images: [shot] },
+      tool('b1', 'Bash', { command: 'ls' }),
+      assistant('a1'),
+    ]
+    const settled = buildChatRows(items, false)
+    expect(rowKinds(settled)).toEqual(['message', 'turn', 'steps', 'message'])
+    const fold = settled[1]
+    expect(fold.kind === 'turn' && fold.images).toEqual([{ image: shot, name: 'shot-final.png' }])
+    // While the turn runs there is no fold; the step group shows the image itself.
+    expect(buildChatRows(items, true).some((row) => row.kind === 'turn')).toBe(false)
+    // Turns without images carry no image list.
+    const plain = buildChatRows([user('u1'), tool('b1', 'Bash', {}), assistant('a1')], false)
+    expect(plain.find((row) => row.kind === 'turn')).not.toHaveProperty('images')
   })
 
   test('only groups after the last user message are live while the turn runs', () => {
@@ -147,14 +167,31 @@ describe('activity summary', () => {
       )
     ).toBe('思考 2 次 · 已读 1 个文件')
   })
+})
 
-  test('a live group leaves its unfinished last step to the status caption', () => {
-    const steps = [tool('1', 'Read', { file_path: '/a' }), tool('2', 'Bash', { command: 'ls' }, { pending: true })]
-    const unfinished = (step: ChatItem) => step.result === undefined
-    expect(stepsBehindCaption(steps, unfinished).map((step) => step.id)).toEqual(['1'])
-        // A finished last step stays: only the current step is hidden.
-    expect(stepsBehindCaption(steps, () => false)).toHaveLength(2)
-    expect(stepsBehindCaption([], unfinished)).toEqual([])
+describe('step group disclosure', () => {
+  test('live groups open by default and manual choices survive live and settled states', () => {
+    let ui = { open: new Set<string>(), closed: new Set<string>() }
+    expect(groupIsOpen(ui, 'steps:r1', true)).toBe(true)
+    expect(groupIsOpen(ui, 'steps:r1', false)).toBe(false)
+    ui = toggleGroupOpen(ui, 'steps:r1', true)
+    expect(groupIsOpen(ui, 'steps:r1', true)).toBe(false)
+    expect(groupIsOpen(ui, 'steps:r1', false)).toBe(false)
+    ui = toggleGroupOpen(ui, 'steps:r1', true)
+    expect(groupIsOpen(ui, 'steps:r1', true)).toBe(true)
+    expect(groupIsOpen(ui, 'steps:r1', false)).toBe(true)
+    expect(groupIsOpen(ui, 'steps:r2', true)).toBe(true)
+  })
+
+  test('turn folds still toggle independently without changing the old UI state', () => {
+    const initial = { open: new Set<string>(), closed: new Set<string>(), expanded: new Set(['tool-1']) }
+    const opened = toggleGroupOpen(initial, 'turn:steps:r1')
+    expect(opened.open.has('turn:steps:r1')).toBe(true)
+    expect(initial.open.size).toBe(0)
+    expect(opened.expanded).toBe(initial.expanded)
+    const closed = toggleGroupOpen(opened, 'turn:steps:r1')
+    expect(closed.open.has('turn:steps:r1')).toBe(false)
+    expect(opened.open.has('turn:steps:r1')).toBe(true)
   })
 })
 

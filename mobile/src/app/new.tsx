@@ -39,6 +39,7 @@ import {
 import { InlineError, TextButton, goBack, useColors } from '../ui/kit'
 import { errorText } from '../ui/theme'
 import { TargetCard } from '../ui/newtask/TargetCard'
+import { simulatedPhoneChrome } from '../ui/webChrome'
 
 const repositoryUrl = (path: string) =>
   `/api/sessions/repository-context?workDir=${encodeURIComponent(path)}`
@@ -262,7 +263,7 @@ function NewTask({ hostId, initialDir }: { hostId: string; initialDir: string })
       edges={Platform.OS === 'ios' ? ['left', 'right'] : ['top', 'left', 'right']}
       style={[
         { flex: 1, backgroundColor: colors.bg },
-        Platform.OS === 'web' && { paddingTop: 47 },
+        simulatedPhoneChrome && { paddingTop: 47 },
       ]}
     >
       <KeyboardViewport style={{ flex: 1 }}>
@@ -348,6 +349,7 @@ function NewTask({ hostId, initialDir }: { hostId: string; initialDir: string })
         lean={lean}
         disabled={busy ? { mode: '正在创建任务。', runtime: '正在创建任务。' } : undefined}
         profile={{ value: profile, onChange: changeProfile, disabled: busy ? '正在创建任务。' : undefined }}
+        workDir={path || undefined}
       />
 
       <WherePage

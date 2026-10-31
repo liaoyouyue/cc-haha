@@ -22,25 +22,32 @@ import {
 import { BringSheet, type MaterialKind } from './compose/BringSheet'
 import { Glyph } from './compose/glyphs'
 import type { ComputerUse } from '../core/useComputerUse'
+import { isComputerUseReference, withComputerUseReference } from '../core/computerUse'
 import {
   composerPlaceholder,
   runCapsuleA11y,
-  runLockedNote,
   runShortcut,
   sendSlot,
   type RunCapsule,
 } from './compose/runLogic'
+import { ImagePreview } from './chat/ImagePreview'
+import { attachmentImageSelection, attachmentImageUri, type ImagePreviewSelection } from './chat/attachmentPreview'
+import { useVoiceDictation } from '../core/useVoiceDictation'
+import { VoiceFeedback, VoiceMicrophone, VoiceRecordingBar } from './compose/VoiceInput'
+import { simulatedPhoneChrome } from './webChrome'
+import { subscribeWebKeyboard } from './webKeyboard'
 
-/** web 预览里模拟 iPhone 的 Home 指示条高度，原生端用真实安全区。 */
+/** 网页预览里模拟 iPhone 的 Home 指示条高度，原生端和 H5 用真实安全区。 */
 export function useBottomInset() {
   const insets = useSafeAreaInsets()
-  return Platform.OS === 'web' ? Math.max(insets.bottom, 34) : Math.max(insets.bottom, 12)
+  return simulatedPhoneChrome ? Math.max(insets.bottom, 34) : Math.max(insets.bottom, 12)
 }
 
 /** 键盘弹起时输入框贴着键盘，不再留 Home 指示条的空隙。 */
 function useKeyboardVisible() {
   const [visible, setVisible] = useState(false)
   useEffect(() => {
+    if (Platform.OS === 'web') return subscribeWebKeyboard(setVisible)
     const show = Keyboard.addListener(
       Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
       () => setVisible(true)
@@ -104,7 +111,7 @@ function Pill({
   )
 }
 
-function AttachmentChip({ attachment, onRemove }: { attachment: ComposerAttachment; onRemove(): void }) {
+function AttachmentChip({ attachment, onRemove, onPreview }: { attachment: ComposerAttachment; onRemove(): void; onPreview(): void }) {
   const colors = useColors()
   const remove = (
     <Pressable
@@ -128,14 +135,16 @@ function AttachmentChip({ attachment, onRemove }: { attachment: ComposerAttachme
       <Icon name="x" size={10} color={colors.bg} strokeWidth={3.5} />
     </Pressable>
   )
-  if (attachment.type === 'image' && attachment.uri)
+  const uri = attachmentImageUri(attachment)
+  if (uri)
     return (
       <View style={{ width: 52, height: 52 }}>
-        <Image
-          accessibilityLabel={attachment.name}
-          source={{ uri: attachment.uri }}
-          style={{ width: 52, height: 52, borderRadius: 12, backgroundColor: colors.fill }}
-        />
+        <Pressable accessibilityRole="button" accessibilityLabel={`预览 ${attachment.name}`} onPress={onPreview}>
+          <Image
+            source={{ uri }}
+            style={{ width: 52, height: 52, borderRadius: 12, backgroundColor: colors.fill }}
+          />
+        </Pressable>
         {remove}
       </View>
     )
@@ -240,17 +249,15 @@ function CandidateCard({
   )
 }
 
-/** 运行胶囊：盾牌 + 「模型 · 强度」+ ⌄；运行中锁住时置灰带锁。 */
+/**
+ * 运行胶囊：盾牌 + 「模型 · 强度」+ ⌄，不加底色。权限档位不靠颜色区分：全权限换成带感叹号的盾牌，
+ * 切过去时另有确认框。运行中锁住时文字变淡、带锁。
+ */
 function RunPill({ run, onPress }: { run: ChatComposerRun; onPress(): void }) {
   const colors = useColors()
   const inactive = !!run.disabled || !!run.locked
-  const tone =
-    run.risk === 'danger'
-      ? { bg: colors.errSoft, fg: colors.err, label: colors.err }
-      : run.risk === 'attention'
-        ? { bg: colors.attnSoft, fg: colors.attn, label: colors.attnInk }
-        : { bg: colors.fill, fg: colors.ink2, label: colors.ink }
   const muted = !!run.locked
+  const iconColor = muted ? colors.ink3 : colors.ink2
   return (
     <Pressable
       accessibilityRole="button"
@@ -266,19 +273,13 @@ function RunPill({ run, onPress }: { run: ChatComposerRun; onPress(): void }) {
         opacity: run.disabled && !run.locked ? 0.45 : pressed ? 0.7 : 1,
       })}
     >
-      <View
-        style={{
-          height: 34,
-          paddingHorizontal: 10,
-          borderRadius: 17,
-          backgroundColor: muted ? colors.fill : tone.bg,
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 6,
-        }}
-      >
-        <Icon name="shield" size={15} color={muted ? colors.ink3 : tone.fg} strokeWidth={2} />
-        <Text numberOfLines={1} style={{ flexShrink: 1, fontSize: 13, fontWeight: '500', color: muted ? colors.ink3 : tone.label }}>
+      <View style={{ height: 34, paddingHorizontal: 6, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+        {run.risk === 'danger' ? (
+          <Glyph name="shield-alert" size={15} color={iconColor} strokeWidth={2} />
+        ) : (
+          <Icon name="shield" size={15} color={iconColor} strokeWidth={2} />
+        )}
+        <Text numberOfLines={1} style={{ flexShrink: 1, fontSize: 13, fontWeight: '500', color: muted ? colors.ink3 : colors.ink }}>
           {run.label}
         </Text>
         {run.locked ? (
@@ -315,6 +316,7 @@ export function ChatComposer({
   lean,
   empty,
   busy,
+  background = false,
   queueing = false,
   disabled,
   run,
@@ -338,11 +340,13 @@ export function ChatComposer({
   onAttachments(value: ComposerAttachment[]): void
   team: boolean
   onTeam(value: boolean): void
-  /** 「操作电脑」的状态与动作（useComputerUse）：输入框上的「电脑」胶囊和「＋」里的开关共用。 */
+  /** Computer authorization; the current message's selection lives in references. */
   computer: ComputerUse
   lean: boolean
   empty: boolean
   busy: boolean
+  /** 这一轮已结束、团队成员还在跑：没内容时这个键是停止。 */
+  background?: boolean
   queueing?: boolean
   disabled: boolean
   run: ChatComposerRun
@@ -368,8 +372,28 @@ export function ChatComposer({
   const [catalogError, setCatalogError] = useState('')
   const [loading, setLoading] = useState(false)
   const [picking, setPicking] = useState<MaterialKind | null>(null)
+  const [preview, setPreview] = useState<ImagePreviewSelection | null>(null)
+  const voiceCanSend = !disabled && (!busy || queueing)
+  const voice = useVoiceDictation({
+    client,
+    contextKey: `${client?.host.id ?? ''}:${sessionId ?? 'new'}:${workDir ?? ''}`,
+    draft,
+    selection,
+    blocked: disabled || !!picking,
+    canSend: voiceCanSend,
+    onDraft: (text, cursor) => {
+      onDraft(text)
+      setSelection({ start: cursor, end: cursor })
+    },
+    onSubmit: onSend,
+    focus: () => requestAnimationFrame(() => input.current?.focus()),
+  })
+  const referenceState = useRef({ references, onReferences })
+  useEffect(() => {
+    referenceState.current = { references, onReferences }
+  }, [references, onReferences])
   const trigger = composerTrigger(draft, selection.start, selection.end)
-  const showCandidates = !bringOpen && !disabled && !!trigger
+  const showCandidates = !voice.live && !bringOpen && !disabled && !!trigger
   const needsCatalog = bringOpen || showCandidates
   const providerId = runtime?.providerId
   const hasRuntime = !!runtime
@@ -404,6 +428,7 @@ export function ChatComposer({
   const slot = sendSlot({
     hasContent,
     busy,
+    background,
     queueing,
     disabled,
     picking: !!picking,
@@ -445,7 +470,7 @@ export function ChatComposer({
     setBringOpen(true)
   }
 
-  const chips = attachments.length > 0 || references.length > 0 || team || (computer.enabled && !lean)
+  const chips = attachments.length > 0 || references.length > 0 || team
   return (
     <View
       onLayout={(event) => onHeight?.(event.nativeEvent.layout.height)}
@@ -495,21 +520,26 @@ export function ChatComposer({
             style={{ flexGrow: 0 }}
             contentContainerStyle={{ alignItems: 'center', gap: 10, paddingTop: 8, paddingBottom: 2, paddingLeft: 10, paddingRight: 14 }}
           >
-            {attachments.map((attachment) => (
+            {attachments.map((attachment, index) => (
               <AttachmentChip
                 key={attachment.id}
                 attachment={attachment}
                 onRemove={() => onAttachments(attachments.filter((value) => value.id !== attachment.id))}
+                onPreview={() => {
+                  Keyboard.dismiss()
+                  setPreview(attachmentImageSelection(attachments, index))
+                }}
               />
             ))}
             {references.map((reference) => (
               <Pill
                 key={`${reference.kind}:${reference.id}`}
-                label={`@${reference.displayName || reference.name}`}
-                accessibilityLabel={`移除技能 ${reference.displayName || reference.name}`}
+                label={isComputerUseReference(reference) ? '操作电脑' : `@${reference.displayName || reference.name}`}
+                accessibilityLabel={isComputerUseReference(reference) ? '移除 操作电脑' : `移除技能 ${reference.displayName || reference.name}`}
                 onPress={() =>
                   onReferences(references.filter((value) => value.kind !== reference.kind || value.id !== reference.id))
                 }
+                icon={isComputerUseReference(reference) ? <Glyph name="monitor" size={14} color={colors.run} strokeWidth={2} /> : undefined}
               />
             ))}
             {team ? (
@@ -520,15 +550,6 @@ export function ChatComposer({
                 icon={<Icon name="users" size={14} color={colors.run} strokeWidth={2} />}
               />
             ) : null}
-            {computer.enabled && !lean ? (
-              <Pill
-                label="操作电脑"
-                accessibilityLabel="操作电脑已开启，打开「＋」查看"
-                removable={false}
-                onPress={() => setBringOpen(true)}
-                icon={<Glyph name="monitor" size={14} color={colors.run} strokeWidth={2} />}
-              />
-            ) : null}
           </ScrollView>
         ) : null}
         <TextInput
@@ -536,8 +557,9 @@ export function ChatComposer({
           accessibilityLabel={sessionId ? '消息' : '新任务内容'}
           value={draft}
           multiline
-          editable={!disabled}
+          editable={!disabled && !voice.live}
           onChangeText={(value) => {
+            voice.edited()
             const cursor = Math.min(value.length, Math.max(0, selection.end + value.length - draft.length))
             onDraft(value)
             setSelection({ start: cursor, end: cursor })
@@ -551,6 +573,9 @@ export function ChatComposer({
           placeholderTextColor={colors.ink3}
           {...(Platform.OS === 'web' ? { rows: 1 } : {})}
           style={{
+            // Keep the draft and caret mounted while the recording surface
+            // takes its place; completion restores this same editable field.
+            display: voice.live ? 'none' : 'flex',
             minHeight: 44,
             maxHeight: 136,
             paddingHorizontal: 10,
@@ -561,26 +586,34 @@ export function ChatComposer({
             color: colors.ink,
           }}
         />
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}>
+        <VoiceFeedback voice={voice} blocked={disabled} onError={onError} />
+        {voice.live ? <VoiceRecordingBar voice={voice} canSend={voiceCanSend} /> : <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="添加：技能、命令、材料"
             accessibilityState={{ expanded: bringOpen }}
             onPress={openBring}
-            style={{ width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }}
+            style={({ pressed }) => ({
+              width: 44,
+              height: 44,
+              alignItems: 'center',
+              justifyContent: 'center',
+              opacity: pressed ? 0.5 : 1,
+            })}
           >
-            <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: colors.fill, alignItems: 'center', justifyContent: 'center' }}>
-              <Icon name="plus" size={20} color={colors.ink} strokeWidth={2} />
-            </View>
+            <Icon name="plus" size={22} color={colors.ink} strokeWidth={2} />
           </Pressable>
           <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 8 }}>
-            {run.locked ? (
-              <Text numberOfLines={1} style={{ flexShrink: 0, textAlign: 'right', fontSize: 12, lineHeight: 16, color: colors.ink3 }}>
-                {runLockedNote}
-              </Text>
-            ) : null}
             <RunPill run={run} onPress={onOpenRun} />
           </View>
+          <VoiceMicrophone
+            blocked={!client || disabled || !!picking}
+            onPress={() => {
+              input.current?.blur()
+              Keyboard.dismiss()
+              void voice.start()
+            }}
+          />
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={slot.label}
@@ -589,12 +622,14 @@ export function ChatComposer({
             onPress={press}
             style={{ width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }}
           >
+            {/* 一直是墨色实心圆：没内容时点了不动，不另外变灰；只有有内容却发不出去（断线、配置待确认）才变淡。 */}
             <View
               style={{
                 width: 36,
                 height: 36,
                 borderRadius: 18,
-                backgroundColor: slot.enabled ? colors.btn : colors.fill,
+                backgroundColor: colors.btn,
+                opacity: slot.kind === 'blocked' ? 0.35 : 1,
                 alignItems: 'center',
                 justifyContent: 'center',
               }}
@@ -602,11 +637,11 @@ export function ChatComposer({
               {slot.kind === 'stop' ? (
                 <Icon name="stop" size={14} color={colors.btnInk} />
               ) : (
-                <Icon name="arrow-up" size={18} color={slot.enabled ? colors.btnInk : colors.faint} strokeWidth={2.4} />
+                <Icon name="arrow-up" size={18} color={colors.btnInk} strokeWidth={2.4} />
               )}
             </View>
           </Pressable>
-        </View>
+        </View>}
       </View>
       <BringSheet
         visible={bringOpen}
@@ -624,6 +659,10 @@ export function ChatComposer({
         team={team}
         onTeam={onTeam}
         computer={computer}
+        onComputerSelected={(value) => {
+          const current = referenceState.current
+          current.onReferences(withComputerUseReference(current.references, value))
+        }}
         onApply={(next) => {
           onDraft(next.draft)
           onReferences(next.references)
@@ -632,6 +671,7 @@ export function ChatComposer({
           requestAnimationFrame(() => input.current?.focus())
         }}
       />
+      {preview ? <ImagePreview {...preview} onClose={() => setPreview(null)} /> : null}
     </View>
   )
 }

@@ -27,6 +27,7 @@ import { Icon, type IconName } from './icons'
 import { useTheme, type Colors } from './theme'
 import { monoFont, type } from './palette'
 import type { DiffLine } from '../core/operations'
+import { simulatedPhoneChrome } from './webChrome'
 
 export { Icon, type IconName } from './icons'
 export { type } from './palette'
@@ -84,7 +85,7 @@ export function InlineCode({ children }: { children: React.ReactNode }) {
 
 /* ───────────── 屏幕与导航 ───────────── */
 
-/** 顶部安全区 + 背景。web 预览额外模拟 54pt 状态栏高度（与设计稿一致）。 */
+/** 顶部安全区 + 背景。开发用的网页预览额外模拟 54pt 状态栏高度（与设计稿一致）。 */
 export function ScreenView({
   children,
   background,
@@ -96,7 +97,7 @@ export function ScreenView({
       edges={['top', 'left', 'right']}
       style={[
         { flex: 1, backgroundColor: background ?? colors.bg },
-        Platform.OS === 'web' && { paddingTop: 54 },
+        simulatedPhoneChrome && { paddingTop: 54 },
         style,
       ]}
     >
@@ -1337,6 +1338,40 @@ export function Callout({
   )
 }
 
+/**
+ * 顶栏下方的一句短提示（几秒后由调用方清掉），用在点完按钮、界面上原本什么都不会变的时候。
+ * 不挡触摸；读屏会念出来。
+ */
+export function Toast({ text, top }: { text: string; top: number }) {
+  const colors = useColors()
+  useEffect(() => {
+    if (text) AccessibilityInfo.announceForAccessibility(text)
+  }, [text])
+  if (!text) return null
+  return (
+    <View pointerEvents="none" style={{ position: 'absolute', top, left: 16, right: 16, alignItems: 'center', zIndex: 20 }}>
+      <View
+        accessibilityLiveRegion="polite"
+        style={{
+          minHeight: 40,
+          paddingLeft: 12,
+          paddingRight: 16,
+          paddingVertical: 9,
+          borderRadius: 20,
+          backgroundColor: colors.btn,
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 8,
+          boxShadow: '0 6px 20px rgba(20,19,17,0.18)',
+        }}
+      >
+        <Icon name="check" size={16} color={colors.btnInk} strokeWidth={2.6} />
+        <Text style={{ flexShrink: 1, fontSize: 14, lineHeight: 20, fontWeight: '500', color: colors.btnInk }}>{text}</Text>
+      </View>
+    </View>
+  )
+}
+
 /** 行内错误：同一错误只在一处出现。 */
 export function InlineError({ text, style }: { text?: string; style?: StyleProp<ViewStyle> }) {
   if (!text) return null
@@ -1886,7 +1921,7 @@ export function PageSheet({
         edges={Platform.OS === 'ios' ? ['left', 'right'] : ['top', 'left', 'right']}
         style={[
           { flex: 1, backgroundColor: background ?? colors.bg },
-          Platform.OS === 'web' && { paddingTop: 54 },
+          simulatedPhoneChrome && { paddingTop: 54 },
         ]}
       >
         <View style={{ height: 56, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16 }}>

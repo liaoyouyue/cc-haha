@@ -3,6 +3,7 @@ import {
   addressPlaceholder,
   connectionBlocker,
   formFootnote,
+  initialStage,
   modeForAddress,
   needsToken,
   primaryTitle,
@@ -16,6 +17,18 @@ const lanQr =
   'http://192.168.1.10:3456/?serverUrl=http%3A%2F%2F192.168.1.10%3A3456&h5Token=fake-lan'
 
 describe('manual connect mode', () => {
+  test.each(['https://workstation-fixture.trycloudflare.com', 'https://phone.fixture.example:8443'])('a Cloudflare QR switches mode without asking for a LAN token: %s', origin => {
+    const link = `${origin}/remote#pair=fake-secret`
+    expect(receivedConnection(link)).toEqual({ address: link, name: new URL(origin).hostname, mode: 'remote' })
+    expect(modeForAddress(link, 'lan')).toBe('remote')
+    expect(needsToken('remote', link)).toBe(false)
+    expect(shouldMaskAddress(link)).toBe(true)
+    expect(connectionBlocker('remote', link)).toBe('')
+    expect(formFootnote('remote', link)).toContain('快速连接或固定域名')
+    expect(formFootnote('remote', link)).toContain('再在电脑上批准')
+    expect(formFootnote('remote', link)).toContain('重建后，请重新扫码')
+    expect(formFootnote('remote', link)).not.toContain('Tailscale')
+  })
   test('a pasted #pair= link switches to public and a LAN QR switches back', () => {
     expect(modeForAddress(pairLink, 'lan')).toBe('remote')
     expect(modeForAddress(lanQr, 'remote')).toBe('lan')
@@ -59,12 +72,12 @@ describe('manual connect fields', () => {
 
   test('footnote, placeholder and primary action follow the scenario', () => {
     expect(formFootnote('lan', '')).toBe(
-      '手机和电脑要在同一个网络。令牌在电脑的「设置 → H5 访问」里。'
+      '手机和电脑要在同一个网络。令牌在电脑的「设置 → 手机连接」里。'
     )
     expect(formFootnote('lan', lanQr)).toContain('二维码已包含局域网凭据')
-    expect(formFootnote('remote', pairLink)).toContain('请求电脑授权')
+    expect(formFootnote('remote', pairLink)).toContain('再在电脑上批准')
     expect(addressPlaceholder('lan')).toBe('http://192.168.1.10:3456')
-    expect(addressPlaceholder('remote')).toBe('https://…/remote#pair=…')
+    expect(addressPlaceholder('remote')).toBe('https://xxxx.trycloudflare.com/remote#pair=…')
     expect(primaryTitle('lan')).toBe('连接')
     expect(primaryTitle('remote')).toBe('请求电脑授权')
   })
@@ -73,7 +86,7 @@ describe('manual connect fields', () => {
     expect(connectionBlocker('remote', 'http://192.168.1.10:3456')).toContain(
       '这是局域网地址'
     )
-    expect(connectionBlocker('lan', pairLink)).toContain('这是公网配对链接')
+    expect(connectionBlocker('lan', pairLink)).toContain('这是远程配对链接')
     expect(connectionBlocker('lan', 'http://192.168.1.10:3456')).toBe('')
     expect(connectionBlocker('remote', pairLink)).toBe('')
     // Unparseable input is left to connectHost so its own message is shown once.
@@ -81,7 +94,18 @@ describe('manual connect fields', () => {
   })
 
   test('the approval page shows the public domain', () => {
-    expect(remoteBadge(pairLink)).toBe('公网 · cc.example.com')
-    expect(remoteBadge('')).toBe('公网')
+    expect(remoteBadge(pairLink)).toBe('远程 · cc.example.com')
+    expect(remoteBadge('')).toBe('远程连接')
+  })
+})
+
+describe('connect entry stage', () => {
+  test('mode=manual opens the manual form directly, anything else starts at the scanner', () => {
+    expect(initialStage('manual')).toBe('form')
+    expect(initialStage(['manual'])).toBe('form')
+    expect(initialStage(undefined)).toBe('scan')
+    expect(initialStage('')).toBe('scan')
+    expect(initialStage('scan')).toBe('scan')
+    expect(initialStage(['scan', 'manual'])).toBe('scan')
   })
 })
