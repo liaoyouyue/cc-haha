@@ -369,12 +369,23 @@ export function ContextUsageDetails({
       labels={labels}
     />
   ) : (
-    <div className={variant === 'sheet'
-      ? 'mt-4 rounded-[var(--radius-md)] bg-[var(--color-surface-container)] p-4 text-[13px] leading-6 text-[var(--color-text-secondary)]'
-      : 'mt-3 text-[13px] leading-6 text-[var(--color-text-secondary)]'
-    }>
-      {statusMessage}
-    </div>
+    <>
+      {sessionStats && (
+        // Lifetime token/usage numbers come from the usage API, not the context
+        // snapshot: a session whose context read failed can still answer "how
+        // fast, how much, how cached" honestly, so the stat grid renders here
+        // rather than disappearing with the unavailable context body.
+        <div className={variant === 'sheet' ? 'mt-4' : 'mt-3'}>
+          <SessionStatGrid stats={sessionStats} labels={labels} density={variant === 'sheet' ? 'comfortable' : 'compact'} />
+        </div>
+      )}
+      <div className={variant === 'sheet'
+        ? 'mt-4 rounded-[var(--radius-md)] bg-[var(--color-surface-container)] p-4 text-[13px] leading-6 text-[var(--color-text-secondary)]'
+        : 'mt-3 text-[13px] leading-6 text-[var(--color-text-secondary)]'
+      }>
+        {statusMessage}
+      </div>
+    </>
   )
 
   if (variant === 'sheet') {
