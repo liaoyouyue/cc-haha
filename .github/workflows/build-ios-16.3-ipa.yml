@@ -1,0 +1,93 @@
+name: Build iOS 16.3 IPA (unsigned, ldid)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 120
+    concurrency:
+      group: ios-ipa-build
+      cancel-in-progress: false
+
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.1.app/Contents/Developer
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: build/ios-16.3-jailbreak
+          path: repo
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install CocoaPods
+        run: |
+          gem install cocoapods --no-document || sudo gem install cocoapods --no-document
+          pod --version
+
+      - name: Install ldid
+        run: |
+          brew install ldid || true
+          which ldid && ldid 2>&1 | head -1 || true
+
+      - name: Install dependencies
+        working-directory: repo/mobile
+        run: |
+          bun install --frozen-lockfile
+
+      - name: Generate native iOS project
+        working-directory: repo/mobile
+        run: |
+          npx expo prebuild --platform ios --no-install --clean
+
+      - name: Build unsigned .app
+        working-directory: repo/mobile
+        run: |
+          xcodebuild \
+            -workspace ios/cc-haha.xcworkspace \
+            -scheme cc-haha \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build/derived \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            DEVELOPMENT_TEAM="" \
+            build
+
+      - name: ldid sign app binary
+        working-directory: repo/mobile
+        run: |
+          APP_PATH=$(find build/derived/Build/Products -name '*.app' -maxdepth 3 | head -1)
+          echo "APP_PATH=$APP_PATH" >> $GITHUB_ENV
+          echo "Found app: $APP_PATH"
+          # ldid-sign all Mach-O binaries in the bundle
+          find "$APP_PATH" -type f -perm +111 -exec ldid -S {} \; 2>/dev/null || \
+          find "$APP_PATH" -type f -exec file {} \; | grep Mach-O | cut -d: -f1 | while read f; do ldid -S "$f"; done
+          ldid -S "$APP_PATH/cc-haha" 2>/dev/null || true
+
+      - name: Package IPA
+        working-directory: repo/mobile
+        run: |
+          APP_PATH="${{ env.APP_PATH }}"
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          zip -r -y cc-haha-ios-16.3.ipa Payload
+          ls -la cc-haha-ios-16.3.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cc-haha-ios-16.3-ipa
+          path: repo/mobile/cc-haha-ios-16.3.ipa
+          if-no-files-found: error
