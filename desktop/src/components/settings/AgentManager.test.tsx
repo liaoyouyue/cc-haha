@@ -46,7 +46,6 @@ vi.mock('../markdown/MarkdownRenderer', () => ({
 
 import type { AgentDefinition, AgentListResponse } from '../../api/agents'
 import { useAgentStore } from '../../stores/agentStore'
-import { useProviderStore } from '../../stores/providerStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { AgentManager } from './AgentManager'
@@ -123,55 +122,6 @@ function chooseAgentModel(option: string | RegExp) {
   fireEvent.click(within(picker).getByRole('button', { name: option }))
 }
 
-/** The effort track's stops, in order, as the user sees them. */
-function openAgentEffort() {
-  fireEvent.click(screen.getByRole('button', { name: /^Reasoning effort:/ }))
-  const popover = screen.getByTestId('reasoning-effort-popover')
-  return within(popover).getAllByTestId('reasoning-effort-stop').map((stop) => stop.getAttribute('title'))
-}
-
-function chooseAgentEffort(option: string) {
-  const stops = openAgentEffort()
-  const slider = screen.getByRole('slider', { name: 'Reasoning effort' })
-  const target = stops.indexOf(option)
-  expect(target).toBeGreaterThanOrEqual(0)
-  const current = Number(slider.getAttribute('aria-valuenow'))
-  for (let step = 0; step < Math.abs(target - current); step++) {
-    fireEvent.keyDown(slider, { key: target > current ? 'ArrowRight' : 'ArrowLeft' })
-  }
-  fireEvent.keyDown(slider, { key: 'Escape' })
-}
-
-const SAVED_PROVIDERS = [
-  {
-    id: 'custom-provider',
-    presetId: 'custom',
-    name: 'Custom Provider',
-    apiKey: '',
-    baseUrl: 'https://custom.example/anthropic',
-    apiFormat: 'anthropic' as const,
-    models: { main: 'provider/custom-model', haiku: 'provider/custom-model', sonnet: 'provider/custom-model', opus: 'provider/custom-model' },
-  },
-  {
-    id: 'deepseek-direct',
-    presetId: 'deepseek',
-    name: 'DeepSeek',
-    apiKey: '',
-    baseUrl: 'https://api.deepseek.example/anthropic',
-    apiFormat: 'anthropic' as const,
-    models: { main: 'deepseek-v4-pro', haiku: 'deepseek-v4-flash', sonnet: 'deepseek-v4-pro', opus: 'deepseek-v4-pro' },
-  },
-  {
-    id: 'zhipu',
-    presetId: 'zhipuglm',
-    name: 'Zhipu',
-    apiKey: '',
-    baseUrl: 'https://open.bigmodel.example/api/anthropic',
-    apiFormat: 'anthropic' as const,
-    models: { main: 'glm-5.3', haiku: 'glm-5.3', sonnet: 'glm-5.3', opus: 'glm-5.3' },
-  },
-]
-
 describe('AgentManager', () => {
   beforeEach(() => {
     vi.resetAllMocks()
@@ -210,12 +160,6 @@ describe('AgentManager', () => {
       ],
     })
     setProjectSession('/workspace/project')
-    useProviderStore.setState({
-      providers: SAVED_PROVIDERS,
-      activeId: 'custom-provider',
-      hasLoadedProviders: true,
-      isLoading: false,
-    })
     useAgentStore.setState({
       activeAgents: [],
       allAgents: [],
@@ -363,8 +307,8 @@ describe('AgentManager', () => {
     fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: 'code_reviewer' } })
     fireEvent.change(screen.getByLabelText(/^Description/), { target: { value: 'Review code' } })
     fireEvent.change(screen.getByLabelText('System prompt'), { target: { value: 'Review carefully.' } })
-    chooseAgentModel(/provider\/custom-model/)
-    chooseAgentEffort('X-High')
+    chooseAgentModel(/Provider Custom/)
+    chooseAgentSelect('Reasoning effort', 'xhigh')
     chooseAgentSelect('Tools', 'Custom list')
     fireEvent.click(screen.getByRole('checkbox', { name: /Read/ }))
     fireEvent.change(screen.getByLabelText('Other tool names or permission patterns'), {
@@ -380,7 +324,6 @@ describe('AgentManager', () => {
       description: 'Review code',
       systemPrompt: 'Review carefully.',
       model: 'provider/custom-model',
-      provider: 'custom-provider',
       effort: 'xhigh',
       tools: ['Read', 'Agent(worker, researcher)'],
       color: 'purple',
@@ -531,7 +474,7 @@ describe('AgentManager', () => {
     await waitFor(() => expect(apiListMock).toHaveBeenCalledTimes(1))
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
     chooseAgentModel(/Inherit from parent/)
-    chooseAgentEffort('Inherit')
+    chooseAgentSelect('Reasoning effort', 'Inherit from parent')
     chooseAgentSelect('Tools', 'All tools')
     chooseAgentSelect('Color', 'Default')
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
@@ -544,90 +487,11 @@ describe('AgentManager', () => {
       description: 'Review code',
       systemPrompt: 'Review carefully.',
       model: null,
-      provider: null,
       effort: null,
       tools: null,
       color: null,
     }))
     expect(screen.getAllByText('Inherit').length).toBeGreaterThanOrEqual(2)
-  })
-
-  it('pins an Agent to a saved provider and offers only the effort levels its model accepts', async () => {
-    const agent = makeAgent({ model: 'opus', effort: undefined })
-    apiListMock.mockResolvedValue({ activeAgents: [agent], allAgents: [agent] })
-    apiUpdateMock.mockResolvedValue({ agent })
-    useAgentStore.setState({ selectedAgent: agent, activeAgents: [agent], allAgents: [agent] })
-
-    render(<AgentManager />)
-    await waitFor(() => expect(apiListMock).toHaveBeenCalledTimes(1))
-    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
-
-    fireEvent.click(screen.getByRole('button', { name: 'Model' }))
-    const picker = screen.getByTestId('model-selector-dropdown')
-    // Session rows first, then each saved provider; account sign-ins never appear.
-    expect(within(picker).getByText('Session provider')).toBeInTheDocument()
-    expect(within(picker).getByText('DeepSeek')).toBeInTheDocument()
-    fireEvent.click(within(picker).getByRole('button', { name: /glm-5\.3/ }))
-    expect(screen.getByRole('button', { name: 'Model' })).toHaveAccessibleName('Model')
-    expect(screen.getByTitle('Zhipu · glm-5.3')).toBeInTheDocument()
-
-    expect(openAgentEffort()).toEqual(['Inherit', 'Low', 'High', 'Max'])
-    fireEvent.keyDown(screen.getByRole('slider', { name: 'Reasoning effort' }), { key: 'Escape' })
-    chooseAgentEffort('Max')
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-
-    await waitFor(() => expect(apiUpdateMock).toHaveBeenCalledWith(
-      'code_reviewer',
-      expect.objectContaining({ model: 'glm-5.3', provider: 'zhipu', effort: 'max' }),
-    ))
-    expect(screen.queryByTestId('reasoning-effort-popover')).not.toBeInTheDocument()
-  })
-
-  it('still offers the session provider\'s own models without pinning a provider', async () => {
-    const agent = makeAgent({ model: 'opus', effort: undefined })
-    apiListMock.mockResolvedValue({ activeAgents: [agent], allAgents: [agent] })
-    apiUpdateMock.mockResolvedValue({ agent })
-    useAgentStore.setState({ selectedAgent: agent, activeAgents: [agent], allAgents: [agent] })
-
-    render(<AgentManager />)
-    await waitFor(() => expect(apiListMock).toHaveBeenCalledTimes(1))
-    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
-    // Account sign-ins have no saved provider group; their listing stays here.
-    chooseAgentModel(/Provider Custom.*Current provider model/)
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-
-    await waitFor(() => expect(apiUpdateMock).toHaveBeenCalledWith(
-      'code_reviewer',
-      expect.objectContaining({ model: 'provider/custom-model', provider: null }),
-    ))
-  })
-
-  it('warns that a project Agent\'s pinned provider exists only on this computer', async () => {
-    await renderManager()
-    fireEvent.click(screen.getByRole('button', { name: 'Create Agent' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Project' }))
-    expect(screen.queryByText(/exists only on this computer/)).not.toBeInTheDocument()
-    chooseAgentModel(/deepseek-v4-flash/)
-    expect(screen.getByText(/exists only on this computer/)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'User' }))
-    expect(screen.queryByText(/exists only on this computer/)).not.toBeInTheDocument()
-  })
-
-  it('keeps a deleted provider choice visible instead of falling back to another provider', async () => {
-    const agent = makeAgent({ model: 'gone-model', provider: 'deleted-provider', providerName: undefined })
-    apiListMock.mockResolvedValue({ activeAgents: [agent], allAgents: [agent] })
-    useAgentStore.setState({ selectedAgent: agent, activeAgents: [agent], allAgents: [agent] })
-
-    render(<AgentManager />)
-    await waitFor(() => expect(apiListMock).toHaveBeenCalledTimes(1))
-    // The profile names the pinned provider even after it was removed.
-    expect(screen.getByText(/gone-model · deleted-provider/)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
-
-    expect(screen.getByTitle('deleted-provider · gone-model')).toBeInTheDocument()
-    expect(screen.getByRole('status')).toHaveTextContent('no longer exists')
-    chooseAgentModel(/Inherit from parent/)
-    expect(screen.queryByText(/no longer exists/)).not.toBeInTheDocument()
   })
 
   it('preserves a saved model ID that the current provider no longer lists', async () => {
@@ -714,7 +578,7 @@ describe('AgentManager', () => {
     render(<AgentManager />)
     await waitFor(() => expect(apiListMock).toHaveBeenCalledTimes(1))
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
-    expect(screen.getByRole('button', { name: 'Reasoning effort: 7' })).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: 'Reasoning effort' })).toHaveValue('7')
     fireEvent.change(screen.getByLabelText(/^Description/), { target: { value: 'Updated review' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
@@ -735,7 +599,7 @@ describe('AgentManager', () => {
     const prompt = screen.getByLabelText('System prompt')
     expect(prompt).toHaveValue('')
     expect(prompt.parentElement).not.toHaveTextContent('System prompt*')
-    chooseAgentEffort('High')
+    chooseAgentSelect('Reasoning effort', 'high')
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() => expect(apiUpdateMock).toHaveBeenCalled())
@@ -990,15 +854,9 @@ describe('AgentManager', () => {
     fireEvent.click(
       screen.getByRole('button', { name: 'Adjust the model and effort for Explore' }),
     )
-    chooseAgentModel(/deepseek-v4-pro/)
+    chooseAgentModel(/DeepSeek V4 Pro/)
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
-    await waitFor(() => expect(apiSetOverrideMock).toHaveBeenCalledWith('Explore', {
-      cwd: '/workspace/project',
-      model: 'deepseek-v4-pro',
-      provider: 'deepseek-direct',
-      effort: null,
-    }))
     await waitFor(() => expect(apiReloadMock).toHaveBeenCalledWith('running-session'))
     expect(apiReloadMock).not.toHaveBeenCalledWith('stale-session')
     await waitFor(() => expect(useAgentStore.getState()).toMatchObject({
@@ -1041,8 +899,7 @@ describe('AgentManager', () => {
     expect(within(modelPicker).getByRole('button', { name: /Inherit from parent/ })).toBeInTheDocument()
     fireEvent.click(within(modelPicker).getByRole('button', { name: /Built-in default \(haiku\)/ }))
 
-    expect(screen.getByRole('button', { name: 'Reasoning effort: Built-in default' })).toBeInTheDocument()
-    chooseAgentEffort('High')
+    chooseAgentSelect('Reasoning effort', 'high')
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     // `null`, never the literal 'haiku': writing today's default into
@@ -1050,7 +907,6 @@ describe('AgentManager', () => {
     await waitFor(() => expect(apiSetOverrideMock).toHaveBeenCalledWith('Explore', {
       cwd: '/workspace/project',
       model: null,
-      provider: null,
       effort: 'high',
     }))
   })
@@ -1070,7 +926,6 @@ describe('AgentManager', () => {
     await waitFor(() => expect(apiSetOverrideMock).toHaveBeenCalledWith('Explore', {
       cwd: '/workspace/project',
       model: 'inherit',
-      provider: null,
       effort: null,
     }))
   })
@@ -1115,7 +970,7 @@ describe('AgentManager', () => {
     await screen.findByRole('option', { name: 'Provider B' })
 
     expect(screen.getByRole('button', { name: 'Model' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: /^Reasoning effort:/ })).toBeDisabled()
+    expect(screen.getByRole('combobox', { name: 'Reasoning effort' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
     // Resetting would write to the user file, which cannot win over a policy.
     expect(screen.queryByRole('button', { name: 'Reset to built-in default' })).toBeNull()
