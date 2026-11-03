@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { isolateModelDefaultsEnv } from '../../testUtils/modelEnv.js'
 import { getContextWindowForModel, modelSupports1M } from '../context.js'
+
+isolateModelDefaultsEnv()
 import { computeSimpleEnvInfo } from '../../constants/prompts.js'
 import { SKILL_MODEL_VARS } from '../../skills/bundled/claudeApiContent.js'
 import { sanitizeModelName } from '../commitAttribution.js'

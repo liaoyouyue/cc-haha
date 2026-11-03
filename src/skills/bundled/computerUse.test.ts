@@ -1,4 +1,7 @@
 import { describe, expect, test } from 'bun:test'
+import { isolateModelDefaultsEnv } from '../../testUtils/modelEnv.js'
+
+isolateModelDefaultsEnv()
 
 import { getBundledSkills } from '../bundledSkills.js'
 import { buildPlatformComputerUseTools } from '../../vendor/computer-use-mcp/mcpServer.js'

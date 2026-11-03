@@ -3,7 +3,10 @@ import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { createSandboxedTestEnvironment } from '../../../scripts/pr/test-environment.js'
+import { isolateModelDefaultsEnv } from '../../testUtils/modelEnv.js'
 import { GROK_OAUTH_DUMMY_KEY } from '../grokAuth/fetch.js'
+
+isolateModelDefaultsEnv()
 
 mock.module('src/utils/http.js', () => ({
   getAuthHeaders: mock(() => ({})),

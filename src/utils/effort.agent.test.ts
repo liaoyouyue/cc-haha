@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { isolateModelDefaultsEnv } from '../testUtils/modelEnv.js'
 import {
   EFFORT_LEVELS,
   getEffortLevelDescription,

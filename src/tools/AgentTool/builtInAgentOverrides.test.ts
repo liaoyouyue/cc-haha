@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
+import { isolateModelDefaultsEnv } from '../../testUtils/modelEnv.js'
 import { EFFORT_LEVELS } from '../../utils/effort.js'
+
+isolateModelDefaultsEnv()
 import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
 import { SettingsSchema } from '../../utils/settings/types.js'
 
