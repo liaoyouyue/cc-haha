@@ -213,6 +213,7 @@ import {
   isToolSearchEnabled,
 } from "src/utils/toolSearch.js";
 import { API_MAX_MEDIA_PER_REQUEST } from "../../constants/apiLimits.js";
+import { prepareRequestImages } from "./requestImages.js";
 import { ADVISOR_BETA_HEADER } from "../../constants/betas.js";
 import {
   formatDeferredToolLine,
@@ -1506,6 +1507,10 @@ async function* queryModel(
   messagesForAPI = await normalizeImagesForAPI(messagesForAPI, {
     countDocuments: provider === 'bedrock' || provider === 'vertex',
   })
+
+  // Replace image bytes that cannot be an image: a block that is not an image
+  // survives the normalizer above and would fail every later turn.
+  messagesForAPI = await prepareRequestImages(messagesForAPI);
 
   // A model that recently refused images and then accepted the same request
   // without them gets placeholders up front instead of failing first.
