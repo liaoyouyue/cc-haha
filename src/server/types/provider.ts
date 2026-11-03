@@ -146,6 +146,24 @@ export const ProviderProxyConfigSchema = z.object({
 })
 export type ProviderProxyConfig = z.infer<typeof ProviderProxyConfigSchema>
 
+/**
+ * RFC 9110 field-name token. A header name with a stray space or an embedded
+ * newline would otherwise only surface as a `fetch` TypeError on every request
+ * at runtime, so it is rejected when the record is created or updated instead.
+ */
+export const UPSTREAM_HEADER_NAME_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/
+
+/**
+ * User-configured upstream headers for a provider (issue #1509). Merged over the
+ * preset's own headers with user values winning; credentials, framing headers,
+ * and newline-injected values are dropped later by `resolveUpstreamHeaders`, so
+ * the schema only enforces the name shape.
+ */
+export const UpstreamHeadersSchema = z.record(
+  z.string().regex(UPSTREAM_HEADER_NAME_RE, 'must be a valid HTTP header name'),
+  z.string(),
+)
+
 export const SavedProviderSchema = z.object({
   id: z.string(),
   presetId: z.string(),
@@ -164,6 +182,8 @@ export const SavedProviderSchema = z.object({
   disableExperimentalBetas: DisableExperimentalBetasSchema.optional(),
   supportsNestedToolResultMedia: SupportsNestedToolResultMediaSchema.optional(),
   requestCompatibility: RequestCompatibilitySchema.optional(),
+  /** User-configured upstream headers (issue #1509); see UpstreamHeadersSchema. */
+  upstreamHeaders: UpstreamHeadersSchema.optional(),
   imageGeneration: ImageGenerationConfigSchema.optional(),
   proxy: ProviderProxyConfigSchema.optional(),
   notes: z.string().optional(),
@@ -194,6 +214,7 @@ export const CreateProviderSchema = z.object({
   disableExperimentalBetas: DisableExperimentalBetasSchema.optional(),
   supportsNestedToolResultMedia: SupportsNestedToolResultMediaSchema.optional(),
   requestCompatibility: RequestCompatibilitySchema.optional(),
+  upstreamHeaders: UpstreamHeadersSchema.optional(),
   imageGeneration: ImageGenerationConfigSchema.optional(),
   proxy: ProviderProxyConfigSchema.optional(),
   notes: z.string().optional(),
@@ -215,6 +236,7 @@ export const UpdateProviderSchema = z.object({
   disableExperimentalBetas: DisableExperimentalBetasSchema.optional(),
   supportsNestedToolResultMedia: SupportsNestedToolResultMediaSchema.optional(),
   requestCompatibility: RequestCompatibilitySchema.nullable().optional(),
+  upstreamHeaders: UpstreamHeadersSchema.nullable().optional(),
   imageGeneration: ImageGenerationConfigSchema.nullable().optional(),
   proxy: ProviderProxyConfigSchema.nullable().optional(),
   notes: z.string().optional(),
@@ -235,6 +257,11 @@ export const TestProviderSchema = z.object({
    */
   presetId: z.string().optional(),
   proxy: ProviderProxyConfigSchema.optional(),
+  /**
+   * User-configured upstream headers for the unsaved config, merged over the
+   * preset's headers exactly as the proxy would for a saved provider.
+   */
+  upstreamHeaders: UpstreamHeadersSchema.optional(),
 })
 
 export const ReorderProvidersSchema = z.object({

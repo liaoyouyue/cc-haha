@@ -177,6 +177,7 @@ function buildSavedProvider(input: CreateProviderInput): SavedProvider {
     ...(input.disableExperimentalBetas === true && { disableExperimentalBetas: true }),
     ...(input.supportsNestedToolResultMedia !== undefined && { supportsNestedToolResultMedia: input.supportsNestedToolResultMedia }),
     ...(input.requestCompatibility !== undefined && { requestCompatibility: input.requestCompatibility }),
+    ...(input.upstreamHeaders !== undefined && { upstreamHeaders: input.upstreamHeaders }),
     ...(imageGeneration !== undefined && { imageGeneration }),
     ...(input.proxy !== undefined && { proxy: input.proxy }),
     ...(input.notes !== undefined && { notes: input.notes }),
@@ -428,6 +429,7 @@ export class ProviderService {
       ...(input.toolSearchEnabled !== undefined && { toolSearchEnabled: input.toolSearchEnabled }),
       ...(input.supportsNestedToolResultMedia !== undefined && { supportsNestedToolResultMedia: input.supportsNestedToolResultMedia }),
       ...(input.requestCompatibility !== undefined && input.requestCompatibility !== null && { requestCompatibility: input.requestCompatibility }),
+      ...(input.upstreamHeaders !== undefined && input.upstreamHeaders !== null && { upstreamHeaders: input.upstreamHeaders }),
       ...(input.disableExperimentalBetas === true && { disableExperimentalBetas: true }),
       ...(imageGeneration !== undefined && imageGeneration !== null && { imageGeneration }),
       ...(input.proxy !== undefined && input.proxy !== null && { proxy: input.proxy }),
@@ -450,6 +452,9 @@ export class ProviderService {
     }
     if (input.requestCompatibility === null) {
       delete updated.requestCompatibility
+    }
+    if (input.upstreamHeaders === null) {
+      delete updated.upstreamHeaders
     }
     if (input.disableExperimentalBetas === false) {
       delete updated.disableExperimentalBetas
@@ -825,7 +830,7 @@ export class ProviderService {
         supportsNestedToolResultMedia: provider.supportsNestedToolResultMedia ?? true,
         authStrategy: provider.authStrategy ?? getPresetAuthStrategy(provider.presetId),
         modelApiFormats: getPresetModelApiFormats(provider.presetId),
-        upstreamHeaders: getPresetUpstreamHeaders(provider.presetId),
+        upstreamHeaders: mergeProviderUpstreamHeaders(provider),
         ...(provider.requestCompatibility !== undefined && { requestCompatibility: provider.requestCompatibility }),
         ...(provider.proxy !== undefined && { proxy: provider.proxy }),
       }
@@ -896,6 +901,7 @@ export class ProviderService {
       proxy: provider.proxy,
       supportsNestedToolResultMedia: provider.supportsNestedToolResultMedia,
       requestCompatibility: provider.requestCompatibility,
+      ...(provider.upstreamHeaders !== undefined && { upstreamHeaders: provider.upstreamHeaders }),
     })
   }
 
@@ -907,11 +913,13 @@ export class ProviderService {
 
     // The unsaved-config test has no saved provider to read a preset from, so the
     // caller passes its presetId and the server resolves the same rules the proxy
-    // would. Keeps the probe honest without accepting rule data over HTTP.
+    // would; any user-configured headers are merged over them exactly as the
+    // proxy merges them for a saved provider. Keeps the probe honest without
+    // accepting rule data over HTTP.
     const presetId = input.presetId ?? ''
     const modelApiFormats = presetId ? getPresetModelApiFormats(presetId) : []
     const upstreamHeaders = resolveUpstreamHeaders(
-      presetId ? getPresetUpstreamHeaders(presetId) : {},
+      { ...(presetId ? getPresetUpstreamHeaders(presetId) : {}), ...input.upstreamHeaders },
       { sessionId: connectivityProbeSessionId() },
     )
     // Same resolution the proxy performs, so the probe reaches what production
@@ -1114,6 +1122,20 @@ export class ProviderService {
 }
 
 // ─── Helpers ───────────────────────────────────────────────
+
+/**
+ * The upstream header templates a provider's proxied requests carry: the
+ * preset's own headers overlaid with the user's saved ones, user values winning
+ * on a name collision (issue #1509). The merge happens on the raw templates so
+ * `resolveUpstreamHeaders` applies its blocked-header, placeholder, and newline
+ * guards to both sources identically.
+ */
+function mergeProviderUpstreamHeaders(provider: Pick<SavedProvider, 'presetId' | 'upstreamHeaders'>): Record<string, string> {
+  return {
+    ...getPresetUpstreamHeaders(provider.presetId),
+    ...provider.upstreamHeaders,
+  }
+}
 
 /**
  * A connectivity probe is not part of a conversation, but gateways that bind the

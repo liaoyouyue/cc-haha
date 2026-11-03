@@ -78,6 +78,8 @@ export type SavedProvider = {
   disableExperimentalBetas?: boolean
   supportsNestedToolResultMedia?: boolean
   requestCompatibility?: RequestCompatibility
+  /** User-configured upstream headers, merged over the preset's with user values winning. */
+  upstreamHeaders?: Record<string, string>
   imageGeneration?: ImageGenerationConfig
   proxy?: ProviderProxyConfig
   notes?: string
@@ -100,6 +102,7 @@ export type CreateProviderInput = {
   disableExperimentalBetas?: boolean
   supportsNestedToolResultMedia?: boolean
   requestCompatibility?: RequestCompatibility
+  upstreamHeaders?: Record<string, string>
   imageGeneration?: ImageGenerationConfig
   proxy?: ProviderProxyConfig
   notes?: string
@@ -121,6 +124,7 @@ export type UpdateProviderInput = {
   disableExperimentalBetas?: boolean
   supportsNestedToolResultMedia?: boolean
   requestCompatibility?: RequestCompatibility | null
+  upstreamHeaders?: Record<string, string> | null
   imageGeneration?: ImageGenerationConfig | null
   proxy?: ProviderProxyConfig | null
   notes?: string
@@ -134,6 +138,7 @@ export type TestProviderConfigInput = {
   apiFormat?: ApiFormat
   supportsNestedToolResultMedia?: boolean
   requestCompatibility?: RequestCompatibility
+  upstreamHeaders?: Record<string, string>
   /**
    * Per-provider proxy override typed on the test payload so an unsaved form
    * probes with the same routing the saved provider would use.
