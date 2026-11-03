@@ -12,7 +12,7 @@ jobs:
       cancel-in-progress: false
 
     env:
-      DEVELOPER_DIR: /Applications/Xcode_16.1.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_26.1.1.app/Contents/Developer
 
     steps:
       - name: Checkout
@@ -61,7 +61,7 @@ jobs:
           # Find and modify the Xcode project file
           for f in $(find ios -name "project.pbxproj" 2>/dev/null); do
             echo "Modifying: $f"
-            sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = 16.4;/IPHONEOS_DEPLOYMENT_TARGET = 16.3;/g' "$f"
+            sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = 16.4/IPHONEOS_DEPLOYMENT_TARGET = 16.3/g' "$f"
           done
           echo "=== Done ==="
 
@@ -71,7 +71,8 @@ jobs:
           echo "=== iOS directory ==="
           ls -la ios/
           # Find workspace and scheme
-          WORKSPACE=$(find ios -name "*.xcworkspace" -type d | head -1)
+          WORKSPACE=$(find ios -maxdepth 1 -name "*.xcworkspace" -type d | head -1)
+          [ -z "$WORKSPACE" ] && WORKSPACE=$(find ios -name "*.xcworkspace" -type d | grep -v project.xcworkspace | head -1)
           SCHEME=$(find ios -name "*.xcodeproj" -type d | head -1 | xargs basename | sed 's/.xcodeproj$//')
           echo "Workspace: $WORKSPACE"
           echo "Scheme: $SCHEME"
