@@ -122,7 +122,7 @@ export function normalizeConfiguredModelLimits(
   return limits
 }
 
-function normalizeConfiguredContextWindows(parsed: unknown): Record<string, number> {
+export function normalizeConfiguredContextWindows(parsed: unknown): Record<string, number> {
   return normalizeConfiguredModelLimits(parsed, MODEL_CONTEXT_WINDOW_MIN, MODEL_CONTEXT_WINDOW_MAX)
 }
 

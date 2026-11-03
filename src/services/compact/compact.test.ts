@@ -6,7 +6,6 @@ import {
   createPostCompactDeltaAttachments,
   findLastAssistantWithText,
   getCompactForkMaxOutputTokens,
-  shouldAdoptCompactionResponse,
   streamCompactSummary,
   stripImagesFromMessages,
   truncateHeadForPTLRetry,

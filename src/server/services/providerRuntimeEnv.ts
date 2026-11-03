@@ -10,7 +10,7 @@ import {
   MODEL_CONTEXT_WINDOWS_ENV_KEY,
   MODEL_MAX_OUTPUT_TOKENS_ENV_KEY,
   findConfiguredModelLimit,
-  normalizeConfiguredModelLimits,
+  normalizeConfiguredContextWindows,
 } from '../../utils/model/modelContextWindows.js'
 import { PROVIDER_MAX_OUTPUT_TOKENS_ENV_KEY } from '../../utils/managedEnvConstants.js'
 import {
@@ -547,7 +547,7 @@ export function readUserModelContextWindows(configDir: string): Record<string, n
   try {
     const settings = JSON.parse(fs.readFileSync(path.join(configDir, 'settings.json'), 'utf-8'))
     const raw = settings?.env?.[MODEL_CONTEXT_WINDOWS_ENV_KEY]
-    return typeof raw === 'string' ? normalizeConfiguredModelLimits(JSON.parse(raw)) : {}
+    return typeof raw === 'string' ? normalizeConfiguredContextWindows(JSON.parse(raw)) : {}
   } catch {
     return {}
   }
@@ -563,8 +563,8 @@ function applyUserModelContextWindows(
     // 用户配置与宿主生成的 cc-haha/settings.json 分离，避免旧快照反过来覆盖供应商配置。
     const overrides = readUserModelContextWindows(configDir)
     if (Object.keys(overrides).length === 0) return env
-    const defaults = normalizeConfiguredModelLimits(JSON.parse(env[MODEL_CONTEXT_WINDOWS_ENV_KEY] ?? '{}'))
-    const providerOverrides = normalizeConfiguredModelLimits(providerWindows)
+    const defaults = normalizeConfiguredContextWindows(JSON.parse(env[MODEL_CONTEXT_WINDOWS_ENV_KEY] ?? '{}'))
+    const providerOverrides = normalizeConfiguredContextWindows(providerWindows)
     const windows = { ...defaults, ...overrides, ...providerOverrides }
     // 先按配置层选择窗口，再展开完整模型名；不能让低优先级的精确键压过高优先级的基础名。
     for (const model of Object.keys(windows)) {

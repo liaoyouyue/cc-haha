@@ -385,25 +385,6 @@ function stripStaleUsageFromPreservedMessages(messages: Message[]): Message[] {
 export { findLastAssistantWithText }
 
 /**
- * Streaming counterpart of {@link findLastAssistantWithText}: decide whether an
- * incoming assistant message may become the compaction response seen so far.
- * A blank message can only claim an empty slot, never displace a real summary,
- * while API errors always win so a failure is not masked by older text (#1451).
- *
- * Deliberately asymmetric: the first message is always adopted, blank included.
- * A stream that never says anything still has to terminate as a response so the
- * caller reaches its own incomplete-response handling, instead of burning the
- * whole retry budget re-requesting a summary that is not coming.
- */
-export function shouldAdoptCompactionResponse(
-  current: AssistantMessage | undefined,
-  next: AssistantMessage,
-): boolean {
-  if (current === undefined) return true
-  return next.isApiErrorMessage === true || getAssistantMessageText(next) !== null
-}
-
-/**
  * Build the base post-compact messages array from a CompactionResult.
  * This ensures consistent ordering across all compaction paths.
  * Order: boundaryMarker, summaryMessages, messagesToKeep, attachments, hookResults
