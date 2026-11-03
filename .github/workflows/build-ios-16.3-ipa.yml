@@ -49,8 +49,8 @@ jobs:
       - name: Bypass expo-build-properties version check
         working-directory: repo/mobile
         run: |
-          # Comment out ios.deploymentTarget validation in expo-build-properties
-          sed -i '' '/name: '\''ios.deploymentTarget'\'',/,/}/s/^/        \/\//g' node_modules/expo-build-properties/build/pluginConfig.js
+          # Remove ios.deploymentTarget from checkItems array
+          sed -i '' '/name: '\''ios.deploymentTarget'\'',/,/}/d' node_modules/expo-build-properties/build/pluginConfig.js
 
       - name: Generate native iOS project
         working-directory: repo/mobile
