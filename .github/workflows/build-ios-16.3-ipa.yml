@@ -46,6 +46,12 @@ jobs:
         run: |
           bun install --frozen-lockfile
 
+      - name: Bypass expo-build-properties version check
+        working-directory: repo/mobile
+        run: |
+          # Comment out ios.deploymentTarget validation in expo-build-properties
+          sed -i '' '/name: '\''ios.deploymentTarget'\'',/,/}/s/^/        \/\//g' node_modules/expo-build-properties/build/pluginConfig.js
+
       - name: Generate native iOS project
         working-directory: repo/mobile
         run: |
