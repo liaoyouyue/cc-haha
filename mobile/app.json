@@ -66,16 +66,6 @@
       "./plugins/withPinnedWebSockets",
       "expo-sharing",
       [
-        "expo-widgets",
-        {
-          "bundleIdentifier": "com.yunce.cchaha.mobile.widgets",
-          "groupIdentifier": "group.com.yunce.cchaha.mobile",
-          "enablePushNotifications": true,
-          "frequentUpdates": false,
-          "widgets": []
-        }
-      ],
-      [
         "expo-notifications",
         {
           "defaultChannel": "cc-haha",
