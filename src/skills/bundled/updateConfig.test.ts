@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
+import { toJSONSchema } from 'zod/v4'
 
 import type { ToolUseContext } from '../../Tool.js'
 import { SettingsSchema } from '../../utils/settings/types.js'
@@ -76,6 +77,19 @@ describe('bundled update-config skill', () => {
     // would add additionalProperties: false here and narrow the prompt.
     expect(schema.properties.fileSuggestion).not.toHaveProperty('additionalProperties')
     expect(schema.properties.fileSuggestion.properties?.command).toEqual({ type: 'string' })
+  })
+
+  test('embeds the input-mode schema, not the parsed output schema', async () => {
+    const embedded = extractSettingsSchema(
+      await invokeUpdateConfig('set DEBUG=true'),
+    )
+
+    expect(embedded).toEqual(
+      toJSONSchema(SettingsSchema(), {
+        io: 'input',
+        unrepresentable: 'any',
+      }),
+    )
   })
 
   test('an invocation without arguments still returns the complete prompt', async () => {
