@@ -54,7 +54,13 @@ jobs:
       - name: Lower iOS deployment target in Xcode project
         working-directory: repo/mobile
         run: |
-          sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = 16.4;/IPHONEOS_DEPLOYMENT_TARGET = 16.3;/g' ios/cc-haha.xcodeproj/project.pbxproj
+          echo "=== iOS directory structure ==="
+          find ios -type f -name "*.pbxproj" 2>/dev/null | head -5
+          # Find and modify the Xcode project file
+          for f in $(find ios -name "project.pbxproj" 2>/dev/null); do
+            echo "Modifying: $f"
+            sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = 16.4;/IPHONEOS_DEPLOYMENT_TARGET = 16.3;/g' "$f"
+          done
 
       - name: Build unsigned .app
         working-directory: repo/mobile
