@@ -68,9 +68,16 @@ jobs:
       - name: Build unsigned .app
         working-directory: repo/mobile
         run: |
+          echo "=== iOS directory ==="
+          ls -la ios/
+          # Find workspace and scheme
+          WORKSPACE=$(find ios -name "*.xcworkspace" -type d | head -1)
+          SCHEME=$(find ios -name "*.xcodeproj" -type d | head -1 | xargs basename | sed 's/.xcodeproj$//')
+          echo "Workspace: $WORKSPACE"
+          echo "Scheme: $SCHEME"
           xcodebuild \
-            -workspace ios/cc-haha.xcworkspace \
-            -scheme cc-haha \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
             -configuration Release \
             -sdk iphoneos \
             -derivedDataPath build/derived \
