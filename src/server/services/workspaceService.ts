@@ -240,6 +240,8 @@ type GitCommandResult = {
   stdout: string
   stderr: string
   code: number
+  /** git never produced an exit status (missing binary, killed by timeout) */
+  failedToRun?: boolean
 }
 
 type DiffStatsResult =
@@ -1763,8 +1765,7 @@ export class WorkspaceService {
     const rootResult = await this.runGit(workDir, ['rev-parse', '--show-toplevel'])
 
     if (rootResult.code !== 0) {
-      const stderr = rootResult.stderr.trim()
-      if (stderr.includes('not a git repository')) {
+      if (await this.isNotAGitRepository(workDir, rootResult)) {
         return { kind: 'not_git_repo' }
       }
       return {
@@ -2053,6 +2054,26 @@ export class WorkspaceService {
     return { kind: 'ok', diff: result.stdout }
   }
 
+  /**
+   * Whether a failed `rev-parse --show-toplevel` means "there is no repository
+   * here", decided by exit status rather than by git's message. A translated
+   * git (e.g. zh_CN locale) does not print the English `not a git repository`
+   * text, so the message-based check reported every localized install as an
+   * `error`. `rev-parse --is-inside-work-tree` exits 0 inside any repository
+   * and non-zero outside one, so the two cases separate without reading a
+   * message. A git that never produced an exit status (missing binary,
+   * timeout) proves nothing and stays an `error`.
+   */
+  private async isNotAGitRepository(
+    dir: string,
+    firstAttempt: GitCommandResult,
+  ): Promise<boolean> {
+    if (firstAttempt.failedToRun) return false
+    const probe = await this.runGit(dir, ['rev-parse', '--is-inside-work-tree'])
+    if (probe.failedToRun) return false
+    return probe.code !== 0
+  }
+
   private async runGit(
     workDir: string,
     args: string[],
@@ -2092,6 +2113,10 @@ export class WorkspaceService {
               ? err.stderr.toString('utf8')
               : '',
         code: typeof err.code === 'number' ? err.code : 1,
+        // A string errno (ENOENT/...) or a timeout kill means git never
+        // produced an exit status, so it proves nothing about the repo.
+        failedToRun:
+          typeof err.code === 'string' || err.killed === true,
       }
     }
   }

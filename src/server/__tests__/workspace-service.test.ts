@@ -692,6 +692,7 @@ describe('WorkspaceService', () => {
         stdout: string
         stderr: string
         code: number
+        failedToRun?: boolean
       }>
     }
 
@@ -701,6 +702,9 @@ describe('WorkspaceService', () => {
       }
       if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
         return { stdout: 'main\n', stderr: '', code: 0 }
+      }
+      if (args[0] === 'rev-parse' && args[1] === '--is-inside-work-tree') {
+        return { stdout: 'true\n', stderr: '', code: 0 }
       }
       if (args[0] === 'status') {
         return { stdout: '', stderr: 'fatal: synthetic git failure', code: 1 }
@@ -739,6 +743,9 @@ describe('WorkspaceService', () => {
       }
       if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
         return { stdout: 'main\n', stderr: '', code: 0 }
+      }
+      if (args[0] === 'rev-parse' && args[1] === '--is-inside-work-tree') {
+        return { stdout: 'true\n', stderr: '', code: 0 }
       }
       if (args[0] === 'status') {
         return { stdout: ' M a.txt\0 M b.txt\0', stderr: '', code: 0 }
