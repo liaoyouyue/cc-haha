@@ -65,6 +65,7 @@ import { MEMORY_TYPE_VALUES } from '../../utils/memory/types.js'
 import {
   createCompactBoundaryMessage,
   createUserMessage,
+  findLastAssistantWithText,
   getAssistantMessageText,
   getMessagesAfterCompactBoundary,
   isCompactBoundaryMessage,
@@ -374,6 +375,32 @@ function stripStaleUsageFromPreservedMessages(messages: Message[]): Message[] {
       },
     }
   })
+}
+
+/**
+ * Moved to utils/messages.ts (#1468) so AgentTool, forkedAgent, Stop hooks and
+ * the swarm runner share one implementation; re-exported to keep the compaction
+ * import surface stable.
+ */
+export { findLastAssistantWithText }
+
+/**
+ * Streaming counterpart of {@link findLastAssistantWithText}: decide whether an
+ * incoming assistant message may become the compaction response seen so far.
+ * A blank message can only claim an empty slot, never displace a real summary,
+ * while API errors always win so a failure is not masked by older text (#1451).
+ *
+ * Deliberately asymmetric: the first message is always adopted, blank included.
+ * A stream that never says anything still has to terminate as a response so the
+ * caller reaches its own incomplete-response handling, instead of burning the
+ * whole retry budget re-requesting a summary that is not coming.
+ */
+export function shouldAdoptCompactionResponse(
+  current: AssistantMessage | undefined,
+  next: AssistantMessage,
+): boolean {
+  if (current === undefined) return true
+  return next.isApiErrorMessage === true || getAssistantMessageText(next) !== null
 }
 
 /**
@@ -1205,7 +1232,17 @@ function selectCompactSummaryResponse(
     block => block.type !== 'text' || block.text.trim() !== '',
   )) return next
   if (current.isApiErrorMessage) return current
-  if (current.message.id !== next.message.id || current.requestId !== next.requestId) return next
+  const currentHasText = current.message.content.some(
+    block => block.type !== 'text' || block.text.trim() !== '',
+  )
+  // A blank message must never displace a real summary, even when it arrives as
+  // a separate message (a fork yields one assistant message per content block,
+  // each with its own message id). The one exception is a truncated response:
+  // an empty continuation there means the retry produced nothing, so the blank
+  // replaces the partial text and the caller sees an incomplete summary.
+  if (!currentHasText) return next
+  if (current.message.stop_reason === 'max_tokens') return next
+  if (current.message.id !== next.message.id || current.requestId !== next.requestId) return current
   // message_delta updates only the last block. Keep its terminal metadata with
   // the selected text, without changing the fork's messages or transcript.
   return { ...current, message: { ...next.message, content: current.message.content } }

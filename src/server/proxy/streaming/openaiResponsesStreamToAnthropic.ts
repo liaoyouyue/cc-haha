@@ -356,9 +356,13 @@ function processEvent(
     case 'response.output_text.delta':
     case 'response.refusal.delta': {
       const delta = typeof data.delta === 'string' ? data.delta : ''
-      // Some relays send empty deltas as heartbeats under a separate text
-      // index. Allocating that block would leave an empty assistant after the
-      // real text when the terminal event closes the remaining blocks (#1451).
+      // Relays keep idle connections warm with empty text deltas. Opening a block
+      // for one emits content_block_start with no content, and the block only
+      // closes at the terminal event — so it lands as the last assistant message
+      // and downstream compaction reads the real summary as absent (#1451).
+      // Check before ensureTextBlock: indexByKey memoizes the allocation, so a
+      // block opened here would be reused by the next real delta without ever
+      // having been announced downstream.
       if (!delta) break
       const index = ensureTextBlock(data, state, controller, encoder)
       if (!state.openIndices.has(index)) throw new Error('OpenAI Responses text delta arrived after block completion')
