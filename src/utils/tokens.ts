@@ -52,6 +52,36 @@ export function getTokenCountFromUsage(usage: Usage): number {
   )
 }
 
+/**
+ * Output tokens one API response reports — what the engine actually generated.
+ *
+ * This is the basis the UI means by "usage" for an agent run, the same one the
+ * thinking badge uses: work produced, not context held. Input and cache tokens
+ * describe what was *already* in the window, so counting them made a run's
+ * number grow with how much it had read rather than how much it wrote, and made
+ * two runs of very different length look similar.
+ */
+export function getOutputTokenCountFromUsage(usage: Usage): number {
+  return safeUsageTokenCount(usage.output_tokens)
+}
+
+/**
+ * Thinking tokens one API response reports, or `undefined` when the engine did
+ * not measure them.
+ *
+ * On a reasoning model most of `output_tokens` is deliberation, so a run that
+ * shows only the output total cannot be read: a 12k run may be a 3k answer or a
+ * 3k answer with 9k of thinking, and the two mean different things to whoever is
+ * paying for them. The field is not in the SDK usage type, hence the cast; an
+ * absent value stays `undefined` rather than becoming 0, because "no thinking"
+ * and "we did not look" are different claims.
+ */
+export function getReasoningTokenCountFromUsage(usage: Usage): number | undefined {
+  const raw = (usage as unknown as { reasoning_tokens?: unknown }).reasoning_tokens
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0) return undefined
+  return raw
+}
+
 function safeUsageTokenCount(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0
     ? value

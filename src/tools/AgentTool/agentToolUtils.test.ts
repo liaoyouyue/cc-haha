@@ -536,3 +536,46 @@ describe('finalizeAgentTool content selection', () => {
     expect(result.content).toEqual([{ type: 'text', text: '' }])
   })
 })
+
+describe('finalizeAgentTool usage basis', () => {
+  const metadata = {
+    prompt: 'write an article',
+    resolvedAgentModel: 'test-model',
+    isBuiltInAgent: false,
+    startTime: 0,
+    agentType: 'general-purpose',
+    isAsync: false,
+  }
+
+  // The number is shown as the run's "usage", which means work the engine
+  // generated. Input and cache tokens describe what was already in the window;
+  // counting them made a run's number track how much it had read. Summing over
+  // turns matters too: taking only the last turn dropped every earlier turn's
+  // output, understating a two-turn agent by a wide margin.
+  test('counts output tokens summed over turns, ignoring input and cache', () => {
+    const messages = [
+      createAssistantMessage({
+        content: 'first turn',
+        usage: {
+          input_tokens: 1000,
+          cache_read_input_tokens: 5000,
+          cache_creation_input_tokens: 200,
+          output_tokens: 300,
+        },
+      }),
+      createAssistantMessage({
+        content: 'second turn',
+        usage: {
+          input_tokens: 4000,
+          cache_read_input_tokens: 9000,
+          cache_creation_input_tokens: 0,
+          output_tokens: 700,
+        },
+      }),
+    ] as Message[]
+
+    const result = finalizeAgentTool(messages, 'agent-1', metadata)
+
+    expect(result.totalTokens).toBe(1000)
+  })
+})

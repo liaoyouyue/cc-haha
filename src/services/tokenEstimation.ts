@@ -459,6 +459,40 @@ function roughTokenCountEstimationForBlock(
   return roughTokenCountEstimation(jsonStringify(block))
 }
 
+/**
+ * Thinking tokens estimated from an assistant message's own blocks.
+ *
+ * Stands in for the engine's reasoning count when it reports none, so the split
+ * between deliberation and answer stays available on any endpoint rather than
+ * only the ones that measure it. Only the thinking blocks are counted: the text
+ * and tool input the same message produced belong to the output total, not to
+ * this side of it, and adding them here would double them.
+ *
+ * Returns 0 when there is nothing to estimate, which the caller reads as "this
+ * turn did not think" — the same reading a reported zero would get.
+ */
+export function roughTokenCountEstimationForThinking(
+  content:
+    | string
+    | Array<Anthropic.ContentBlock>
+    | Array<Anthropic.ContentBlockParam>
+    | undefined,
+): number {
+  if (!content || typeof content === 'string') {
+    return 0
+  }
+  let totalTokens = 0
+  for (const block of content) {
+    if (typeof block === 'string') {
+      continue
+    }
+    if (block.type === 'thinking' || block.type === 'redacted_thinking') {
+      totalTokens += roughTokenCountEstimationForBlock(block)
+    }
+  }
+  return totalTokens
+}
+
 async function countTokensWithBedrock({
   model,
   messages,
