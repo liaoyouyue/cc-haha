@@ -103,7 +103,7 @@ function normalizeModelLimit(value: unknown, min: number, max: number): number |
   return value
 }
 
-function normalizeConfiguredModelLimits(
+export function normalizeConfiguredModelLimits(
   parsed: unknown,
   min: number,
   max: number,
@@ -126,7 +126,7 @@ function normalizeConfiguredContextWindows(parsed: unknown): Record<string, numb
   return normalizeConfiguredModelLimits(parsed, MODEL_CONTEXT_WINDOW_MIN, MODEL_CONTEXT_WINDOW_MAX)
 }
 
-function findConfiguredModelLimit(
+export function findConfiguredModelLimit(
   model: string,
   configured: Record<string, number>,
 ): number | undefined {
