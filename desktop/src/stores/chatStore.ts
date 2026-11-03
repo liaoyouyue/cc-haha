@@ -7654,11 +7654,13 @@ function pushAssistantHistoryText(
   model?: string,
   transcriptMessageId?: string,
   stableId?: string,
+  allowMerge = true,
 ): void {
   if (!content.trim()) return
 
   const last = messages[messages.length - 1]
   const canMergeIntoLast =
+    allowMerge &&
     last?.type === 'assistant_text' &&
     (
       transcriptMessageId
@@ -8252,6 +8254,27 @@ export function reconstructAgentNotifications(messages: MessageEntry[]): Record<
   return notifications
 }
 
+function latestHistoryRecords(messages: MessageEntry[]): MessageEntry[] {
+  const records: MessageEntry[] = []
+  const positions = new Map<string, number>()
+  for (const message of messages) {
+    // Compaction can append an existing UUID again. Keep its latest snapshot
+    // at its first position, without changing the durable transcript. Child
+    // transcripts can be projected under different parent tools, so those
+    // projections retain their own identities.
+    const identity = message.id
+      ? JSON.stringify([message.parentToolUseId ?? null, message.id])
+      : undefined
+    const position = identity === undefined ? undefined : positions.get(identity)
+    if (position !== undefined) records[position] = message
+    else {
+      if (identity !== undefined) positions.set(identity, records.length)
+      records.push(message)
+    }
+  }
+  return records
+}
+
 export function mapHistoryMessagesToUiMessages(
   messages: MessageEntry[],
   options?: HistoryMappingOptions,
@@ -8260,7 +8283,8 @@ export function mapHistoryMessagesToUiMessages(
   const uiMessages: UIMessage[] = []
   let pendingGoalCommand: { name: string; args: string } | null = null
 
-  for (const msg of messages) {
+  for (const msg of latestHistoryRecords(messages)) {
+    const messageId = msg.id || nextId()
     // A task notification is a system-injected prompt: the background task
     // cards already stand for it. What the assistant does in the turn that
     // answers it (thinking, text, tool calls) is ordinary transcript content
@@ -8270,7 +8294,7 @@ export function mapHistoryMessagesToUiMessages(
       const commandDisplayText = getCommandMetadataDisplayText(msg.content)
       if (commandDisplayText) {
         uiMessages.push({
-          id: msg.id || nextId(),
+          id: messageId,
           type: 'user_text',
           content: commandDisplayText,
           ...(msg.id ? { transcriptMessageId: msg.id } : {}),
@@ -8290,7 +8314,7 @@ export function mapHistoryMessagesToUiMessages(
       (msg.content as { subtype?: unknown }).subtype === 'generation_stopped'
     ) {
       uiMessages.push({
-        id: msg.id || nextId(),
+        id: messageId,
         type: 'system',
         content: t('chat.generationStopped'),
         generationStopped: true,
@@ -8333,7 +8357,7 @@ export function mapHistoryMessagesToUiMessages(
         pendingGoalCommand = localCommand
         if (localCommand.name === 'goal') {
           uiMessages.push({
-            id: msg.id || nextId(),
+            id: messageId,
             type: 'user_text',
             content: formatVisibleLocalCommand(localCommand),
             timestamp,
@@ -8348,7 +8372,7 @@ export function mapHistoryMessagesToUiMessages(
         pendingGoalCommand = null
         if (goalEvent) {
           uiMessages.push({
-            id: msg.id || nextId(),
+            id: messageId,
             type: 'goal_event',
             ...goalEvent,
             timestamp,
@@ -8384,7 +8408,7 @@ export function mapHistoryMessagesToUiMessages(
         if (teammateMessages.length === 0) continue
         const sender = teammateMessages[0]!.from
         uiMessages.push({
-          id: msg.id || nextId(),
+          id: messageId,
           type: 'user_text',
           content: teammateMessages.map((message) => message.content).join('\n\n'),
           // Preserve envelope occurrences for member-send reconciliation. A
@@ -8399,7 +8423,7 @@ export function mapHistoryMessagesToUiMessages(
       const parsed = extractRestoredUserDisplay(msg.content)
       const references = normalizeSessionReferences(msg.sessionReferences ?? parsed.sessionReferences)
       uiMessages.push({
-        id: msg.id || nextId(),
+        id: messageId,
         type: 'user_text',
         content: parsed.content,
         ...(references.length ? { sessionReferences: references } : {}),
@@ -8415,7 +8439,7 @@ export function mapHistoryMessagesToUiMessages(
     if (msg.type === 'assistant' && typeof msg.content === 'string') {
       if (!msg.content.trim()) continue
       uiMessages.push({
-        id: msg.id || nextId(),
+        id: messageId,
         type: 'assistant_text',
         content: msg.content,
         ...(msg.id ? { transcriptMessageId: msg.id } : {}),
@@ -8425,8 +8449,9 @@ export function mapHistoryMessagesToUiMessages(
       continue
     }
     if ((msg.type === 'assistant' || msg.type === 'tool_use') && Array.isArray(msg.content)) {
+      const recordStartIndex = uiMessages.length
       for (const [blockIndex, block] of (msg.content as AssistantHistoryBlock[]).entries()) {
-        if (block.type === 'thinking' && block.thinking) pushAssistantHistoryThinking(uiMessages, `${msg.id}-block-${blockIndex}`, block.thinking, timestamp)
+        if (block.type === 'thinking' && block.thinking) pushAssistantHistoryThinking(uiMessages, `${messageId}-block-${blockIndex}`, block.thinking, timestamp)
         else if (block.type === 'text' && block.text) {
           pushAssistantHistoryText(
             uiMessages,
@@ -8434,10 +8459,11 @@ export function mapHistoryMessagesToUiMessages(
             timestamp,
             msg.model,
             msg.id || undefined,
-            msg.id ? `${msg.id}-block-${blockIndex}` : undefined,
+            `${messageId}-block-${blockIndex}`,
+            uiMessages.length > recordStartIndex,
           )
         }
-        else if (block.type === 'tool_use') uiMessages.push({ id: `${msg.id}-block-${blockIndex}`, type: 'tool_use', toolName: block.name ?? 'unknown', toolUseId: block.id ?? '', originalToolUseId: block.original_tool_use_id, input: block.input, timestamp, parentToolUseId: msg.parentToolUseId })
+        else if (block.type === 'tool_use') uiMessages.push({ id: `${messageId}-block-${blockIndex}`, type: 'tool_use', toolName: block.name ?? 'unknown', toolUseId: block.id ?? '', originalToolUseId: block.original_tool_use_id, input: block.input, timestamp, parentToolUseId: msg.parentToolUseId })
       }
       continue
     }
@@ -8468,7 +8494,7 @@ export function mapHistoryMessagesToUiMessages(
         else if (block.type === 'image') attachments.push(normalizeHistoryImageAttachment(block))
         else if (block.type === 'file') attachments.push({ type: 'file', name: block.name || 'file' })
         else if (block.type === 'tool_result') uiMessages.push({
-          id: `${msg.id}-block-${blockIndex}`,
+          id: `${messageId}-block-${blockIndex}`,
           type: 'tool_result',
           toolUseId: block.tool_use_id ?? '',
           originalToolUseId: block.original_tool_use_id,
@@ -8499,7 +8525,7 @@ export function mapHistoryMessagesToUiMessages(
         const modelContent = visualSelectionDisplay || modelText !== visibleText ? modelText : parsed.modelContent
         const allAttachments = [...(parsed.attachments ?? []), ...attachments]
         uiMessages.push({
-          id: msg.id || nextId(),
+          id: messageId,
           type: 'user_text',
           content: userContent,
           ...(validScheduledTaskTrigger(msg.scheduledTask) ? { scheduledTask: msg.scheduledTask } : {}),
@@ -8518,7 +8544,7 @@ export function mapHistoryMessagesToUiMessages(
         const files = normalizeMemoryEventFiles(msg.content)
         if (files.length > 0) {
           uiMessages.push({
-            id: msg.id || nextId(),
+            id: messageId,
             type: 'memory_event',
             event: 'saved',
             files,
