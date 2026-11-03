@@ -1,6 +1,8 @@
 import { sanitizeRetryDiagnosticText } from '../../services/api/errorUtils.js'
 import { closeSideChatsForParent, getSideChat, isSideChatId, SIDE_CHAT_BOUNDARY } from './sideChatRegistry.js'
 import { migrationMaintenance, waitForMigrationExit } from '../migrationMaintenance.js'
+import { powerActivityClock } from './powerActivityClock.js'
+import { SDKPromptSuggestionActivityMessageSchema } from '../../entrypoints/sdk/coreSchemas.js'
 /**
  * ConversationService — CLI subprocess manager
  *
@@ -182,6 +184,12 @@ type SendMessageOptions = {
   canSend?: () => boolean
   messageUuid?: string
   onCommitted?: () => void
+  /**
+   * Server-generated input the user did not type (team runtime notices). The
+   * CLI then does not treat the turn as user-started, so it skips per-turn
+   * extras such as next-prompt suggestions.
+   */
+  synthetic?: boolean
 }
 
 type HandleSdkPayloadOptions = {
@@ -318,6 +326,10 @@ type SessionProcess = {
   pendingPermissionRequests: Map<string, TrackedPermissionRequest>
   autoResolvedRequestIds?: Set<string>
   pendingControlRequests: Map<string, (reason: Error) => void>
+  /** Last value sent with `set_prompt_suggestions`; the CLI starts disabled. */
+  promptSuggestionsEnabled?: boolean
+  promptSuggestionGenerations?: Set<string>
+  promptSuggestionExited?: boolean
 }
 
 export type PendingPermissionRequest = {
@@ -403,6 +415,10 @@ export class ConversationService {
   private deletedSessions = new Set<string>()
   private providerService = new ProviderService()
   private pendingPermissionModeChanges = new Map<string, Map<string, number>>()
+  private promptSuggestionClientSessions = new Set<string>()
+  private promptSuggestionsSettingEnabled = false
+  // Retired runtimes keep ownership until their actual process exits.
+  private promptSuggestionWorkOwners = new Set<SessionProcess>()
   private readonly processDeps: ConversationServiceProcessDeps
 
   constructor(processDeps: ConversationServiceProcessDeps = {}) {
@@ -608,6 +624,7 @@ export class ConversationService {
     options?: SessionStartOptions,
     repository?: PreparedSessionWorkspace['repository'],
     agentProfile: 'standard' | 'lean' = 'standard',
+    additionalDirectories: readonly string[] = [],
   ): string[] {
     const side = getSideChat(sessionId)
     const dangerousMode = process.env.CLAUDE_DANGEROUS_MODE === '1'
@@ -641,7 +658,9 @@ export class ConversationService {
         '--agent-name', options.teamWorker.name,
         '--team-name', options.teamWorker.teamName,
         '--parent-session-id', options.teamWorker.parentSessionId,
-        '--agents', JSON.stringify({ [options.teamWorker.name]: { ...options.teamWorker.agentDefinition, description: 'Approved team member', prompt: options.teamWorker.systemPrompt, model: options?.model, tools: options.teamWorker.tools } }),
+        // The member process already runs on its approved provider; a preset's
+        // pinned provider must not reroute the member's own model again.
+        '--agents', JSON.stringify({ [options.teamWorker.name]: { ...options.teamWorker.agentDefinition, description: 'Approved team member', prompt: options.teamWorker.systemPrompt, model: options?.model, provider: undefined, tools: options.teamWorker.tools } }),
         '--agent', options.teamWorker.name,
         ...(Array.isArray(options.teamWorker.agentDefinition?.disallowedTools) && options.teamWorker.agentDefinition.disallowedTools.length
           ? ['--disallowedTools', options.teamWorker.agentDefinition.disallowedTools.join(',')]
@@ -654,6 +673,7 @@ export class ConversationService {
           : []),
       ] : []),
       ...worktreeArgs,
+      ...additionalDirectories.flatMap(directory => ['--add-dir', directory]),
       '--replay-user-messages',
       ...this.getRuntimeArgs(options),
       ...this.getPermissionArgs(options?.permissionMode, dangerousMode),
@@ -674,6 +694,8 @@ export class ConversationService {
       )
     }
     if (this.sessions.has(sessionId)) return
+    // Re-read so an edit made outside the settings API applies to new CLIs.
+    this.promptSuggestionsSettingEnabled = await new SettingsService().getNextPromptSuggestionsEnabled()
 
     const side = getSideChat(sessionId)
     if (isSideChatId(sessionId) && (!side || side.closed || side.started)) {
@@ -683,6 +705,9 @@ export class ConversationService {
       throw new ConversationStartupError('Agent teams are unavailable in lean sessions', 'LEAN_CAPABILITY_UNAVAILABLE')
     }
     const launchInfo = options?.teamWorker ? null : await sessionService.getSessionLaunchInfo(sessionId)
+    const additionalDirectories = (options?.teamWorker
+      ? (await sessionService.getSessionLaunchInfo(options.teamWorker.parentSessionId))?.additionalDirectories
+      : launchInfo?.additionalDirectories) ?? []
     if (launchInfo?.agentProfile === 'lean' && (options?.permissionMode ?? launchInfo.permissionMode) === 'plan') {
       throw new ConversationStartupError('Plan mode is unavailable in lean sessions. Choose another permission mode before continuing.', 'LEAN_CAPABILITY_UNAVAILABLE')
     }
@@ -772,6 +797,7 @@ export class ConversationService {
       options,
       launchRepository,
       launchInfo?.agentProfile ?? 'standard',
+      additionalDirectories,
     )
 
     console.log(
@@ -917,6 +943,7 @@ export class ConversationService {
       pendingControlRequests: new Map(),
     }
     this.sessions.set(sessionId, session)
+    this.syncPromptSuggestions(sessionId)
 
     session.outputDrain = Promise.all([
       this.readProcessOutputStream(sessionId, proc.stdout, 'stdout'),
@@ -997,6 +1024,7 @@ export class ConversationService {
       const metadataWorkDir = this.getSessionWorkDir(sessionId) || launchWorkDir
       await sessionService.appendSessionMetadata(sessionId, {
         workDir: metadataWorkDir,
+        additionalDirectories,
         customTitle: launchInfo?.customTitle ?? null,
         repository: launchRepository,
         permissionMode: options?.permissionMode || launchInfo?.permissionMode,
@@ -1085,6 +1113,7 @@ export class ConversationService {
       },
       parent_tool_use_id: null,
       session_id: '',
+      ...(options?.synthetic ? { isSynthetic: true } : {}),
     })
     if (sent) options?.onCommitted?.()
     return sent
@@ -1194,7 +1223,7 @@ export class ConversationService {
     const pendingRequest = session?.pendingPermissionRequests.get(requestId)
     this.clearAutoAnswerWait(pendingRequest)
     if (session) {
-      session.pendingPermissionRequests.delete(requestId)
+      if (session.pendingPermissionRequests.delete(requestId)) powerActivityClock.changed()
     }
 
     return this.sendSdkMessage(sessionId, {
@@ -1350,6 +1379,40 @@ export class ConversationService {
         subtype: 'set_max_thinking_tokens',
         max_thinking_tokens: maxThinkingTokens,
       },
+    })
+  }
+
+  /**
+   * Next-prompt suggestions cost one extra model request per turn, so the CLI
+   * only generates them while the user setting is on and a client that can
+   * show them (the desktop composer) is watching the session. IM adapters,
+   * the phone app and team workers never trigger the extra request.
+   */
+  setPromptSuggestionClientPresent(sessionId: string, present: boolean): void {
+    if (present) this.promptSuggestionClientSessions.add(sessionId)
+    else this.promptSuggestionClientSessions.delete(sessionId)
+    this.syncPromptSuggestions(sessionId)
+  }
+
+  async refreshPromptSuggestionsSetting(): Promise<void> {
+    this.promptSuggestionsSettingEnabled = await new SettingsService().getNextPromptSuggestionsEnabled()
+    for (const sessionId of this.sessions.keys()) {
+      this.syncPromptSuggestions(sessionId)
+    }
+  }
+
+  private syncPromptSuggestions(sessionId: string): void {
+    const session = this.sessions.get(sessionId)
+    if (!session) return
+    const enabled = this.promptSuggestionsSettingEnabled &&
+      !session.teamWorker &&
+      this.promptSuggestionClientSessions.has(sessionId)
+    if ((session.promptSuggestionsEnabled ?? false) === enabled) return
+    session.promptSuggestionsEnabled = enabled
+    this.sendSdkMessage(sessionId, {
+      type: 'control_request',
+      request_id: crypto.randomUUID(),
+      request: { subtype: 'set_prompt_suggestions', enabled },
     })
   }
 
@@ -1656,6 +1719,13 @@ export class ConversationService {
       try {
         const msg = JSON.parse(line)
         if (this.isReplayedSdkMessage(session, msg)) continue
+        if (msg?.type === 'system' && msg.subtype === 'prompt_suggestion_activity') {
+          const activity = SDKPromptSuggestionActivityMessageSchema().safeParse(msg)
+          if (activity.success) {
+            this.trackPromptSuggestionActivity(session, activity.data.generation_id, activity.data.active)
+          }
+          continue
+        }
         if (
           msg?.type === 'system' &&
           msg.subtype === 'api_retry' &&
@@ -1738,6 +1808,7 @@ export class ConversationService {
           }
           this.clearAutoAnswerWait(session.pendingPermissionRequests.get(msg.request_id))
           session.pendingPermissionRequests.set(msg.request_id, request)
+          powerActivityClock.changed()
           void this.scheduleAutoQuestionAnswer(sessionId, session, msg.request_id, request)
         }
         if (
@@ -1745,14 +1816,14 @@ export class ConversationService {
           typeof msg.request_id === 'string'
         ) {
           this.clearAutoAnswerWait(session.pendingPermissionRequests.get(msg.request_id))
-          session.pendingPermissionRequests.delete(msg.request_id)
+          if (session.pendingPermissionRequests.delete(msg.request_id)) powerActivityClock.changed()
         }
         if (
           msg?.type === 'control_response' &&
           typeof msg.response?.request_id === 'string'
         ) {
           this.clearAutoAnswerWait(session.pendingPermissionRequests.get(msg.response.request_id))
-          session.pendingPermissionRequests.delete(msg.response.request_id)
+          if (session.pendingPermissionRequests.delete(msg.response.request_id)) powerActivityClock.changed()
         }
         if (session.teamWorker && msg?.type === 'control_request' && msg.request?.subtype === 'can_use_tool') {
           const parent = this.sessions.get(session.teamWorker.parentSessionId)
@@ -1767,6 +1838,33 @@ export class ConversationService {
         )
       }
     }
+  }
+
+  hasPromptSuggestionPowerActivity(): boolean {
+    return this.promptSuggestionWorkOwners.size > 0
+  }
+
+  private trackPromptSuggestionActivity(session: SessionProcess, generationId: string, active: boolean): void {
+    if (session.promptSuggestionExited || session.proc.exitCode != null) return
+    if (!session.promptSuggestionGenerations) {
+      if (!active) return
+      session.promptSuggestionGenerations = new Set()
+      void session.proc.exited.then(() => {
+        session.promptSuggestionExited = true
+        session.promptSuggestionGenerations?.clear()
+        if (this.promptSuggestionWorkOwners.delete(session)) powerActivityClock.changed()
+      }, () => {})
+    }
+    const generations = session.promptSuggestionGenerations
+    if (active) {
+      if (generations.has(generationId)) return
+      generations.add(generationId)
+      this.promptSuggestionWorkOwners.add(session)
+    } else {
+      if (!generations.delete(generationId)) return
+      if (generations.size === 0) this.promptSuggestionWorkOwners.delete(session)
+    }
+    powerActivityClock.changed()
   }
 
   private notifyOutputCallbacks(
@@ -2050,6 +2148,8 @@ export class ConversationService {
   getActiveSessions(): string[] {
     return Array.from(this.sessions.keys())
   }
+
+  hasPendingTeamStops(): boolean { return this.teamStopOperations.size > 0 }
 
   getProcessIds(): number[] {
     return [...this.sessions.values()].map(session => session.proc.pid).filter(pid => pid > 0)

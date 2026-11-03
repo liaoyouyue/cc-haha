@@ -1,3 +1,5 @@
+import { DesktopUiPreferencesService } from './desktopUiPreferencesService.js'
+import { validateProjectAdditionalDirectories } from './projectDirectories.js'
 /**
  * CronScheduler — Execution engine for scheduled tasks
  *
@@ -16,6 +18,7 @@ import * as crypto from 'crypto'
 import { isBlankFileContent } from './blankFileContent.js'
 import { CronService, type CronTask } from './cronService.js'
 import { getScheduledSessionTaskExecutor } from './scheduledTaskExecution.js'
+import { powerActivityClock } from './powerActivityClock.js'
 import { nextScheduledTime } from './scheduledTaskSchedule.js'
 import { claimScheduledTaskReceipt, finishScheduledTaskReceipt, readScheduledTaskReceipts, pruneScheduledTaskReceipts, isReceiptOwnerAlive, scheduledTaskReceiptsDir, type ScheduledTaskReceipt } from './scheduledTaskReceipts.js'
 import { SessionService } from './sessionService.js'
@@ -557,9 +560,10 @@ export class CronScheduler {
   private intervalId: Timer | null = null
   private sessionTasks = new Map<string, AbortController>()
   private sessionTaskPromises = new Set<Promise<TaskRun | undefined>>()
+  private standaloneTaskPromises = new Set<Promise<TaskRun>>()
   private runningTasks = new Map<
     string,
-    { proc: ReturnType<typeof Bun.spawn>; startedAt: number; runId: string; resultReceived?: boolean; migrationInterrupted?: boolean }
+    { proc: ReturnType<typeof Bun.spawn>; startedAt: number; runId: string; resultReceived?: boolean; resultSucceeded?: boolean; migrationInterrupted?: boolean }
   >()
   /** Track which minute each task last fired (prevents same-process duplicate within a minute). */
   private lastFiredMinuteKey = new Map<string, string>()
@@ -678,7 +682,20 @@ export class CronScheduler {
       if (!run) throw new Error('Scheduled task target is busy or this occurrence was already claimed')
       return run
     }))
-    return migrationMaintenance.track(this.executeTaskOnce(task, options))
+    powerActivityClock.changed()
+    const promise = migrationMaintenance.track(this.executeTaskOnce(task, options))
+    this.standaloneTaskPromises.add(promise)
+    void promise.finally(() => {
+      this.standaloneTaskPromises.delete(promise)
+      powerActivityClock.changed()
+    }).catch(() => {})
+    return promise
+  }
+
+  /** Includes admission, session creation and durable completion bookkeeping. */
+  hasActiveWork(): boolean {
+    return this.sessionTasks.size > 0 || this.sessionTaskPromises.size > 0
+      || this.runningTasks.size > 0 || this.standaloneTaskPromises.size > 0
   }
 
   getProcessIds(): number[] {
@@ -710,9 +727,15 @@ export class CronScheduler {
   }
 
   private launchSessionTask(task: CronTask, scheduledFor: string, manual = false): Promise<TaskRun | undefined> {
+    powerActivityClock.changed()
     const promise = migrationMaintenance.track(this.executeSessionTask(task, scheduledFor, manual))
     this.sessionTaskPromises.add(promise)
-    void promise.finally(() => this.sessionTaskPromises.delete(promise)).catch(() => {})
+    void promise.then(run => {
+      if (run?.status === 'completed') powerActivityClock.completed(true)
+    }).finally(() => {
+      this.sessionTaskPromises.delete(promise)
+      powerActivityClock.changed()
+    }).catch(() => {})
     return promise
   }
 
@@ -838,11 +861,19 @@ export class CronScheduler {
       workDir = os.homedir()
     }
     workDir = this.resolveCanonicalWorkDir(workDir)
+    let additionalDirectories: string[] = []
+    let directoryError: string | undefined
+    try {
+      const project = await new DesktopUiPreferencesService().getProjectDirectories(workDir)
+      additionalDirectories = await validateProjectAdditionalDirectories(workDir, project.additionalDirectories)
+    } catch (error) {
+      directoryError = error instanceof Error ? error.message : String(error)
+    }
 
     // Only create a session when explicitly requested (manual "Run Now"),
     // not for automatic cron runs — avoids flooding the sidebar.
     let sessionId: string | undefined
-    if (options?.createSession) {
+    if (options?.createSession && !directoryError) {
       try {
         const result = await this.sessionService.createSession(
           workDir,
@@ -875,6 +906,24 @@ export class CronScheduler {
 
     // Persist the "running" state
     await appendRun(run, runLogTarget)
+    if (directoryError) {
+      const failedRun: TaskRun = {
+        ...run, status: 'failed', error: directoryError,
+        completedAt: new Date().toISOString(), durationMs: Date.now() - Date.parse(startedAt),
+      }
+      await updateRun(failedRun, runLogTarget)
+      if (task.notification?.enabled && task.notification.channels.length > 0 && shouldNotifyScheduledRun(task, failedRun)) {
+        migrationMaintenance.track(sendTaskNotification(failedRun, task.notification)).catch((err) => {
+          console.error(`[CronScheduler] Notification error for task ${task.id}:`, err)
+        })
+      }
+      if (!task.recurring) {
+        await this.cronService.updateTask(task.id, { enabled: false }).catch(() => {
+          // Task may have been deleted.
+        })
+      }
+      return failedRun
+    }
 
     const inputPayload = JSON.stringify({
       type: 'user',
@@ -894,6 +943,7 @@ export class CronScheduler {
       '--output-format',
       'stream-json',
       ...(sessionId ? ['--session-id', sessionId] : []),
+      ...additionalDirectories.flatMap(directory => ['--add-dir', directory]),
       ...this.getRuntimeArgs(task),
     ])
 
@@ -905,7 +955,7 @@ export class CronScheduler {
       buildCronTaskSpawnOptions(workDir, childEnv),
     )
 
-    const runningEntry = { proc, startedAt: Date.now(), runId, resultReceived: false, migrationInterrupted: false }
+    const runningEntry = { proc, startedAt: Date.now(), runId, resultReceived: false, resultSucceeded: false, migrationInterrupted: false }
     this.runningTasks.set(task.id, runningEntry)
 
     // Keep the control stream open until the terminal result so migration can
@@ -948,6 +998,7 @@ export class CronScheduler {
                 const message = JSON.parse(line)
                 if (message.type === 'result' && !message.parent_tool_use_id) {
                   runningEntry.resultReceived = true
+                  runningEntry.resultSucceeded = message.is_error === false && (!message.subtype || message.subtype === 'success')
                   proc.stdin.end()
                 }
               } catch {
@@ -1000,7 +1051,7 @@ export class CronScheduler {
         }
       }
 
-      await this.persistScheduledSessionPermission(sessionId, workDir)
+      await this.persistScheduledSessionPermission(sessionId, workDir, additionalDirectories)
       await updateRun(completedRun, runLogTarget)
 
       // Send IM notification if configured
@@ -1017,6 +1068,8 @@ export class CronScheduler {
         })
       }
 
+      if (completedRun.status === 'completed' && runningEntry.resultSucceeded) powerActivityClock.completed(true)
+
       return completedRun
     } catch (err) {
       clearTimeout(timeoutId)
@@ -1032,7 +1085,7 @@ export class CronScheduler {
           new Date(completedAt).getTime() - new Date(startedAt).getTime(),
       }
 
-      await this.persistScheduledSessionPermission(sessionId, workDir)
+      await this.persistScheduledSessionPermission(sessionId, workDir, additionalDirectories)
       await updateRun(failedRun, runLogTarget)
 
       return failedRun
@@ -1042,11 +1095,13 @@ export class CronScheduler {
   private async persistScheduledSessionPermission(
     sessionId: string | undefined,
     workDir: string,
+    additionalDirectories: string[],
   ): Promise<void> {
     if (!sessionId) return
     await this.sessionService.appendSessionMetadata(sessionId, {
       workDir,
       permissionMode: 'bypassPermissions',
+      additionalDirectories,
     }).catch(() => {
       // The task result is still valid even if session metadata refresh fails.
     })

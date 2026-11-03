@@ -16,6 +16,8 @@ import { clearDeepSeekAccountModelCatalogCache } from '../../services/deepseekAu
 import { hahaOAuthService } from '../services/hahaOAuthService.js'
 import * as claudeModelCatalog from '../services/claudeModelCatalog.js'
 import { hahaOpenAIOAuthService } from '../services/hahaOpenAIOAuthService.js'
+import { OPENAI_CODEX_CLIENT_VERSION } from '../../services/openaiAuth/client.js'
+import { OPENAI_CODEX_RELEASE_SOURCES } from '../../services/openaiAuth/clientVersion.js'
 import {
   clearOpenAICodexModelCatalogCache,
 } from '../../services/openaiAuth/modelCatalog.js'
@@ -312,6 +314,7 @@ describe('SettingsService', () => {
     )
 
     const svc = new SettingsService()
+    await svc.updateUserSettings({ desktopTerminal: { fontFamily: 'MesloLGS NF', fontSize: 18 } })
     await svc.updateUserSettings({
       desktopTerminal: {
         startupShell: 'pwsh',
@@ -324,12 +327,16 @@ describe('SettingsService', () => {
         startupShell: 'pwsh',
         customShellPath: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
         legacyEncoding: 'utf-8',
+        fontFamily: 'MesloLGS NF',
+        fontSize: 18,
         futureProfile: {
           id: 'work',
           inheritEnvironment: false,
         },
       },
     })
+    expect(JSON.parse(await fs.readFile(path.join(tmpDir, 'settings.json'), 'utf-8')).desktopTerminal)
+      .toMatchObject({ fontFamily: 'MesloLGS NF', fontSize: 18, startupShell: 'pwsh', legacyEncoding: 'utf-8' })
   })
 
   it('should not let cached CLI settings overwrite desktop settings updates', async () => {
@@ -1493,6 +1500,7 @@ describe('Models API', () => {
       'gpt-6-sol',
       'gpt-6-luna',
       'gpt-6.1-sol',
+      'gpt-6.1-terra',
       'gpt-5.6-sol',
       'gpt-5.6-terra',
       'gpt-5.6-luna',
@@ -1532,7 +1540,10 @@ describe('Models API', () => {
     const originalFetch = globalThis.fetch
     const requests: Headers[] = []
     clearOpenAICodexModelCatalogCache()
-    globalThis.fetch = (async (_input, init) => {
+    globalThis.fetch = (async (input, init) => {
+      if ((OPENAI_CODEX_RELEASE_SOURCES as readonly string[]).includes(String(input))) {
+        return Response.json({ version: OPENAI_CODEX_CLIENT_VERSION })
+      }
       requests.push(new Headers(init?.headers))
       return Response.json({ models: [{
         slug: 'gpt-desktop-account-only',
