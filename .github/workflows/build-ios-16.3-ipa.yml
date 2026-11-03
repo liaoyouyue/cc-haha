@@ -55,12 +55,15 @@ jobs:
         working-directory: repo/mobile
         run: |
           echo "=== iOS directory structure ==="
-          find ios -type f -name "*.pbxproj" 2>/dev/null | head -5
+          ls -la ios/ 2>/dev/null || echo "ios/ not found"
+          find ios -type d -name "*.xcodeproj" 2>/dev/null || echo "No xcodeproj found"
+          find ios -name "project.pbxproj" 2>/dev/null || echo "No project.pbxproj found"
           # Find and modify the Xcode project file
           for f in $(find ios -name "project.pbxproj" 2>/dev/null); do
             echo "Modifying: $f"
             sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = 16.4;/IPHONEOS_DEPLOYMENT_TARGET = 16.3;/g' "$f"
           done
+          echo "=== Done ==="
 
       - name: Build unsigned .app
         working-directory: repo/mobile
