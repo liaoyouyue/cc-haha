@@ -62,6 +62,8 @@ describe('desktop connection contracts', () => {
     'http://192.168.1.2',
     'http://127.0.0.1',
     'http://169.254.1.1',
+    'http://100.64.0.5',
+    'http://100.127.255.254:3456',
     'http://workstation.local',
     'http://[::1]',
     'http://[fd12::1]',
@@ -70,6 +72,12 @@ describe('desktop connection contracts', () => {
   })
 
   test.each([
+    'http://public.invalid',
+    'http://172.15.1.1',
+    'http://172.32.0.1',
+    'http://100.63.255.254',
+    'http://100.128.0.1',
+    'http://192.168.0.1.public.invalid',
     'http://workstation.fixture.ts.net',
     'http://100.101.102.103:60506',
     'http://nas:3456',
