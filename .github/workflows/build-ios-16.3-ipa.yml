@@ -46,16 +46,15 @@ jobs:
         run: |
           bun install --frozen-lockfile
 
-      - name: Bypass expo-build-properties version check
-        working-directory: repo/mobile
-        run: |
-          # Remove ios.deploymentTarget from checkItems array
-          sed -i '' '/name: '\''ios.deploymentTarget'\'',/,/}/d' node_modules/expo-build-properties/build/pluginConfig.js
-
       - name: Generate native iOS project
         working-directory: repo/mobile
         run: |
           npx expo prebuild --platform ios --no-install --clean
+
+      - name: Lower iOS deployment target in Xcode project
+        working-directory: repo/mobile
+        run: |
+          sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = 16.4;/IPHONEOS_DEPLOYMENT_TARGET = 16.3;/g' ios/cc-haha.xcodeproj/project.pbxproj
 
       - name: Build unsigned .app
         working-directory: repo/mobile
