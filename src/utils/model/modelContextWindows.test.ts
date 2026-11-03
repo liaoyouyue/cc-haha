@@ -17,6 +17,15 @@ describe('model context windows', () => {
     })))
     expect(windows).toEqual([32_000, 128_000])
   })
+  test('uses the direct Flash context without inventing gateway limits', () => {
+    expect(getConfiguredOrBuiltInModelContextWindow('MiniMax-M3.1-Flash')).toBe(1_000_000)
+    expect(getConfiguredOrBuiltInModelContextWindow('MiniMax-M3.1-Flash[1m]')).toBe(1_000_000)
+    expect(getConfiguredOrBuiltInModelContextWindow('minimax/minimax-m3.1-flash:free')).toBeUndefined()
+    expect(getModelContextWindowFromEnvValue('minimax/minimax-m3.1-flash:free', JSON.stringify({
+      'minimax/minimax-m3.1-flash:free': 1_000_000,
+    }))).toBe(1_000_000)
+  })
+
   test('recognizes updated domestic coding model context windows', () => {
     expect(getConfiguredOrBuiltInModelContextWindow('k3')).toBe(262_144)
     expect(getConfiguredOrBuiltInModelContextWindow('k3[1m]')).toBe(262_144)
