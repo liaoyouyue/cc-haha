@@ -58,6 +58,7 @@ import { ClaudeOfficialLogin } from '../../components/settings/ClaudeOfficialLog
 import { ChatGPTOfficialLogin } from '../../components/settings/ChatGPTOfficialLogin'
 import { GrokOfficialLogin } from '../../components/settings/GrokOfficialLogin'
 import { DeepSeekAccountLogin } from '../../components/settings/DeepSeekAccountLogin'
+import { ProviderHealthPanel } from '../../components/settings/ProviderHealthPanel'
 import { OfficialProviderModelSettings } from '../../components/settings/OfficialProviderModelSettings'
 import { CcSwitchImportModal } from '../../components/settings/CcSwitchImportModal'
 import { ModelIdCombobox } from '../../components/settings/ModelIdCombobox'
@@ -198,6 +199,7 @@ export function ProviderSettings({ browserMode = false }: { browserMode?: boolea
     activateProvider,
     activateOfficial,
     testProvider,
+    updateProvider,
   } = useProviderStore()
   const fetchSettings = useSettingsStore((s) => s.fetchAll)
   const t = useTranslation()
@@ -259,6 +261,19 @@ export function ProviderSettings({ browserMode = false }: { browserMode?: boolea
     setActionFailed(false)
     try { await activateProvider(id); await fetchSettings() }
     catch { setActionFailed(true) }
+  }
+
+  /** Points a provider's main slot at a model that the health probe found working. */
+  const handleUseModel = async (providerId: string, modelId: string) => {
+    setActionFailed(false)
+    const provider = providers.find((item) => item.id === providerId)
+    if (!provider) return
+    try {
+      await updateProvider(providerId, { models: { ...provider.models, main: modelId } })
+      await fetchSettings()
+    } catch {
+      setActionFailed(true)
+    }
   }
 
   const handleActivateOfficial = async () => {
@@ -468,6 +483,9 @@ export function ProviderSettings({ browserMode = false }: { browserMode?: boolea
                   )}
                   result={test && !test.loading && test.result ? (
                     <ProviderTestResultLines result={test.result} />
+                  ) : null}
+                  details={!browserMode ? (
+                    <ProviderHealthPanel provider={provider} onUseModel={handleUseModel} />
                   ) : null}
                   secondaryActions={!isActive ? (
                     <>
