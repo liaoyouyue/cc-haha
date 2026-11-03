@@ -666,12 +666,18 @@ export class SessionCollaborationService {
       remaining -= available
       nextEnd = index
     }
-    const nextDepth = depth + 1
+    // `depth` counts physical storage-page crossings only. Advancing the `end`
+// cursor within the same bounded page (baseCursor unchanged) keeps the
+// depth; only stepping onto the next page (page.nextCursor) increments it.
+// Otherwise a single long page exhausts the page limit and truncates a
+// valid history.
     const hasOlder = nextEnd > 0 || Boolean(page.page.nextCursor)
-    const pageLimitReached = nextDepth >= COLLABORATION_READ_MAX_PAGES && hasOlder
-    const next = pageLimitReached ? null : nextEnd > 0
-      ? { version: 1, sessionId, baseCursor, end: nextEnd, sourceVersion: page.page.sourceVersion, fragmentEnd: nextFragmentEnd, depth: nextDepth }
-      : page.page.nextCursor ? { version: 1, sessionId, baseCursor: page.page.nextCursor, depth: nextDepth } : null
+    const next = nextEnd > 0
+      ? { version: 1, sessionId, baseCursor, end: nextEnd, sourceVersion: page.page.sourceVersion, fragmentEnd: nextFragmentEnd, depth }
+      : page.page.nextCursor && depth + 1 < COLLABORATION_READ_MAX_PAGES
+        ? { version: 1, sessionId, baseCursor: page.page.nextCursor, depth: depth + 1 }
+        : null
+    const pageLimitReached = next === null && hasOlder && depth + 1 >= COLLABORATION_READ_MAX_PAGES
     return { messages: projectedMessages, turnsIncluded: turns, truncated,
       page: { ...page.page, nextCursor: next ? Buffer.from(JSON.stringify(next)).toString('base64url') : null, hasMore: next !== null },
       ...(pageLimitReached ? { pageLimitReached: true } : {}),
