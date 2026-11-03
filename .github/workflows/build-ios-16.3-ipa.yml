@@ -49,7 +49,7 @@ jobs:
       - name: Generate native iOS project
         working-directory: repo/mobile
         run: |
-          npx expo prebuild --platform ios --no-install --clean
+          npx expo prebuild --platform ios --clean
 
       - name: Lower iOS deployment target in Xcode project
         working-directory: repo/mobile
