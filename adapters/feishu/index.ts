@@ -34,7 +34,7 @@ import {
   formatProjectSelectionOutcome,
   ProjectSelectionController,
 } from '../common/project-selection-router.js'
-import { restoreStoredSessionBinding, SESSION_RECONNECT_NOTICE, type SessionRestoreResult } from '../common/session-recovery.js'
+import { restoreStoredSessionBinding, sessionReconnectNotice, type SessionRestoreResult } from '../common/session-recovery.js'
 import { isAllowedUser, tryPair } from '../common/pairing.js'
 import { extractInboundPayload } from './extract-payload.js'
 import { FeishuMediaService } from './media.js'
@@ -242,7 +242,7 @@ async function ensureExistingSession(chatId: string): Promise<SessionRestoreResu
 
 async function buildStatusText(chatId: string): Promise<string> {
   const result = await ensureExistingSession(chatId)
-  if (result.status === 'unavailable') return SESSION_RECONNECT_NOTICE
+  if (result.status === 'unavailable') return sessionReconnectNotice()
   if (result.status === 'missing') return formatImStatus(null)
   const stored = result.session
 
@@ -660,7 +660,7 @@ async function ensureSession(chatId: string): Promise<boolean> {
   const result = await ensureExistingSession(chatId)
   if (result.status === 'restored') return true
   if (result.status === 'unavailable') {
-    await sendText(chatId, SESSION_RECONNECT_NOTICE)
+    await sendText(chatId, sessionReconnectNotice())
     return false
   }
 
@@ -1016,7 +1016,7 @@ async function handleMessage(data: any): Promise<void> {
     if (!hasAttachments && (msgText === '/clear' || msgText === '清空')) {
       const result = await ensureExistingSession(chatId)
       if (result.status !== 'restored') {
-        await sendText(chatId, result.status === 'unavailable' ? SESSION_RECONNECT_NOTICE : formatImStatus(null))
+        await sendText(chatId, result.status === 'unavailable' ? sessionReconnectNotice() : formatImStatus(null))
         return
       }
       clearTransientChatState(chatId)
@@ -1032,7 +1032,7 @@ async function handleMessage(data: any): Promise<void> {
     if (!hasAttachments && (msgText === '/stop' || msgText === '停止')) {
       const result = await ensureExistingSession(chatId)
       if (result.status !== 'restored') {
-        await sendText(chatId, result.status === 'unavailable' ? SESSION_RECONNECT_NOTICE : formatImStatus(null))
+        await sendText(chatId, result.status === 'unavailable' ? sessionReconnectNotice() : formatImStatus(null))
         return
       }
       bridge.sendStopGeneration(chatId)
