@@ -44,6 +44,7 @@ import type {
   UserMessage,
 } from '../../types/message.js'
 import { createAttachmentMessage } from '../../utils/attachments.js'
+import { convertEffortValueToLevel, type EffortLevel } from '../../utils/effort.js'
 import { AbortError } from '../../utils/errors.js'
 import { getDisplayPath } from '../../utils/file.js'
 import {
@@ -97,6 +98,13 @@ export function resolveSubagentEffortValue(
   parentEffort: AgentDefinition['effort'],
 ): AgentDefinition['effort'] {
   return agentEffort ?? parentEffort
+}
+
+/** The effort a run's metadata sidecar records; `null` leaves it to the model. */
+export function recordedSubagentEffort(
+  effort: AgentDefinition['effort'],
+): EffortLevel | null {
+  return effort === undefined ? null : convertEffortValueToLevel(effort)
 }
 
 export function resolvePersistedAgentType(
@@ -926,6 +934,9 @@ async function* runAgentInProviderContext({
       agentDefinition.agentType,
     ),
     ...(model && { model }),
+    effort: recordedSubagentEffort(
+      resolveSubagentEffortValue(agentDefinition.effort, appState.effortValue),
+    ),
     ...(worktreePath && { worktreePath }),
     ...(description && { description }),
     ...(spawningToolUseId && { toolUseId: spawningToolUseId }),
