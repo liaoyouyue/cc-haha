@@ -4186,6 +4186,10 @@ export const zh: Record<TranslationKey, string> = {
   // ─── Session Activity ──────────────────────────────────────
   'session.activity.title': '活動',
   'taskInbox.title': '任務收件匣',
+  'command.sectionTitle': '命令',
+  'command.newSession': '新增工作階段',
+  'command.openSettings': '開啟設定',
+  'command.switchModel': '切換模型：{name}',
   'taskInbox.markAllRead': '全部標為已讀',
   'taskInbox.empty': '暫無背景任務完成記錄',
   'session.activity.close': '關閉活動',

@@ -4186,6 +4186,10 @@ Row 9, all 8 cells: continuing from straight down, turning left through lower-le
   // ─── Session Activity ──────────────────────────────────────
   'session.activity.title': 'Activity',
   'taskInbox.title': 'Task inbox',
+  'command.sectionTitle': 'Commands',
+  'command.newSession': 'New session',
+  'command.openSettings': 'Open settings',
+  'command.switchModel': 'Switch model: {name}',
   'taskInbox.markAllRead': 'Mark all read',
   'taskInbox.empty': 'No background task completions yet',
   'session.activity.close': 'Close activity',

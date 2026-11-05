@@ -83,7 +83,7 @@ describe('GlobalSearchModal', () => {
     useSessionStore.setState({ sessions: [makeSession('s1', 'Recent One'), makeSession('s2', 'Recent Two')] })
     render(<GlobalSearchModal open onClose={() => {}} />)
 
-    expect(screen.getByText('Recent chats')).toBeInTheDocument()
+    expect(screen.getByText('Commands')).toBeInTheDocument()
     expect(screen.getByText('Recent One')).toBeInTheDocument()
     expect(screen.getByText('Recent Two')).toBeInTheDocument()
     expect(mockSearch).not.toHaveBeenCalled()

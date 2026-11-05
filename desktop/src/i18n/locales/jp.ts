@@ -4187,6 +4187,10 @@ export const jp: Record<TranslationKey, string> = {
   // ─── Session Activity ──────────────────────────────────────
   'session.activity.title': 'アクティビティ',
   'taskInbox.title': 'タスク受信箱',
+  'command.sectionTitle': 'コマンド',
+  'command.newSession': '新しいセッション',
+  'command.openSettings': '設定を開く',
+  'command.switchModel': 'モデル切替：{name}',
   'taskInbox.markAllRead': 'すべて既読',
   'taskInbox.empty': '完了したバックグラウンドタスクはまだありません',
   'session.activity.close': 'アクティビティを閉じる',

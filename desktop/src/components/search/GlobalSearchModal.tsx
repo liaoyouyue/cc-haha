@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef, useMemo, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { MessageSquare, Search } from 'lucide-react'
+import { MessageSquare, Search, Plus, Settings, Cpu } from 'lucide-react'
 import { useTranslation, type TranslationKey } from '../../i18n'
 import { useSessionStore } from '../../stores/sessionStore'
-import { useTabStore } from '../../stores/tabStore'
+import { useTabStore, SETTINGS_TAB_ID } from '../../stores/tabStore'
 import { useSessionRuntimeStore } from '@/stores/sessionRuntimeStore'
+import { useUIStore } from '../../stores/uiStore'
+import { useSettingsStore } from '../../stores/settingsStore'
 import { sessionsApi } from '@/api/sessions'
 import { searchApi, type SessionSearchResult, type SessionMatch, type SessionMatchRole } from '../../api/search'
 import { Badge } from '@/components/ui/Badge'
@@ -21,8 +23,17 @@ type Props = {
   onClose: () => void
 }
 
-/** A row in the result list — either a recent session (no matches) or a search hit. */
+type CommandRow = {
+  kind: 'command'
+  id: string
+  label: string
+  icon: ReactNode
+  run: () => void
+}
+
+/** A row in the result list — a command, a recent session (no matches) or a search hit. */
 type Row = {
+  kind?: 'session'
   sessionId: string
   title: string
   projectPath: string
@@ -31,6 +42,8 @@ type Row = {
   matchCount: number
   matches: SessionMatch[]
 }
+
+type PaletteRow = CommandRow | Row
 
 export function GlobalSearchModal({ open, onClose }: Props) {
   const t = useTranslation()
@@ -157,28 +170,33 @@ export function GlobalSearchModal({ open, onClose }: Props) {
 
   const isSearching = query.trim().length > 0
 
-  const rows: Row[] = useMemo(() => {
-    if (!isSearching) {
-      return recentSessions.map((s) => ({
-        sessionId: s.id,
-        title: s.title,
-        projectPath: s.projectPath,
-        workDir: s.workDir,
-        modifiedAt: s.modifiedAt,
-        matchCount: 0,
-        matches: [],
-      }))
-    }
-    return results.map((r) => ({
-      sessionId: r.sessionId,
-      title: r.title,
-      projectPath: r.projectPath,
-      workDir: r.workDir,
-      modifiedAt: r.modifiedAt,
-      matchCount: r.matchCount,
-      matches: r.matches,
-    }))
-  }, [isSearching, recentSessions, results])
+  // 命令行：空 query 全显，有 query 按名过滤。
+  const commands: CommandRow[] = useMemo(() => {
+    const list: CommandRow[] = [
+      {
+        kind: 'command', id: 'new-session', label: t('command.newSession'), icon: <Plus size={15} strokeWidth={1.75} />, run: () => { onClose(); useUIStore.getState().requestNewSession() },
+      },
+      {
+        kind: 'command', id: 'settings', label: t('command.openSettings'), icon: <Settings size={15} strokeWidth={1.75} />, run: () => { onClose(); useTabStore.getState().openTab(SETTINGS_TAB_ID, 'Settings', 'settings') },
+      },
+      ...useSettingsStore.getState().availableModels.map((m) => ({
+        kind: 'command' as const,
+        id: `model:${m.id}`,
+        label: t('command.switchModel', { name: m.name }),
+        icon: <Cpu size={15} strokeWidth={1.75} />,
+        run: () => { onClose(); void useSettingsStore.getState().setModel(m.id) },
+      })),
+    ]
+    const q = query.trim().toLowerCase()
+    return q ? list.filter((c) => c.label.toLowerCase().includes(q)) : list.slice(0, 4)
+  }, [query, onClose, t])
+
+  const rows: PaletteRow[] = useMemo(() => {
+    const sessionRows: Row[] = !isSearching
+      ? recentSessions.map((s) => ({ kind: 'session' as const, sessionId: s.id, title: s.title, projectPath: s.projectPath, workDir: s.workDir, modifiedAt: s.modifiedAt, matchCount: 0, matches: [] }))
+      : results.map((r) => ({ kind: 'session' as const, sessionId: r.sessionId, title: r.title, projectPath: r.projectPath, workDir: r.workDir, modifiedAt: r.modifiedAt, matchCount: r.matchCount, matches: r.matches }))
+    return [...commands, ...sessionRows]
+  }, [isSearching, recentSessions, results, commands])
 
   // Keep the active row in view.
   useEffect(() => {
@@ -191,7 +209,11 @@ export function GlobalSearchModal({ open, onClose }: Props) {
       ?.scrollIntoView({ block: 'nearest' })
   }, [activeIndex])
 
-  async function openRow(row: Row) {
+  async function openRow(row: PaletteRow) {
+    if (row.kind === 'command') {
+      row.run()
+      return
+    }
     requestControllerRef.current?.abort()
     requestControllerRef.current = null
     const requestId = ++requestIdRef.current
@@ -298,17 +320,11 @@ export function GlobalSearchModal({ open, onClose }: Props) {
         <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto pb-1.5" role="listbox">
           {!isSearching ? (
             <>
-              {rows.length > 0 && <SectionTitle>{t('search.global.recentTitle')}</SectionTitle>}
+              {commands.length > 0 && <SectionTitle>{t('command.sectionTitle')}</SectionTitle>}
               {rows.map((row, i) => (
-                <ResultRow
-                  key={row.sessionId}
-                  row={row}
-                  index={i}
-                  active={i === activeIndex}
-                  onActivate={setActiveIndex}
-                  onOpen={openRow}
-                  t={t}
-                />
+                row.kind === 'command'
+                  ? <CommandRowItem key={row.id} row={row} index={i} active={i === activeIndex} onActivate={setActiveIndex} onOpen={openRow} />
+                  : <ResultRow key={row.sessionId} row={row} index={i} active={i === activeIndex} onActivate={setActiveIndex} onOpen={openRow} t={t} />
               ))}
             </>
           ) : loading && results.length === 0 ? (
@@ -327,15 +343,9 @@ export function GlobalSearchModal({ open, onClose }: Props) {
             <>
               <div className="h-1.5" aria-hidden="true" />
               {rows.map((row, i) => (
-                <ResultRow
-                  key={row.sessionId}
-                  row={row}
-                  index={i}
-                  active={i === activeIndex}
-                  onActivate={setActiveIndex}
-                  onOpen={openRow}
-                  t={t}
-                />
+                row.kind === 'command'
+                  ? <CommandRowItem key={row.id} row={row} index={i} active={i === activeIndex} onActivate={setActiveIndex} onOpen={openRow} />
+                  : <ResultRow key={row.sessionId} row={row} index={i} active={i === activeIndex} onActivate={setActiveIndex} onOpen={openRow} t={t} />
               ))}
               {truncated && (
                 <div className="px-4 py-2 text-center text-[12px] text-[var(--color-text-tertiary)]">
@@ -382,8 +392,25 @@ type RowProps = {
   index: number
   active: boolean
   onActivate: (index: number) => void
-  onOpen: (row: Row) => void
+  onOpen: (row: PaletteRow) => void
   t: (key: TranslationKey, params?: Record<string, string | number>) => string
+}
+
+function CommandRowItem({ row, index, active, onActivate, onOpen }: {
+  row: CommandRow; index: number; active: boolean
+  onActivate: (i: number) => void; onOpen: (r: PaletteRow) => void
+}) {
+  return (
+    <button
+      type="button" data-index={index} role="option" aria-selected={active}
+      onMouseEnter={() => onActivate(index)} onClick={() => onOpen(row)}
+      className={`mx-1.5 flex h-9 w-[calc(100%-12px)] items-center gap-2.5 rounded-[var(--radius-md)] px-2.5 text-left transition-colors focus-visible:outline-none ${active ? 'bg-[var(--color-surface-selected)]' : 'hover:bg-[var(--color-surface-hover)]'}`}
+    >
+      <span className="shrink-0 text-[var(--color-text-tertiary)]">{row.icon}</span>
+      <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--color-text-primary)]">{row.label}</span>
+      {active && <Keycap>↵</Keycap>}
+    </button>
+  )
 }
 
 function ResultRow({ row, index, active, onActivate, onOpen, t }: RowProps) {
