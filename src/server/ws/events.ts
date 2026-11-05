@@ -175,6 +175,12 @@ export type TokenUsage = {
   output_tokens: number
   cache_read_tokens?: number
   cache_creation_tokens?: number
+  /**
+   * The thinking share of output_tokens, when the engine reports a reasoning
+   * split. Absent — not zero — when the engine does not split: "no thinking"
+   * and "we did not look" are different claims.
+   */
+  reasoning_tokens?: number
 }
 
 /**

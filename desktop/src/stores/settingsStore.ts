@@ -18,7 +18,7 @@ import {
   type OutputStyleOption,
   type OutputStylesResponse,
   type PermissionMode,
-  type EffortLevel,
+  type SelectableEffortLevel,
   type ModelInfo,
   type ThemeMode,
   type UpdateProxyMode,
@@ -65,7 +65,7 @@ export const MAX_CLEANUP_PERIOD_DAYS = 3650
 type SettingsStore = {
   permissionMode: PermissionMode
   currentModel: ModelInfo | null
-  effortLevel: EffortLevel
+  effortLevel: SelectableEffortLevel
   thinkingEnabled: boolean
   workflowKeywordTriggerEnabled: boolean
   nextPromptSuggestionsEnabled: boolean
@@ -115,7 +115,7 @@ type SettingsStore = {
   fetchH5Access: () => Promise<void>
   setPermissionMode: (mode: PermissionMode) => Promise<void>
   setModel: (modelId: string) => Promise<void>
-  setEffort: (level: EffortLevel) => Promise<void>
+  setEffort: (level: SelectableEffortLevel) => Promise<void>
   setThinkingEnabled: (enabled: boolean) => Promise<void>
   setWorkflowKeywordTriggerEnabled: (enabled: boolean) => Promise<void>
   setNextPromptSuggestionsEnabled: (enabled: boolean) => Promise<void>

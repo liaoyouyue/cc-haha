@@ -203,6 +203,8 @@ export type TokenUsage = {
   output_tokens: number
   cache_read_tokens?: number
   cache_creation_tokens?: number
+  /** The thinking share of output_tokens; absent when the engine reports no split. */
+  reasoning_tokens?: number
 }
 
 /** Mirrors the server's `TurnTiming`: milliseconds, `decode_ms` excludes prefill and tools. */

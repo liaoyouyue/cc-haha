@@ -112,6 +112,12 @@ export class SettingsService {
     return user.autoUpdateEnabled !== false
   }
 
+  /** Read-time opt-in; do not rewrite user settings. */
+  async getNextPromptSuggestionsEnabled(settings?: Record<string, unknown>): Promise<boolean> {
+    const user = settings ?? await this.getUserSettings()
+    return user.nextPromptSuggestionsEnabled === true
+  }
+
   /** Forward read migration: the desktop experiment is opt-in for legacy files. */
   async getLeanModeEnabled(settings?: Record<string, unknown>): Promise<boolean> {
     const user = settings ?? await this.getUserSettings()

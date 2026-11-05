@@ -32,7 +32,7 @@ import { SelectField } from '@/components/ui/SelectField'
 import { PermissionModeSelector } from '../../components/controls/PermissionModeSelector'
 import { ReasoningEffortPopover } from '../../components/controls/ReasoningEffortPopover'
 import { isDarkThemeMode, isLightThemeMode, isMaxConcurrentSubagents } from '../../types/settings'
-import type { ThemeMode, NetworkProxyMode, WebSearchMode, AppMode, ChatSendBehavior, OutputStyleSource, ReasoningEffortLevel } from '../../types/settings'
+import type { ThemeMode, NetworkProxyMode, WebSearchMode, AppMode, ChatSendBehavior, OutputStyleSource, SelectableEffortLevel } from '../../types/settings'
 import type { Locale } from '../../i18n'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -393,7 +393,8 @@ export function GeneralSettings() {
     },
   ]
 
-  const effortLabels: Record<ReasoningEffortLevel, string> = {
+  const effortLabels: Record<SelectableEffortLevel, string> = {
+    auto: t('settings.general.effort.auto'),
     low: t('settings.general.effort.low'),
     medium: t('settings.general.effort.medium'),
     high: t('settings.general.effort.high'),
@@ -402,13 +403,20 @@ export function GeneralSettings() {
   }
   const supportedReasoningEfforts = currentModel?.supportedReasoningEfforts
   const effortOptions = !currentModel
-    ? []
-    : supportedReasoningEfforts === undefined
-      // Match the new-session selector's compatibility fallback for models
-      // that predate explicit capability metadata. xhigh is opt-in; the other
-      // Claude Code levels remain available until the provider declares it.
-      ? MODEL_REASONING_EFFORTS.filter((level) => level !== 'xhigh')
-      : MODEL_REASONING_EFFORTS.filter((level) => supportedReasoningEfforts.includes(level))
+    ? ['auto' as const]
+    : [
+        // 'auto' is a harness-level synthetic value; the server resolves it to
+        // a concrete wire level per request, so it is always selectable.
+        'auto' as const,
+        ...(
+          supportedReasoningEfforts === undefined
+            // Match the new-session selector's compatibility fallback for models
+            // that predate explicit capability metadata. xhigh is opt-in; the other
+            // Claude Code levels remain available until the provider declares it.
+            ? MODEL_REASONING_EFFORTS.filter((level) => level !== 'xhigh')
+            : MODEL_REASONING_EFFORTS.filter((level) => supportedReasoningEfforts.includes(level))
+        ),
+      ]
   const modelDefaultEffort = currentModel?.defaultReasoningEffort
   const selectedEffort = effortOptions.includes(effortLevel)
     ? effortLevel

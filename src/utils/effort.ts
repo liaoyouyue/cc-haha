@@ -32,6 +32,15 @@ export const EFFORT_LEVELS = [
 
 export type EffortValue = EffortLevel | number
 
+/**
+ * Settings-layer synthetic value: the user picked "auto", meaning the harness
+ * itself decides the effort per request. 'auto' is NEVER written to the wire —
+ * resolveAppliedEffort expands it to a concrete EffortLevel before the request
+ * leaves the process, so the API schema stays untouched.
+ */
+export const AUTO_EFFORT = 'auto'
+export type AutoEffortSignal = { type: 'user-text'; text: string } | { type: 'agent-task' } | { type: 'simple-task' }
+
 function shouldTrustBuiltInClaudeCapabilityList(): boolean {
   if (hasAnthropicCompatibleThirdPartyConfig()) {
     return false
@@ -274,7 +283,7 @@ export function getEffortEnvOverride(): EffortValue | null | undefined {
 export function resolveAppliedEffort(
   model: string,
   appStateEffortValue: EffortValue | undefined,
-  options?: { effortValueOverridesEnv?: boolean },
+  options?: { effortValueOverridesEnv?: boolean; autoSignal?: AutoEffortSignal },
 ): EffortValue | undefined {
   const envOverride = getEffortEnvOverride()
   const hasRequestScopedOverride =
@@ -286,6 +295,9 @@ export function resolveAppliedEffort(
   const resolved = hasRequestScopedOverride
     ? appStateEffortValue
     : envOverride ?? appStateEffortValue ?? getDefaultEffortForModel(model)
+  if (resolved === AUTO_EFFORT) {
+    return pickAutoEffort(model, options?.autoSignal)
+  }
   // Claude Code falls back to the nearest supported level at or below the
   // requested level. Opus/Sonnet 4.6 therefore run xhigh as high.
   if (
@@ -303,6 +315,69 @@ export function resolveAppliedEffort(
     return 'high'
   }
   return resolved
+}
+
+/**
+ * The 'auto' policy: score the request, pick the effort, remember what worked.
+ * Wire values only — the returned level is always a concrete EffortLevel.
+ *
+ * ponytail: pure function of the signal + a per-model memory map; no ML, no
+ * heuristics beyond three signals. Add a learning loop only when a real
+ * failure pattern shows up that the retry-degrade path can't catch.
+ */
+const autoEffortMemory = new Map<string, EffortLevel>()
+
+function clampToSupported(model: string, level: EffortLevel): EffortLevel {
+  if (level === 'xhigh' && !isOpenAIResponsesModel(model) && !modelSupportsXHighEffort(model)) return 'high'
+  if (level === 'max' && !isOpenAIResponsesModel(model) && !modelSupportsMaxEffort(model)) return 'high'
+  return level
+}
+
+export function pickAutoEffort(model: string, signal?: AutoEffortSignal): EffortValue | undefined {
+  // 1. An explicit signal always scores; memory only fills in when the
+  // caller gave us nothing to go on (bare auto with no signal context).
+  const remembered = autoEffortMemory.get(model)
+  if (remembered !== undefined && signal === undefined) {
+    return remembered
+  }
+
+  // 2. Score the request by task shape alone — no magic words the user has to
+  // remember to type. Length and structure carry the signal.
+  let level: EffortLevel
+  if (signal?.type === 'user-text') {
+    const text = signal.text
+    if (text.length > 8000) {
+      // A prompt this size is an architecture review or a spec dump — go deep.
+      level = 'max'
+    } else if (text.length > 1500) {
+      level = 'high'
+    } else if (text.length < 120) {
+      level = 'low'
+    } else {
+      level = 'medium'
+    }
+  } else if (signal?.type === 'agent-task') {
+    level = 'high'
+  } else {
+    // Compact / side_question / title generation and other cheap paths.
+    // Cheap paths never write the memory — only substantial work does.
+    if (signal?.type === 'simple-task') return 'low'
+    return 'medium'
+  }
+
+  const clamped = clampToSupported(model, level)
+  autoEffortMemory.set(model, clamped)
+  return clamped
+}
+
+/** Feedback channel for the retry-degrade path: remember what actually landed. */
+export function rememberAutoEffortResult(model: string, level: EffortLevel): void {
+  autoEffortMemory.set(model, level)
+}
+
+/** Test hook: forget the per-model auto memory. */
+export function clearAutoEffortMemory(): void {
+  autoEffortMemory.clear()
 }
 
 /**

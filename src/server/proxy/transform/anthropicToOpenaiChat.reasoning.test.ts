@@ -23,3 +23,38 @@ describe('OpenAI Chat thinking toggle compatibility', () => {
     }).thinking).toBeUndefined()
   })
 })
+
+describe('high effort drives thinking budget', () => {
+  test('max effort maps to a 65536-token budget', () => {
+    const result = anthropicToOpenaiChat({
+      model: 'deepseek-v4-pro', messages: [], max_tokens: 1024,
+      output_config: { effort: 'max' },
+    }, { passThinkingToggle: true })
+    expect(result.thinking?.budget_tokens).toBe(65536)
+  })
+
+  test('xhigh effort maps to a 32768-token budget', () => {
+    const result = anthropicToOpenaiChat({
+      model: 'deepseek-v4-pro', messages: [], max_tokens: 1024,
+      output_config: { effort: 'xhigh' },
+    }, { passThinkingToggle: true })
+    expect(result.thinking?.budget_tokens).toBe(32768)
+  })
+
+  test('an explicit envelope budget wins over the effort-derived one', () => {
+    const result = anthropicToOpenaiChat({
+      model: 'deepseek-v4-pro', messages: [], max_tokens: 1024,
+      output_config: { effort: 'max' },
+      thinking: { type: 'enabled', budget_tokens: 16000 },
+    }, { passThinkingToggle: true })
+    expect(result.thinking?.budget_tokens).toBe(16000)
+  })
+
+  test('low effort does not set a budget', () => {
+    const result = anthropicToOpenaiChat({
+      model: 'deepseek-v4-pro', messages: [], max_tokens: 1024,
+      output_config: { effort: 'low' },
+    })
+    expect(result.thinking?.budget_tokens).toBeUndefined()
+  })
+})

@@ -2488,6 +2488,8 @@ function summarizeTokenUsageFromHistory(messages: MessageEntry[]): TokenUsage | 
   let outputTokens = 0
   let cacheReadTokens = 0
   let cacheCreationTokens = 0
+  let reasoningTokens = 0
+  let sawReasoningSplit = false
   // A reply with thinking + text + a dozen tool_use blocks arrives as fourteen lines that each
   // carry a `usage` object, and the lines need not agree: the first can be zero/partial with the
   // final numbers on a later line. Summing per line is the 2.2x inflation, keeping the first
@@ -2513,6 +2515,10 @@ function summarizeTokenUsageFromHistory(messages: MessageEntry[]): TokenUsage | 
     outputTokens += total[1] - (previous?.[1] ?? 0)
     cacheReadTokens += total[2] - (previous?.[2] ?? 0)
     cacheCreationTokens += total[3] - (previous?.[3] ?? 0)
+    if (usage.reasoning_tokens !== undefined) {
+      sawReasoningSplit = true
+      reasoningTokens += readUsageToken(usage.reasoning_tokens)
+    }
   }
 
   if (inputTokens === 0 && outputTokens === 0 && cacheReadTokens === 0 && cacheCreationTokens === 0) {
@@ -2524,6 +2530,9 @@ function summarizeTokenUsageFromHistory(messages: MessageEntry[]): TokenUsage | 
     output_tokens: outputTokens,
     ...(cacheReadTokens > 0 ? { cache_read_tokens: cacheReadTokens } : {}),
     ...(cacheCreationTokens > 0 ? { cache_creation_tokens: cacheCreationTokens } : {}),
+    // Only reported when at least one line carried a split: absent, not zero,
+    // when the engine never reports one.
+    ...(sawReasoningSplit ? { reasoning_tokens: reasoningTokens } : {}),
   }
 }
 

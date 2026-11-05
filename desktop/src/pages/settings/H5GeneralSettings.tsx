@@ -6,7 +6,7 @@ import { settingsApi } from '@/api/settings'
 import { modelsApi } from '@/api/models'
 import { SettingsGroup, SettingsRow, SettingsSection, SettingsSwitchRow } from '@/components/settings/SettingsSection'
 import { SelectField, type SelectFieldProps } from '@/components/ui/SelectField'
-import type { ChatSendBehavior, ThemeMode, UserSettings, EffortLevel } from '@/types/settings'
+import type { ChatSendBehavior, ThemeMode, UserSettings, SelectableEffortLevel } from '@/types/settings'
 import { SettingsHelpTopic } from './SettingsHelpTopic'
 
 export function H5GeneralSettings() {
@@ -24,7 +24,7 @@ export function H5GeneralSettings() {
     } catch { setFailed(true) }
     finally { setBusy(false) }
   }
-  const effort = async (level: EffortLevel) => {
+  const effort = async (level: SelectableEffortLevel) => {
     setBusy(true)
     setFailed(false)
     try { await modelsApi.setEffort(level); useSettingsStore.setState({ effortLevel: level }) }
@@ -39,13 +39,14 @@ export function H5GeneralSettings() {
     { value: 'warm-classic', label: t('settings.general.appearance.warmClassic') }, { value: 'celadon', label: t('settings.general.appearance.celadon') },
     { value: 'dark', label: t('settings.general.appearance.dark') }, { value: 'ink-blue', label: t('settings.general.appearance.inkBlue') },
   ]
-  const effortLabels = {
+  const effortLabels: Record<SelectableEffortLevel, string> = {
+    auto: t('settings.general.effort.auto'),
     low: t('settings.general.effort.low'), medium: t('settings.general.effort.medium'), high: t('settings.general.effort.high'),
     xhigh: t('settings.general.effort.xhigh'), max: t('settings.general.effort.max'),
   }
-  const levels: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
+  const levels: SelectableEffortLevel[] = ['auto', 'low', 'medium', 'high', 'xhigh', 'max']
   const supported = settings.currentModel?.supportedReasoningEfforts
-  const effortOptions = !settings.currentModel ? [] : levels.filter((value) => supported ? supported.includes(value) : value !== 'xhigh')
+  const effortOptions = !settings.currentModel ? ['auto' as const] : levels.filter((value) => value === 'auto' || (supported ? supported.includes(value) : value !== 'xhigh'))
   const selectedEffort = effortOptions.includes(settings.effortLevel) ? settings.effortLevel : effortOptions[0] ?? settings.effortLevel
   const responseLanguages = [{ value: '', label: t('settings.general.responseLangDefault') },
     { value: 'english', label: 'English' }, { value: 'chinese', label: '中文' }, { value: 'japanese', label: '日本語' }, { value: 'korean', label: '한국어' }]
@@ -72,7 +73,7 @@ export function H5GeneralSettings() {
       <SettingsGroup>
         {select(t('settings.general.responseLangTitle'), { disabled: busy, value: settings.responseLanguage, options: responseLanguages, onChange: (language) => void save({ language }) })}
         {select(t('settings.general.outputStyleTitle'), { disabled: busy, value: settings.outputStyle || 'default', options: styles, onChange: (outputStyle) => void save({ outputStyle }) })}
-        {select<EffortLevel>(t('h5Settings.effort'), { disabled: busy || !effortOptions.length, value: selectedEffort, options: effortOptions.map((value) => ({ value, label: effortLabels[value] })), onChange: (value) => void effort(value) })}
+        {select<SelectableEffortLevel>(t('h5Settings.effort'), { disabled: busy || !effortOptions.length, value: selectedEffort, options: effortOptions.map((value) => ({ value, label: effortLabels[value] })), onChange: (value) => void effort(value) })}
         {select<ChatSendBehavior>(t('h5Settings.sendBehavior'), { disabled: busy, value: settings.chatSendBehavior, options: [{ value: 'enter', label: t('h5Settings.enter') }, { value: 'modifierEnter', label: t('h5Settings.modifierEnter') }], onChange: (chatSendBehavior) => void save({ chatSendBehavior }) })}
         <SettingsSwitchRow disabled={busy} checked={settings.thinkingEnabled} title={t('settings.general.thinkingEnabled')} description={t('settings.general.thinkingDescription')} help={<SettingsHelpTopic topic="thinking" />} onChange={(alwaysThinkingEnabled) => void save({ alwaysThinkingEnabled })} />
         <SettingsSwitchRow disabled={busy} checked={settings.workflowKeywordTriggerEnabled} title={t('settings.general.workflowKeywordEnabled')} description={t('settings.general.workflowKeywordDescription')} help={<SettingsHelpTopic topic="ultracode" />} onChange={(workflowKeywordTriggerEnabled) => void save({ workflowKeywordTriggerEnabled })} />

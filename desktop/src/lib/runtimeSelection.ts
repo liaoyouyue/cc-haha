@@ -202,6 +202,9 @@ export function normalizeRuntimeSelection(
     // the bundled desktop list. Keep their effort untouched and let the server
     // validate it against the live catalog instead of silently dropping it.
     if (!model) return selection
+    // 'auto' is a harness-level synthetic value — pass it through untouched;
+    // the server resolves it to a wire level per request.
+    if (selection.effortLevel === 'auto') return selection
     const effortLevel = model.supportedReasoningEfforts?.includes(selection.effortLevel)
       ? selection.effortLevel
       : model.defaultReasoningEffort ?? model.supportedReasoningEfforts?.[0]
@@ -209,6 +212,9 @@ export function normalizeRuntimeSelection(
     const { effortLevel: _unsupportedEffort, ...runtime } = selection
     return effortLevel ? { ...runtime, effortLevel } : runtime
   }
+
+  // 'auto' passes through for every provider: the server expands it per request.
+  if (selection.effortLevel === 'auto') return selection
 
   const requestedEffort = isModelReasoningEffort(selection.effortLevel)
     ? selection.effortLevel

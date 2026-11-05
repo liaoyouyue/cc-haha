@@ -17,7 +17,7 @@ import type { RuntimeSelection } from '@/types/runtime'
 import { CLAUDE_OFFICIAL_PROVIDER_ID } from '@/constants/openaiOfficialProvider'
 import { getBundledPresetReasoningProviderKind } from '@/config/providerPresets'
 import { getProviderModelCapabilityOverride } from '@/lib/runtimeSelection'
-import type { ReasoningEffortLevel } from '@/types/settings'
+import type { SelectableEffortLevel } from '@/types/settings'
 import { normalizeModelReasoningEffort } from '../../../../src/shared/modelReasoning'
 import { isValidTeamMemberName, type TeamPlanRecord, type TeamPlanRuntime, type TeamPlanMember } from '../../../../src/shared/teamPlan'
 
@@ -107,14 +107,17 @@ export function AgentTeamsPlanCard({ sessionId }: { sessionId: string }) {
   }
   // Batch effort keeps each member's provider and model; a level a member's
   // model does not accept leaves that member's effort as it was.
-  const batchEffort = (level: ReasoningEffortLevel) => {
+  const batchEffort = (level: SelectableEffortLevel) => {
     edit(sessionId, { members: members.map(member => {
       if (!selected.includes(member.id)) return member
       const provider = providers.find(item => item.id === member.runtime.providerId)
-      const effortLevel = provider
+      // 'auto' is a harness-level synthetic value, not a provider wire level —
+      // store it verbatim; the server resolves it per request.
+      const wireLevel = level === 'auto' ? undefined : level
+      const effortLevel = provider && wireLevel !== undefined
         ? normalizeModelReasoningEffort(
             member.runtime.modelId,
-            level,
+            wireLevel,
             provider.apiFormat,
             getProviderModelCapabilityOverride(provider, member.runtime.modelId),
             getBundledPresetReasoningProviderKind(provider.presetId),

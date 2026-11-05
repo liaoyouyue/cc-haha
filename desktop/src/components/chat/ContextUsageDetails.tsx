@@ -27,6 +27,11 @@ export type ContextUsageSessionStats = {
   cacheReadTokens: number
   cacheWriteTokens: number
   /**
+   * The thinking share of outputTokens, `null` when the engine reports no
+   * reasoning split — the row hides rather than showing a fake 0.
+   */
+  reasoningTokens: number | null
+  /**
    * Live output rate for the current turn, in tokens per second. `null` when
    * there is no honest reading (no turn running, too little history, a stall).
    */
@@ -77,6 +82,7 @@ export type ContextUsageDetailsProps = {
     sessionOutput: string
     sessionCacheRead: string
     sessionCacheWrite: string
+    sessionReasoning: string
     liveSpeed: string
     sessionTokens: string
     ttft: string
@@ -150,6 +156,10 @@ function SessionStatGrid({
     [labels.sessionOutput, stats.outputTokens],
     [labels.sessionCacheRead, stats.cacheReadTokens],
     [labels.sessionCacheWrite, stats.cacheWriteTokens],
+    // Hidden, not zeroed, when the engine reports no reasoning split.
+    ...(stats.reasoningTokens !== null
+      ? ([[labels.sessionReasoning, stats.reasoningTokens]] as Array<[string, number]>)
+      : []),
   ]
   const valueClass = density === 'compact'
     ? 'mt-0.5 font-mono text-[13px] tabular-nums text-[var(--color-text-primary)]'
@@ -189,7 +199,7 @@ function SessionStatGrid({
           {stats.costDisplay}
         </div>
       </div>
-      <div role="group" aria-label={labels.sessionTokens} className="col-span-4 grid grid-cols-5 gap-2 border-t border-[var(--color-border)] pt-2">
+      <div role="group" aria-label={labels.sessionTokens} className="col-span-4 grid grid-cols-6 gap-2 border-t border-[var(--color-border)] pt-2">
         {tokenRows.map(([label, value]) => (
           <div key={label} className="min-w-0">
             <div className={labelClass}>{label}</div>

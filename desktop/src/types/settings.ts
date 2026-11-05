@@ -3,6 +3,8 @@
 export type PermissionMode = 'default' | 'acceptEdits' | 'auto' | 'plan' | 'bypassPermissions' | 'dontAsk'
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+/** Settings-layer synthetic value: the harness picks the wire level per request. */
+export type SelectableEffortLevel = EffortLevel | 'auto'
 export type ReasoningEffortLevel = EffortLevel
 /**
  * The six 「纸 · 墨 · 印」 palettes, in the order the appearance picker shows

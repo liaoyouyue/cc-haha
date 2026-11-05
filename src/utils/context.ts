@@ -428,6 +428,19 @@ export function getModelMaxOutputTokens(model: string): {
     defaultTokens = Math.min(defaultTokens, upperLimit)
   }
 
+  // 3P fallback: a model with a known 1M context window but no explicit
+  // Claude output tier above fell through to the 64k default. Let the
+  // context window bound the output ceiling instead (capped at 128k so a
+  // single answer can't consume a full 1M window). Claude-tier models keep
+  // their explicit limits above.
+  if (!m.startsWith('claude-')) {
+    const builtIn = getBuiltInModelContextWindow(model)
+    if (builtIn !== undefined && builtIn > upperLimit) {
+      upperLimit = Math.min(builtIn, 128_000)
+      defaultTokens = Math.min(defaultTokens, upperLimit)
+    }
+  }
+
   return { default: defaultTokens, upperLimit }
 }
 

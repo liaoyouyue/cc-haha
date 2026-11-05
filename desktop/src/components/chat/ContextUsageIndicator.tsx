@@ -418,6 +418,7 @@ export const ContextUsageIndicator = forwardRef<ContextUsageIndicatorHandle, Pro
     sessionOutput: t('contextIndicator.sessionOutput'),
     sessionCacheRead: t('contextIndicator.sessionCacheRead'),
     sessionCacheWrite: t('contextIndicator.sessionCacheWrite'),
+    sessionReasoning: t('contextIndicator.sessionReasoning'),
     liveSpeed: t('contextIndicator.liveSpeed'),
     liveSpeedUnit: t('contextIndicator.liveSpeedUnit'),
     sessionTokens: t('contextIndicator.sessionTokens'),
@@ -453,10 +454,13 @@ export const ContextUsageIndicator = forwardRef<ContextUsageIndicatorHandle, Pro
       outputTokens: displayUsage.totalOutputTokens,
       cacheReadTokens: displayUsage.totalCacheReadInputTokens,
       cacheWriteTokens: displayUsage.totalCacheCreationInputTokens,
+      // From the ws-event token usage (chatStore summarize): null when the
+      // engine reports no reasoning split — the Details row then hides.
+      reasoningTokens: sessionState?.tokenUsage.reasoning_tokens ?? null,
       liveRate: estimatedRate,
       costDisplay: displayUsage.costDisplay,
     }
-  }, [displayUsage, estimatedRate, turnTiming, sessionState?.tokenUsage.output_tokens])
+  }, [displayUsage, estimatedRate, turnTiming, sessionState?.tokenUsage.output_tokens, sessionState?.tokenUsage.reasoning_tokens])
 
   const detailsBody = (
     <ContextUsageDetails

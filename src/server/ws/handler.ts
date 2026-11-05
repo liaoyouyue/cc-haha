@@ -791,12 +791,16 @@ function translateCliUsage(usage: unknown): TokenUsage {
     : {}
   const cacheReadTokens = usageNumber(record.cache_read_input_tokens ?? record.cache_read_tokens)
   const cacheCreationTokens = usageNumber(record.cache_creation_input_tokens ?? record.cache_creation_tokens)
+  // The reasoning split lives on the SDK usage object but not in its public
+  // type — read it the same way getReasoningTokenCountFromUsage does.
+  const reasoningTokens = usageNumber(record.reasoning_tokens)
 
   return {
     input_tokens: usageNumber(record.input_tokens),
     output_tokens: usageNumber(record.output_tokens),
     ...(cacheReadTokens > 0 ? { cache_read_tokens: cacheReadTokens } : {}),
     ...(cacheCreationTokens > 0 ? { cache_creation_tokens: cacheCreationTokens } : {}),
+    ...(reasoningTokens > 0 ? { reasoning_tokens: reasoningTokens } : {}),
   }
 }
 

@@ -21,7 +21,7 @@ import { DRAFT_RUNTIME_SELECTION_KEY, useSessionRuntimeStore } from '../../store
 import { useSettingsStore } from '../../stores/settingsStore'
 import type { MagpieModel, ModelMapping, SavedProvider } from '../../types/provider'
 import type { RuntimeSelection } from '../../types/runtime'
-import type { ModelInfo, ReasoningEffortLevel } from '../../types/settings'
+import type { ModelInfo, ReasoningEffortLevel, SelectableEffortLevel } from '../../types/settings'
 import { useDismissable } from '@/hooks/useDismissable'
 import { useMobileViewport } from '../../hooks/useMobileViewport'
 import { isDesktopRuntime } from '../../lib/desktopRuntime'
@@ -86,7 +86,7 @@ type Props = {
    * Receives effort changes on their own, for a picker that stands in for
    * several runtimes and must not copy its provider and model onto them.
    */
-  onEffortChange?: (level: ReasoningEffortLevel) => void
+  onEffortChange?: (level: SelectableEffortLevel) => void
   /**
    * Choices listed above the providers that are not provider-backed, e.g. an
    * Agent following its session. Their selections keep the given providerId.
@@ -377,14 +377,16 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
   const requestedProvidersRef = useRef(false)
   const requestedOAuthStatusRef = useRef(false)
 
-  const EFFORT_OPTIONS: { value: ReasoningEffortLevel; label: string }[] = [
+  const EFFORT_OPTIONS: { value: ReasoningEffortLevel | 'auto'; label: string }[] = [
+    { value: 'auto', label: t('settings.general.effort.auto') },
     { value: 'low', label: t('settings.general.effort.low') },
     { value: 'medium', label: t('settings.general.effort.medium') },
     { value: 'high', label: t('settings.general.effort.high') },
     { value: 'xhigh', label: t('settings.general.effort.xhigh') },
     { value: 'max', label: t('settings.general.effort.max') },
   ]
-  const effortLabels: Record<ReasoningEffortLevel, string> = {
+  const effortLabels: Record<ReasoningEffortLevel | 'auto', string> = {
+    auto: t('settings.general.effort.auto'),
     low: t('settings.general.effort.low'),
     medium: t('settings.general.effort.medium'),
     high: t('settings.general.effort.high'),
@@ -642,10 +644,14 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
     : null
   const supportedRuntimeEfforts = selectedRuntimeModel?.supportedReasoningEfforts
   const requestedRuntimeEffort = activeRuntimeSelection?.effortLevel ?? effortLevel
+  // 'auto' is a settings-layer synthetic value — accepted regardless of the
+  // provider's concrete supported list (resolved to a wire level at request
+  // time by resolveAppliedEffort in the server process).
+  const isRequestedAuto = requestedRuntimeEffort === 'auto'
   const selectedRuntimeEffort = selectedRuntimeModel
-    ? supportedRuntimeEfforts?.length === 0
+    ? supportedRuntimeEfforts?.length === 0 && !isRequestedAuto
       ? undefined
-      : supportedRuntimeEfforts === undefined || supportedRuntimeEfforts.includes(requestedRuntimeEffort)
+      : isRequestedAuto || supportedRuntimeEfforts === undefined || supportedRuntimeEfforts.includes(requestedRuntimeEffort)
         ? requestedRuntimeEffort
         : selectedRuntimeModel.defaultReasoningEffort ?? supportedRuntimeEfforts[0]
     : undefined
@@ -658,8 +664,8 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
     ? runtimeEffortUnset ? t('model.effortUnset') : effortLabels[selectedRuntimeEffort]
     : undefined
   const runtimeEffortOptions = supportedRuntimeEfforts === undefined
-    ? EFFORT_OPTIONS.filter((option) => option.value !== 'xhigh')
-    : EFFORT_OPTIONS.filter((option) => supportedRuntimeEfforts.includes(option.value))
+    ? EFFORT_OPTIONS
+    : EFFORT_OPTIONS.filter((option) => option.value === 'auto' || supportedRuntimeEfforts.includes(option.value))
   const showEffortPill = canEditRuntimeEffort && !!selectedRuntimeEffort && runtimeEffortOptions.length > 0
   const showOpenAIFastMode = activeRuntimeSelection?.providerId === OPENAI_OFFICIAL_PROVIDER_ID && lockedProviderId === undefined
 
@@ -766,7 +772,7 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
     setOpen(false)
   }
 
-  const handleRuntimeEffortSelect = (level: ReasoningEffortLevel) => {
+  const handleRuntimeEffortSelect = (level: SelectableEffortLevel) => {
     if (!activeRuntimeSelection || lockedProviderId !== undefined) return
     if (onEffortChange) {
       onEffortChange(level)
@@ -872,13 +878,21 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
                           )
                             ? normalizedProviderEffort
                             : undefined
-                          const nextEffort = supportedEfforts === undefined
+                          // Wire-level membership checks exclude 'auto' — it is a
+                          // harness synthetic value, never a provider wire level.
+                          const isWireEffort = (value: SelectableEffortLevel): value is Exclude<SelectableEffortLevel, 'auto'> =>
+                            value !== 'auto' && (
+                              supportedEfforts === undefined || supportedEfforts.includes(value)
+                            )
+                          const nextEffort = effortLevel === 'auto'
+                            ? 'auto'
+                            : supportedEfforts === undefined
                             ? explicitEffort ?? effortLevel
                             : supportedEfforts.length
                               ? supportedProviderEffort
-                                ?? (explicitEffort && supportedEfforts.includes(explicitEffort)
+                                ?? (explicitEffort && isWireEffort(explicitEffort)
                                 ? explicitEffort
-                                : supportedEfforts.includes(effortLevel)
+                                : isWireEffort(effortLevel)
                                   ? effortLevel
                                   : model.defaultReasoningEffort ?? supportedEfforts[0])
                               : undefined

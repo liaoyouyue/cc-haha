@@ -9,6 +9,7 @@ import { SelectField } from '@/components/ui/SelectField'
 import { useTranslation } from '@/i18n'
 import { useSessionDelegationStore } from '@/stores/sessionDelegationStore'
 import type { RuntimeSelection } from '@/types/runtime'
+import type { ReasoningEffortLevel } from '@/types/settings'
 import type { SessionDelegationBatch, SessionRuntimeSelection } from '../../../../src/shared/sessionDelegation'
 import { DelegationChangeStatusList, DelegationSyncNotice } from './DelegationActivityExtras'
 import { delegatedSessionStatusLabel, delegatedSessionStatusTone, delegationApplyCountLabel, pendingSwitchLabel } from './delegationLabels'
@@ -26,7 +27,7 @@ function runtimeChoices(snapshot: SessionDelegationSnapshot | null): ModelProvid
   for (const model of snapshot?.models ?? []) {
     const group = groups.get(model.providerId) ?? { providerId: model.providerId, providerName: model.providerName, isDefault: false, models: [] }
     group.isDefault ||= model.isDefault
-    group.models.push({ id: model.modelId, name: model.modelName, description: '', context: '', supportedReasoningEfforts: model.supportedEfforts.filter((effort): effort is NonNullable<RuntimeSelection['effortLevel']> => EFFORTS.includes(effort as typeof EFFORTS[number])) })
+    group.models.push({ id: model.modelId, name: model.modelName, description: '', context: '', supportedReasoningEfforts: model.supportedEfforts.filter((effort): effort is NonNullable<ReasoningEffortLevel> => EFFORTS.includes(effort as typeof EFFORTS[number])) })
     groups.set(model.providerId, group)
   }
   return [...groups.values()]

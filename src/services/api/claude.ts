@@ -1657,8 +1657,31 @@ async function* queryModel(
     }
   }
 
+  // Build auto-effort signal for 'auto' setting.
+  // Last user message text + agentic flag are the only two signals we use.
+  let autoSignal: import('../../utils/effort.js').AutoEffortSignal | undefined
+  if (options.effortValue === 'auto') {
+    const lastUserText = messages
+      .slice()
+      .reverse()
+      .find(m => m.role === 'user' && typeof m.content === 'string')
+      ?.content ?? ''
+    const isAgentic =
+      options.querySource.startsWith('repl_main_thread') ||
+      options.querySource.startsWith('agent:') ||
+      options.querySource === 'sdk' ||
+      options.querySource === 'hook_agent' ||
+      options.querySource === 'verification_agent'
+    autoSignal = isAgentic
+      ? { type: 'agent-task' }
+      : lastUserText.length < 200
+      ? { type: 'simple-task' }
+      : { type: 'user-text', text: lastUserText }
+  }
+
   const effort = resolveAppliedEffort(options.model, options.effortValue, {
     effortValueOverridesEnv: options.effortValueOverridesEnv,
+    autoSignal,
   });
 
   if (feature("PROMPT_CACHE_BREAK_DETECTION")) {

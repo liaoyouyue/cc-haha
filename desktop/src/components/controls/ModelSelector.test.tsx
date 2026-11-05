@@ -950,7 +950,7 @@ describe('ModelSelector', () => {
 
     expect(screen.getByRole('button', { name: 'Effort: High' })).toBeInTheDocument()
     await clickByRole('Effort: High')
-    expect(screen.getAllByTestId('reasoning-effort-stop')).toHaveLength(5)
+    expect(screen.getAllByTestId('reasoning-effort-stop')).toHaveLength(6)
     fireEvent.keyDown(screen.getByRole('slider', { name: 'Effort' }), { key: 'ArrowRight' })
 
     const expectedSelection = {
@@ -1011,7 +1011,7 @@ describe('ModelSelector', () => {
 
     expect(screen.getByRole('button', { name: 'Effort: High' })).toBeInTheDocument()
     await clickByRole('Effort: High')
-    expect(screen.getAllByTestId('reasoning-effort-stop')).toHaveLength(5)
+    expect(screen.getAllByTestId('reasoning-effort-stop')).toHaveLength(6)
   })
 
   it('keeps effort editable for a GPT relay even when beta headers are disabled', async () => {
@@ -1053,7 +1053,7 @@ describe('ModelSelector', () => {
     expect(screen.getByRole('button', { name: 'gpt-5.6-sol, Direct GPT Gateway' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Effort: X-High' })).toBeInTheDocument()
     await clickByRole('Effort: X-High')
-    expect(screen.getAllByTestId('reasoning-effort-stop')).toHaveLength(5)
+    expect(screen.getAllByTestId('reasoning-effort-stop')).toHaveLength(6)
   })
 
   it('still offers an effort control when a non-GPT direct provider disabled experimental betas', () => {
@@ -1208,8 +1208,8 @@ describe('ModelSelector', () => {
     expect(screen.queryByTestId('model-provider-badge')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Effort: Max' })).toBeInTheDocument()
     await clickByRole('Effort: Max')
-    expect(screen.getByRole('slider', { name: 'Effort' })).toHaveAttribute('aria-valuemax', '4')
-    expect(screen.getAllByTestId('reasoning-effort-stop')).toHaveLength(5)
+    expect(screen.getByRole('slider', { name: 'Effort' })).toHaveAttribute('aria-valuemax', '5')
+    expect(screen.getAllByTestId('reasoning-effort-stop')).toHaveLength(6)
     fireEvent.keyDown(screen.getByRole('slider', { name: 'Effort' }), { key: 'Escape' })
 
     await clickByRole(/GPT-5\.6-Sol/i)
@@ -1223,7 +1223,7 @@ describe('ModelSelector', () => {
 
     expect(screen.getByRole('button', { name: 'Effort: Medium' })).toBeInTheDocument()
     await clickByRole('Effort: Medium')
-    expect(screen.getByRole('slider', { name: 'Effort' })).toHaveAttribute('aria-valuemax', '3')
+    expect(screen.getByRole('slider', { name: 'Effort' })).toHaveAttribute('aria-valuemax', '4')
     fireEvent.keyDown(screen.getByRole('slider', { name: 'Effort' }), { key: 'End' })
     expect(screen.getByRole('slider', { name: 'Effort' })).toHaveAttribute('aria-valuetext', 'X-High')
 
@@ -1380,8 +1380,8 @@ describe('ModelSelector', () => {
 
     expect(screen.getByRole('button', { name: 'Effort: Max' })).toBeInTheDocument()
     await clickByRole('Effort: Max')
-    expect(screen.getByRole('slider', { name: 'Effort' })).toHaveAttribute('aria-valuemax', '2')
-    expect(screen.getAllByTestId('reasoning-effort-stop')).toHaveLength(3)
+    expect(screen.getByRole('slider', { name: 'Effort' })).toHaveAttribute('aria-valuemax', '3')
+    expect(screen.getAllByTestId('reasoning-effort-stop')).toHaveLength(4)
   })
 
   it('selects Grok Official models for a logged-in runtime', async () => {
@@ -1826,7 +1826,7 @@ describe('controlled runtime pickers outside the composer', () => {
     expect(screen.getByRole('button', { name: 'Member model' })).toHaveTextContent('Zhipu')
     await clickByRole(/^Effort: High/)
     const stops = within(screen.getByTestId('reasoning-effort-popover')).getAllByTestId('reasoning-effort-stop')
-    expect(stops.map(stop => stop.getAttribute('title'))).toEqual(['Low', 'High', 'Max'])
+    expect(stops.map(stop => stop.getAttribute('title'))).toEqual(['Auto', 'Low', 'High', 'Max'])
     fireEvent.keyDown(screen.getByRole('slider', { name: 'Effort' }), { key: 'ArrowRight' })
 
     expect(onRuntimeSelectionChange).toHaveBeenCalledWith({ providerId: 'zhipu', modelId: 'glm-5.3', effortLevel: 'max' })

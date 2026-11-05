@@ -64,6 +64,10 @@ import {
 
 
 const EFFORT_LEVELS = MODEL_REASONING_EFFORTS
+// UI-facing list: adds the settings-layer synthetic 'auto' value. 'auto' is
+// resolved to a concrete wire level by resolveAppliedEffort before any
+// request leaves the process — see src/utils/effort.ts.
+const UI_EFFORT_LEVELS = [...MODEL_REASONING_EFFORTS, 'auto'] as const
 
 // Standalone sessions (no provider, no Claude OAuth) start the CLI without an explicit model, so the
 // CLI's own default runs. Keep this in step with what the `opus` alias resolves to there
@@ -252,9 +256,9 @@ async function getStandaloneModelList(): Promise<ApiModelInfo[]> {
   return models
 }
 
-function normalizeEffortLevel(value: unknown): (typeof EFFORT_LEVELS)[number] {
-  return typeof value === 'string' && EFFORT_LEVELS.includes(value as (typeof EFFORT_LEVELS)[number])
-    ? value as (typeof EFFORT_LEVELS)[number]
+function normalizeEffortLevel(value: unknown): (typeof UI_EFFORT_LEVELS)[number] {
+  return typeof value === 'string' && (UI_EFFORT_LEVELS as readonly string[]).includes(value)
+    ? value as (typeof UI_EFFORT_LEVELS)[number]
     : DEFAULT_EFFORT
 }
 
@@ -544,7 +548,7 @@ async function handleEffort(req: Request): Promise<Response> {
   if (req.method === 'GET') {
     const settings = await settingsService.getUserSettings()
     const level = normalizeEffortLevel(settings.effort)
-    return Response.json({ level, available: EFFORT_LEVELS })
+    return Response.json({ level, available: UI_EFFORT_LEVELS })
   }
 
   if (req.method === 'PUT') {
@@ -553,9 +557,9 @@ async function handleEffort(req: Request): Promise<Response> {
     if (typeof level !== 'string') {
       throw ApiError.badRequest('Missing or invalid "level" in request body')
     }
-    if (!EFFORT_LEVELS.includes(level as (typeof EFFORT_LEVELS)[number])) {
+    if (!(UI_EFFORT_LEVELS as readonly string[]).includes(level)) {
       throw ApiError.badRequest(
-        `Invalid effort level: "${level}". Valid levels: ${EFFORT_LEVELS.join(', ')}`,
+        `Invalid effort level: "${level}". Valid levels: ${UI_EFFORT_LEVELS.join(', ')}`,
       )
     }
     await settingsService.updateUserSettings({ effort: level })
