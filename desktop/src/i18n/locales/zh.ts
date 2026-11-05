@@ -4183,6 +4183,9 @@ export const zh: Record<TranslationKey, string> = {
 
   // ─── Session Activity ──────────────────────────────────────
   'session.activity.title': '活动',
+  'taskInbox.title': '任务收件箱',
+  'taskInbox.markAllRead': '全部标为已读',
+  'taskInbox.empty': '暂无后台任务完成记录',
   'session.activity.close': '关闭活动',
   'session.activity.clearFinished': '清除已完成',
   'session.activity.openTeamMember': '打开团队成员 {name}',

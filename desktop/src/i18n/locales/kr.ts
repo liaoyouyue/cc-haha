@@ -4188,6 +4188,9 @@ export const kr: Record<TranslationKey, string> = {
 
   // ─── Session Activity ──────────────────────────────────────
   'session.activity.title': '활동',
+  'taskInbox.title': '작업 수신함',
+  'taskInbox.markAllRead': '모두 읽음으로 표시',
+  'taskInbox.empty': '완료된 백그라운드 작업이 아직 없습니다',
   'session.activity.close': '활동 닫기',
   'session.activity.clearFinished': '완료 항목 지우기',
   'session.activity.openTeamMember': '팀 멤버 {name} 열기',

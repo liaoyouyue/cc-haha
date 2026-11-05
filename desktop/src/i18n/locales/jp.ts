@@ -4186,6 +4186,9 @@ export const jp: Record<TranslationKey, string> = {
 
   // ─── Session Activity ──────────────────────────────────────
   'session.activity.title': 'アクティビティ',
+  'taskInbox.title': 'タスク受信箱',
+  'taskInbox.markAllRead': 'すべて既読',
+  'taskInbox.empty': '完了したバックグラウンドタスクはまだありません',
   'session.activity.close': 'アクティビティを閉じる',
   'session.activity.clearFinished': '完了済みをクリア',
   'session.activity.openTeamMember': 'チームメンバー {name} を開く',

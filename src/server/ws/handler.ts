@@ -16,6 +16,7 @@ import { parseSessionCollaborationEnvelope } from '../../utils/sessionCollaborat
 import { isShutdownTeamPrompt } from '../../utils/swarm/teamShutdownPrompt.js'
 import { isTeamLeadNotice } from '../../utils/swarm/teamLeadNotice.js'
 import { admitSessionUserTurn, emitSessionTurnEvent } from '../services/sessionTurnEvents.js'
+import { recordTaskCompletion } from '../services/taskInboxService.js'
 import { ApiError } from '../middleware/errorHandler.js'
 import type { SessionRuntimeSelection } from '../../shared/sessionDelegation.js'
 import { validateSessionRuntime, resolveSessionRuntime } from '../services/sessionModelCatalog.js'
@@ -492,6 +493,17 @@ function trackCliBackgroundTaskLifecycle(
   if (activeBackgroundTaskIds.get(sessionId)?.has(lifecycle.taskId)) {
     if (lifecycle.status === 'completed') powerActivityClock.completed()
     else powerActivityClock.changed()
+  }
+  // 收件箱：真实完成的任务记录台账。stopped 走 emitAuthoritative*Stopped 的
+  // 分支（上面已 return），到这里的终态只有 completed/failed/killed。
+  if (lifecycle.status === 'completed' || lifecycle.status === 'failed' || lifecycle.status === 'killed') {
+    recordTaskCompletion({
+      taskId: lifecycle.taskId,
+      sessionId,
+      status: lifecycle.status === 'killed' ? 'stopped' : lifecycle.status,
+      description: lifecycle.description,
+      taskType: lifecycle.taskType,
+    })
   }
   untrackCliBackgroundTask(sessionId, lifecycle.taskId)
   return lifecycle
@@ -3359,6 +3371,13 @@ function emitAuthoritativeAgentStopped(
 
     current.stopFailureMessage = undefined
     markTaskAuthoritativelyStopped(sessionId, current.taskId)
+    recordTaskCompletion({
+      taskId: current.taskId,
+      sessionId,
+      status: 'stopped',
+      description: current.description,
+      taskType: current.taskType,
+    })
     untrackCliBackgroundTask(sessionId, current.taskId)
     forwardCliMessageToSessionClients(sessionId, cliMsg)
     scheduleDisconnectedSessionCleanupIfIdle(sessionId)
@@ -3449,6 +3468,14 @@ function emitAuthoritativeNonAgentStopped(
           sessionClearInProgress.has(sessionId)) return false
         task.stopFailureMessage = undefined
         markTaskAuthoritativelyStopped(sessionId, task.taskId)
+        recordTaskCompletion({
+          taskId: task.taskId,
+          sessionId,
+          status: status === 'failed' ? 'failed' : 'stopped',
+          description: task.description,
+          taskType: task.taskType,
+          summary: task.terminalSummary,
+        })
         untrackCliBackgroundTask(sessionId, task.taskId)
         forwardCliMessageToSessionClients(sessionId, cliMsg)
         scheduleDisconnectedSessionCleanupIfIdle(sessionId)

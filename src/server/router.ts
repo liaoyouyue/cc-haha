@@ -29,6 +29,7 @@ import { handleDiagnosticsApi } from './api/diagnostics.js'
 import { handleDoctorApi } from './api/doctor.js'
 import { handleH5AccessApi } from './api/h5-access.js'
 import { handleActivityStatsApi } from './api/activityStats.js'
+import { handleTaskInboxApi } from './api/taskInbox.js'
 import { handleGatewayActivityApi } from './api/gatewayActivity.js'
 import { handleOpenTargetsApi } from './api/open-targets.js'
 import { handleMemoryApi } from './api/memory.js'
@@ -206,6 +207,9 @@ async function routeApiRequest(req: Request, url: URL): Promise<Response> {
 
     case 'activity-stats':
       return handleActivityStatsApi(req, url, segments)
+
+    case 'task-inbox':
+      return handleTaskInboxApi(req, url)
 
     case 'gateway-activity':
       return handleGatewayActivityApi(req, url)

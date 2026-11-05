@@ -39,6 +39,7 @@ import { ActionDialog } from '@/components/ui/ActionDialog'
 import { getMainSessionActivityModel, hasVisibleSessionActivity } from '../activity/sessionActivityModel'
 import { EMPTY_DELEGATED_SESSION_ROWS, useSessionDelegationStore } from '../../stores/sessionDelegationStore'
 import { SessionActivityButton } from '../activity/SessionActivityButton'
+import { TaskInboxButton } from '../activity/TaskInboxButton'
 import { useActivityPanelStore } from '../../stores/activityPanelStore'
 import { getSessionBrowsablePath } from '../../lib/sessionWorkspace'
 import { runsForSession, useWorkflowStore } from '../../stores/workflowStore'
@@ -739,6 +740,7 @@ export function TabBar() {
         {showActivityButton && activeTabId && (
           <SessionActivityButton sessionId={activeTabId} />
         )}
+        <TaskInboxButton />
         {isDesktopRuntime && isActiveSessionTab && !isWorkbenchOpen && (
           <OpenProjectMenu path={openProjectPath} />
         )}
