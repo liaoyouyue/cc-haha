@@ -6019,7 +6019,7 @@ export class SessionService {
       // Checked before the isMeta skip: the batch of settled agents is isMeta.
       const backgroundContinue = this.backgroundContinueEntryToMessage(entry)
       if (backgroundContinue) {
-        messages.push(backgroundContinue)
+        rememberMessage(backgroundContinue)
         continue
       }
 
