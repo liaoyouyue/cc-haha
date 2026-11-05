@@ -4,6 +4,7 @@ import { getMobileSessionActivity } from './mobileSessionActivityRuntime.js'
 import { sessionService } from './sessionService.js'
 import { MobilePushService } from './mobilePushService.js'
 import { MobilePushRouter } from './mobilePushTransport.js'
+import { listTaskInbox } from './taskInboxService.js'
 
 const services = new Map<string, MobilePushService>()
 export function getMobilePushService() {
@@ -11,7 +12,7 @@ export function getMobilePushService() {
   let service = services.get(directory)
   if (!service) {
     const transport = new MobilePushRouter()
-    service = new MobilePushService({ directory, transport, pull: (token, ack, signal) => transport.desktop.pull(token, ack, signal), activities: getMobileSessionActivity, summary: id => sessionService.getSessionSummary(id) })
+    service = new MobilePushService({ directory, transport, pull: (token, ack, signal) => transport.desktop.pull(token, ack, signal), activities: getMobileSessionActivity, tasks: () => listTaskInbox().entries, summary: id => sessionService.getSessionSummary(id) })
     services.set(directory, service)
   }
   return service

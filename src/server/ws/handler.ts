@@ -501,8 +501,9 @@ function trackCliBackgroundTaskLifecycle(
       taskId: lifecycle.taskId,
       sessionId,
       status: lifecycle.status === 'killed' ? 'stopped' : lifecycle.status,
-      description: lifecycle.description,
-      taskType: lifecycle.taskType,
+      description: lifecycle.description ?? existingAgentTask?.description ?? existingNonAgentTask?.description,
+      taskType: lifecycle.taskType ?? existingAgentTask?.taskType ?? existingNonAgentTask?.taskType,
+      summary: typeof cliMsg.summary === 'string' ? cliMsg.summary : undefined,
     })
   }
   untrackCliBackgroundTask(sessionId, lifecycle.taskId)

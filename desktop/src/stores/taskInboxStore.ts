@@ -16,6 +16,7 @@ type TaskInboxStore = {
 }
 
 let timer: ReturnType<typeof setInterval> | undefined
+let requestId = 0
 
 export const useTaskInboxStore = create<TaskInboxStore>((set, get) => ({
   unreadCount: 0,
@@ -23,16 +24,17 @@ export const useTaskInboxStore = create<TaskInboxStore>((set, get) => ({
   loaded: false,
 
   refresh: async () => {
+    const current = ++requestId
     try {
       const data = await taskInboxApi.list()
-      set({ unreadCount: data.unreadCount, entries: data.entries, loaded: true })
+      if (current === requestId) set({ unreadCount: data.unreadCount, entries: data.entries, loaded: true })
     } catch { /* 服务不可达时保留旧值 */ }
   },
 
   ack: async () => {
     try {
       await taskInboxApi.ack()
-      set({ unreadCount: 0 })
+      await get().refresh()
     } catch { /* 下次 refresh 会纠正 */ }
   },
 

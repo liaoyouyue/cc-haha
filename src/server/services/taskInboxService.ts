@@ -1,16 +1,4 @@
-/**
- * 后台任务收件箱。
- *
- * 任务完成事件已在 handler.ts 的 trackCliBackgroundTaskLifecycle 里被识别
- * （getCliBackgroundTaskLifecycle 返回 running:false 的终态）。收件箱不重复
- * 解析 CLI 消息，而是由 handler 在该点调用 recordTaskCompletion，这里只负责：
- * 落盘 JSONL（进程重启不丢）+ 内存去重 + 列表/清除。
- *
- * 手机推送不加在这里：手机端已通过 listMobileSessionActivity + mobilePushService
- * 的 completed 事件收到会话级通知；收件箱是桌面端的跨会话台账。
- */
-
-import { mkdirSync, readFileSync, writeFileSync, renameSync, appendFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 
@@ -24,87 +12,89 @@ export type TaskInboxEntry = {
   finishedAt: number
 }
 
-type Stored = { version: 1; seen: Record<string, TaskInboxEntry>; order: string[] }
-
+type Stored = { version: 2; entries: TaskInboxEntry[]; read: string[] }
 const MAX_ENTRIES = 200
-
+const entryKey = (entry: Pick<TaskInboxEntry, 'sessionId' | 'taskId'>) => JSON.stringify([entry.sessionId, entry.taskId])
 let stored: Stored | undefined
 let file: string | undefined
 
 function inboxFile(): string {
-  if (!file) {
-    const dir = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'cc-haha')
-    mkdirSync(dir, { recursive: true, mode: 0o700 })
-    file = path.join(dir, 'task-inbox.json')
-  }
-  return file
+  const next = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'cc-haha', 'task-inbox.json')
+  if (next !== file) { file = next; stored = undefined }
+  return next
+}
+
+function validEntry(value: unknown): value is TaskInboxEntry {
+  if (!value || typeof value !== 'object') return false
+  const entry = value as TaskInboxEntry
+  return typeof entry.taskId === 'string' && typeof entry.sessionId === 'string' &&
+    ['completed', 'failed', 'stopped'].includes(entry.status) && Number.isFinite(entry.finishedAt) &&
+    [entry.description, entry.summary, entry.taskType].every(value => value === undefined || typeof value === 'string')
 }
 
 function load(): Stored {
+  const filename = inboxFile()
   if (stored) return stored
-  let raw: unknown = {}
-  try { raw = JSON.parse(readFileSync(inboxFile(), 'utf8')) } catch (error) {
+  let raw: any = {}
+  try { raw = JSON.parse(readFileSync(filename, 'utf8')) } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
-  const value = raw as Partial<Stored>
-  stored = {
-    version: 1,
-    seen: value.version === 1 && value.seen && typeof value.seen === 'object' ? value.seen : {},
-    order: value.version === 1 && Array.isArray(value.order) ? value.order : [],
+  if (!raw || typeof raw !== 'object' || (raw.version !== undefined && raw.version !== 1 && raw.version !== 2)) throw new Error('Unsupported task inbox store')
+  const source = raw.version === 1 ? Object.values(raw.seen ?? {}) : raw.entries ?? []
+  if (!Array.isArray(source)) throw new Error('Invalid task inbox entries')
+  const entries = source.filter(validEntry).slice(-MAX_ENTRIES)
+  let read: string[] = Array.isArray(raw.read) ? raw.read.filter((key: unknown) => typeof key === 'string') : []
+  if (raw.version === 1) {
+    let watermark = 0
+    try { watermark = Number(readFileSync(`${filename}.ack`, 'utf8')) || 0 } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    read = entries.filter(entry => entry.finishedAt <= watermark).map(entryKey)
   }
+  stored = { version: 2, entries, read }
   return stored
 }
 
-function persist(): void {
-  mkdirSync(path.dirname(inboxFile()), { recursive: true, mode: 0o700 })
-  const temporary = `${inboxFile()}.${Math.random().toString(16).slice(2, 8)}.tmp`
-  writeFileSync(temporary, JSON.stringify(stored))
-  renameSync(temporary, inboxFile())
+function persist(next: Stored): void {
+  const filename = inboxFile()
+  mkdirSync(path.dirname(filename), { recursive: true, mode: 0o700 })
+  const temporary = `${filename}.${Math.random().toString(16).slice(2, 8)}.tmp`
+  writeFileSync(temporary, JSON.stringify(next), { mode: 0o600 })
+  renameSync(temporary, filename)
+  stored = next
 }
 
-/** handler 在任务终态时调用。同一 taskId 只记一次。 */
+/** 收件箱故障不能打断任务终态处理；写失败不占用去重键。 */
 export function recordTaskCompletion(entry: Omit<TaskInboxEntry, 'finishedAt'> & { finishedAt?: number }): boolean {
-  const store = load()
-  if (store.seen[entry.taskId]) return false
-  const full: TaskInboxEntry = { ...entry, finishedAt: entry.finishedAt ?? Date.now() }
-  store.seen[full.taskId] = full
-  store.order.push(full.taskId)
-  while (store.order.length > MAX_ENTRIES) {
-    const dropped = store.order.shift()!
-    delete store.seen[dropped]
+  try {
+    const store = load()
+    if (store.entries.some(existing => entryKey(existing) === entryKey(entry))) return false
+    const full: TaskInboxEntry = { ...entry, finishedAt: entry.finishedAt ?? Date.now() }
+    const entries = [...store.entries, full].slice(-MAX_ENTRIES)
+    const keys = new Set(entries.map(entryKey))
+    persist({ version: 2, entries, read: store.read.filter(key => keys.has(key)) })
+    return true
+  } catch {
+    console.warn('[task-inbox] 无法保存任务完成记录')
+    return false
   }
-  persist()
-  return true
 }
 
-/** 新到未读（finishedAt 晚于 ack 水位）+ 已读全量。 */
 export function listTaskInbox(): { unreadCount: number; entries: TaskInboxEntry[] } {
   const store = load()
-  const entries = store.order.map(id => store.seen[id]!).filter(Boolean).sort((a, b) => b.finishedAt - a.finishedAt)
-  const watermark = readWatermark()
-  const unreadCount = entries.filter(row => row.finishedAt > watermark).length
-  return { unreadCount, entries }
+  const read = new Set(store.read)
+  return {
+    unreadCount: store.entries.filter(entry => !read.has(entryKey(entry))).length,
+    entries: [...store.entries].sort((a, b) => b.finishedAt - a.finishedAt),
+  }
 }
 
-/** 读水位：sessionStorage 存全局 ack 时间戳，持久且每端一致。 */
-let watermark = 0
 export function ackTaskInbox(): void {
-  watermark = Date.now()
-  try {
-    const ackFile = `${inboxFile()}.ack`
-    writeFileSync(ackFile, String(watermark))
-  } catch { /* 读不到就只影响本次 unread 计数 */ }
+  const store = load()
+  persist({ ...store, read: store.entries.map(entryKey) })
 }
 
-function readWatermark(): number {
-  if (watermark) return watermark
-  try { watermark = Number(readFileSync(`${inboxFile()}.ack`, 'utf8')) || 0 } catch { watermark = 0 }
-  return watermark
-}
-
-/** 测试用。 */
 export function resetTaskInboxForTesting(): void {
   stored = undefined
-  watermark = 0
   file = undefined
 }

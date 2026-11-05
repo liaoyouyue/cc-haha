@@ -4,9 +4,10 @@ import { MessageSquare, Search, Plus, Settings, Cpu } from 'lucide-react'
 import { useTranslation, type TranslationKey } from '../../i18n'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useTabStore, SETTINGS_TAB_ID } from '../../stores/tabStore'
-import { useSessionRuntimeStore } from '@/stores/sessionRuntimeStore'
+import { DRAFT_RUNTIME_SELECTION_KEY, useSessionRuntimeStore } from '@/stores/sessionRuntimeStore'
+import { isSessionTabId } from '../../stores/tabClose'
+import { ModelSelector, type ModelSelectorHandle } from '../controls/ModelSelector'
 import { useUIStore } from '../../stores/uiStore'
-import { useSettingsStore } from '../../stores/settingsStore'
 import { sessionsApi } from '@/api/sessions'
 import { searchApi, type SessionSearchResult, type SessionMatch, type SessionMatchRole } from '../../api/search'
 import { Badge } from '@/components/ui/Badge'
@@ -48,6 +49,9 @@ type PaletteRow = CommandRow | Row
 export function GlobalSearchModal({ open, onClose }: Props) {
   const t = useTranslation()
   const sessions = useSessionStore((s) => s.sessions)
+  const activeTabId = useTabStore((s) => s.activeTabId)
+  const modelSelectorRef = useRef<ModelSelectorHandle>(null)
+  const runtimeKey = isSessionTabId(activeTabId) ? activeTabId! : DRAFT_RUNTIME_SELECTION_KEY
 
   const [query, setQuery] = useState('')
   const [debouncedQuery, setDebouncedQuery] = useState('')
@@ -179,13 +183,11 @@ export function GlobalSearchModal({ open, onClose }: Props) {
       {
         kind: 'command', id: 'settings', label: t('command.openSettings'), icon: <Settings size={15} strokeWidth={1.75} />, run: () => { onClose(); useTabStore.getState().openTab(SETTINGS_TAB_ID, 'Settings', 'settings') },
       },
-      ...useSettingsStore.getState().availableModels.map((m) => ({
-        kind: 'command' as const,
-        id: `model:${m.id}`,
-        label: t('command.switchModel', { name: m.name }),
+      {
+        kind: 'command', id: 'select-model', label: t('model.selectModel'),
         icon: <Cpu size={15} strokeWidth={1.75} />,
-        run: () => { onClose(); void useSettingsStore.getState().setModel(m.id) },
-      })),
+        run: () => modelSelectorRef.current?.open(),
+      },
     ]
     const q = query.trim().toLowerCase()
     return q ? list.filter((c) => c.label.toLowerCase().includes(q)) : list.slice(0, 4)
@@ -316,15 +318,20 @@ export function GlobalSearchModal({ open, onClose }: Props) {
           </button>
         </div>
 
+        <div className="flex justify-end px-3 py-1">
+          <ModelSelector ref={modelSelectorRef} runtimeKey={runtimeKey} compact />
+        </div>
         {/* Results */}
         <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto pb-1.5" role="listbox">
+          {commands.length > 0 && <SectionTitle>{t('command.sectionTitle')}</SectionTitle>}
+          {commands.map((row, i) => (
+            <CommandRowItem key={row.id} row={row} index={i} active={i === activeIndex} onActivate={setActiveIndex} onOpen={openRow} />
+          ))}
           {!isSearching ? (
             <>
-              {commands.length > 0 && <SectionTitle>{t('command.sectionTitle')}</SectionTitle>}
-              {rows.map((row, i) => (
-                row.kind === 'command'
-                  ? <CommandRowItem key={row.id} row={row} index={i} active={i === activeIndex} onActivate={setActiveIndex} onOpen={openRow} />
-                  : <ResultRow key={row.sessionId} row={row} index={i} active={i === activeIndex} onActivate={setActiveIndex} onOpen={openRow} t={t} />
+              {recentSessions.length > 0 && <SectionTitle>{t('search.global.recentTitle')}</SectionTitle>}
+              {rows.map((row, i) => row.kind === 'command' ? null : (
+                <ResultRow key={row.sessionId} row={row} index={i} active={i === activeIndex} onActivate={setActiveIndex} onOpen={openRow} t={t} />
               ))}
             </>
           ) : loading && results.length === 0 ? (
@@ -342,10 +349,8 @@ export function GlobalSearchModal({ open, onClose }: Props) {
           ) : (
             <>
               <div className="h-1.5" aria-hidden="true" />
-              {rows.map((row, i) => (
-                row.kind === 'command'
-                  ? <CommandRowItem key={row.id} row={row} index={i} active={i === activeIndex} onActivate={setActiveIndex} onOpen={openRow} />
-                  : <ResultRow key={row.sessionId} row={row} index={i} active={i === activeIndex} onActivate={setActiveIndex} onOpen={openRow} t={t} />
+              {rows.map((row, i) => row.kind === 'command' ? null : (
+                <ResultRow key={row.sessionId} row={row} index={i} active={i === activeIndex} onActivate={setActiveIndex} onOpen={openRow} t={t} />
               ))}
               {truncated && (
                 <div className="px-4 py-2 text-center text-[12px] text-[var(--color-text-tertiary)]">

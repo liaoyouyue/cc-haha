@@ -4,21 +4,43 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { MobilePushService, inQuietHours, migrateMobilePushStore, pushEvent, validatePushInput, type MobileActivity, type PushInput } from './mobilePushService.js'
 import { DesktopPullTransport, MobilePushRouter, type PushDelivery } from './mobilePushTransport.js'
+import type { TaskInboxEntry } from './taskInboxService.js'
 
 const cleanups: (() => void)[] = []
 afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup() })
 const input = (extra: Partial<PushInput> = {}): PushInput => ({ platform: 'ios', token: 'a'.repeat(64), hostId: 'local-phone-host-a', preferences: { decisions: true, completed: true, errors: true }, quietHours: { enabled: false, start: '22:00', end: '08:00' }, timeZone: 'Asia/Shanghai', ...extra })
 const completed = (at = Date.parse('2026-10-24T04:00:00Z')): MobileActivity => ({ id: 's', activityState: 'idle', terminalOutcome: 'completed', completedAt: at })
-function fixture(configured = true) {
+function fixture(configured = true, tasks: () => TaskInboxEntry[] = () => []) {
   const directory = mkdtempSync(path.join(tmpdir(), 'mobile-push-'))
   let activities: MobileActivity[] = [], now = Date.parse('2026-10-24T04:00:00Z'), remoteActive = true
   const sent: PushDelivery[] = []
   const transport = { configured: () => configured, send: async (delivery: PushDelivery): Promise<'sent' | 'invalidToken'> => { sent.push(delivery); return 'sent' } }
-  const service = new MobilePushService({ directory, transport, activities: async () => activities, summary: async () => ({ title: 'fixture session' }), now: () => now })
+  const service = new MobilePushService({ directory, transport, activities: async () => activities, tasks, summary: async () => ({ title: 'fixture session' }), now: () => now })
   service.start(() => remoteActive)
   cleanups.push(() => { service.stop(); rmSync(directory, { recursive: true, force: true }) })
   return { service, directory, sent, transport, state: (value: MobileActivity[]) => { activities = value }, advance: (ms: number) => { now += ms }, revoke: () => { remoteActive = false } }
 }
+
+test('background completions notify once while the parent keeps running, respecting device preferences', async () => {
+  const tasks: TaskInboxEntry[] = []
+  const f = fixture(true, () => tasks)
+  f.service.register(input(), {})
+  f.service.register(input({ token: 'b'.repeat(64), preferences: { decisions: true, completed: false, errors: false } }), {})
+  f.service.register(input({ token: 'c'.repeat(64), quietHours: { enabled: true, start: '00:00', end: '00:00' } }), {})
+  f.service.register(input({ token: 'd'.repeat(64) }), { remoteDeviceId: 'revoked' })
+  f.revoke()
+  f.state([{ id: 's', activityState: 'running' }])
+  await f.service.tick()
+  tasks.push({ taskId: 't1', sessionId: 's', status: 'completed', finishedAt: Date.parse('2026-10-24T04:00:01Z') })
+  await f.service.tick()
+  await f.service.tick()
+  expect(f.sent).toHaveLength(1)
+  expect(f.sent[0]?.payload).toMatchObject({ sessionId: 's', taskId: 't1', eventType: 'completed' })
+  tasks.push({ taskId: 't2', sessionId: 's', status: 'failed', finishedAt: Date.parse('2026-10-24T04:00:02Z') })
+  await f.service.tick()
+  expect(f.sent).toHaveLength(2)
+  expect(f.sent[1]?.payload).toMatchObject({ sessionId: 's', taskId: 't2', eventType: 'error' })
+})
 
 test('configuration absence is normal unavailability and never records successful registration', () => {
   const f = fixture(false)
@@ -222,7 +244,7 @@ test('tokens are encrypted at rest and ownership requires the verified remote de
   const raw = readFileSync(path.join(f.directory, 'mobile-push.json'), 'utf8')
   expect(raw).not.toContain(input().token)
   expect(JSON.parse(raw).future).toEqual({ keep: true })
-  expect(statSync(path.join(f.directory, 'mobile-push.json')).mode & 0o777).toBe(0o600)
+  expect(statSync(path.join(f.directory, 'mobile-push.json')).mode & 0o777).toBe(process.platform === 'win32' ? 0o666 : 0o600)
   expect(f.service.unregister(registered.id!, input().token, { remoteDeviceId: 'device-b' })).toBe(false)
   expect(f.service.unregister(registered.id!, 'b'.repeat(64), { remoteDeviceId: 'device-a' })).toBe(false)
   expect(f.service.unregister(registered.id!, input().token, { remoteDeviceId: 'device-a' })).toBe(true)

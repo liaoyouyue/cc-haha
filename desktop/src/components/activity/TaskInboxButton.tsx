@@ -7,6 +7,9 @@ import { useDismissable } from '@/hooks/useDismissable'
 import { useSessionStore } from '../../stores/sessionStore'
 import { isSessionTabId } from '../../stores/tabClose'
 import { useTabStore } from '../../stores/tabStore'
+import { useSessionRuntimeStore } from '../../stores/sessionRuntimeStore'
+import { useUIStore } from '../../stores/uiStore'
+import { sessionsApi } from '../../api/sessions'
 
 const relativeTime = (value: number, now: number) => {
   const seconds = Math.max(1, Math.round((now - value) / 1000))
@@ -33,6 +36,8 @@ export function TaskInboxButton() {
   const [open, setOpen] = useState(false)
   const [now, setNow] = useState(() => Date.now())
   const buttonRef = useRef<HTMLButtonElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const [opening, setOpening] = useState(false)
 
   useEffect(() => {
     startPolling()
@@ -47,7 +52,7 @@ export function TaskInboxButton() {
 
   useDismissable({
     open,
-    refs: [buttonRef],
+    refs: [buttonRef, panelRef],
     onDismiss: () => setOpen(false),
   })
 
@@ -83,6 +88,7 @@ export function TaskInboxButton() {
 
       {open && rect ? createPortal(
         <div
+          ref={panelRef}
           role="dialog"
           aria-label={label}
           className="fixed z-[var(--z-dropdown)] flex max-h-[420px] w-[380px] flex-col overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] shadow-[var(--shadow-dropdown)]"
@@ -110,15 +116,24 @@ export function TaskInboxButton() {
                 const title = sessions.find((session) => session.id === entry.sessionId)?.title
                 return (
                   <button
-                    key={entry.taskId}
+                    key={JSON.stringify([entry.sessionId, entry.taskId])}
                     type="button"
-                    onClick={() => {
-                      void ack()
-                      setOpen(false)
-                      // 会话开着就跳过去；没开不强开（恢复成本高，让用户从侧栏进）。
-                      const tabs = useTabStore.getState().tabs
-                      const existing = tabs.find((tab) => isSessionTabId(tab.sessionId) && tab.sessionId === entry.sessionId)
-                      if (existing) useTabStore.getState().setActiveTab(entry.sessionId)
+                    disabled={opening}
+                    onClick={async () => {
+                      setOpening(true)
+                      try {
+                        const tabs = useTabStore.getState().tabs
+                        const existing = tabs.find((tab) => isSessionTabId(tab.sessionId) && tab.sessionId === entry.sessionId)
+                        if (existing) useTabStore.getState().setActiveTab(entry.sessionId)
+                        else {
+                          const session = sessions.find((item) => item.id === entry.sessionId)
+                            ?? await sessionsApi.getSummary(entry.sessionId, { timeout: 5000 })
+                          useSessionStore.getState().openHistoricalSession(session, useSessionRuntimeStore.getState().selections)
+                        }
+                        setOpen(false)
+                      } catch {
+                        useUIStore.getState().addToast({ type: 'error', message: t('search.global.error') })
+                      } finally { setOpening(false) }
                     }}
                     className="flex w-full flex-col gap-0.5 border-b border-[var(--color-border)] px-3 py-2 text-left last:border-b-0 transition-colors hover:bg-[var(--color-surface-hover)]"
                   >

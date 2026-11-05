@@ -5,7 +5,9 @@ import os from 'node:os'
 import type { PushTransport, MobilePushPlatform, MobilePushProvider, PushDelivery, PulledNotification } from './mobilePushTransport.js'
 import type { MobileSessionActivity } from './mobileSessionActivity.js'
 
-export type MobileActivity = MobileSessionActivity
+import type { TaskInboxEntry } from './taskInboxService.js'
+
+export type MobileActivity = MobileSessionActivity & { taskSessionId?: string; taskId?: string }
 export type PushDeliveryOptions = { channels?: 'split'; timeSensitive?: boolean; liveActivity?: 'running' | 'decisions'; showCommand?: boolean }
 export type PushInput = { platform: MobilePushPlatform; provider?: MobilePushProvider; token: string; deviceToken?: string; hostId: string; hostName?: string; kind?: 'notification' | 'liveActivity'; sessionId?: string; activityId?: string; name?: string; preferences: { decisions: boolean; completed: boolean; errors: boolean }; delivery?: PushDeliveryOptions; quietHours: { enabled: boolean; start: string; end: string }; timeZone: string }
 export type PushOwner = { remoteDeviceId?: string; remoteDeviceExpiresAt?: number }
@@ -105,8 +107,26 @@ export class MobilePushService {
   /** The latest Expo send failed; the phones relying on it are told, cleared by the next success. */
   private expoError?: string
   private readonly file: string
-  constructor(private deps: { transport: PushTransport; pull?: (token: string, ack: string | undefined, signal: AbortSignal) => Promise<PulledNotification[]>; activities(): MobileActivity[] | Promise<MobileActivity[]>; summary(id: string): Promise<{ title?: string } | null>; directory?: string; now?: () => number }) {
+  private readonly startedAt: number
+  constructor(private deps: { transport: PushTransport; pull?: (token: string, ack: string | undefined, signal: AbortSignal) => Promise<PulledNotification[]>; activities(): MobileActivity[] | Promise<MobileActivity[]>; tasks?(): TaskInboxEntry[]; summary(id: string): Promise<{ title?: string } | null>; directory?: string; now?: () => number }) {
     this.file = path.join(deps.directory ?? path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'cc-haha'), 'mobile-push.json')
+    this.startedAt = this.now()
+  }
+  private async activities(): Promise<MobileActivity[]> {
+    const activities = await this.deps.activities()
+    // 后台任务独立去重，但通知仍打开所属会话；重启不重发旧收件箱。
+    let entries: TaskInboxEntry[] = []
+    try { entries = this.deps.tasks?.() ?? [] } catch { this.lastError = '后台任务收件箱不可读；会话通知仍正常处理。' }
+    const tasks: MobileActivity[] = entries
+      .filter(task => task.status !== 'stopped' && task.finishedAt >= this.startedAt)
+      .map(task => ({
+        id: `task:${JSON.stringify([task.sessionId, task.taskId])}`,
+        taskSessionId: task.sessionId, taskId: task.taskId,
+        activityState: task.status === 'failed' ? 'failed' : 'idle',
+        terminalOutcome: task.status === 'failed' ? 'failed' : 'completed',
+        completedAt: task.finishedAt,
+      }))
+    return [...activities, ...tasks]
   }
   private signature(activity: MobileActivity) { return `${activity.activityState}:${activity.requestId ?? ''}:${Boolean(activity.stalled)}:${activity.terminalOutcome ?? ''}:${activity.completedAt ?? ''}` }
   private now() { return this.deps.now?.() ?? Date.now() }
@@ -249,7 +269,7 @@ export class MobilePushService {
     }
     // One activity read per tick, shared by the lanes that start now; issued
     // synchronously so a caller may settle it right after calling tick().
-    const snapshot = (async () => this.deps.activities())()
+    const snapshot = this.activities()
     await Promise.all(lanes.map(lane => this.tickLane(lane, snapshot)))
   }
   private async tickLane(lane: Lane, snapshot: Promise<MobileActivity[]>) {
@@ -286,19 +306,22 @@ export class MobilePushService {
           const signature = this.signature(activity)
           let retry = this.retries.get(retryKey)
           if (retry && retry.signature !== signature) { this.retries.delete(retryKey); retry = undefined }
-          const event = pushEvent(previous, activity) ?? retry?.event
+          const event = (!previous && activity.taskId
+            ? activity.activityState === 'failed' ? 'error' : 'completed'
+            : pushEvent(previous, activity)) ?? retry?.event
           if (retry && (retry.attempts >= 3 || retry.nextAt > this.now())) continue
           const changed = !previous || this.signature(previous) !== signature
           if (registration.kind === 'notification' && (!event || !registration.preferences[event === 'decision' ? 'decisions' : event === 'completed' ? 'completed' : 'errors'] || inQuietHours(registration, this.now()))) continue
           if (registration.kind === 'liveActivity' && !changed && !retry && this.now() - (this.liveDeliveredAt.get(registration.id) ?? 0) < 60000) continue
-          const summary = await this.deps.summary(activity.id)
+          const sessionId = activity.taskSessionId ?? activity.id
+          const summary = await this.deps.summary(sessionId)
           if (generation !== this.generation) return
-          const latest = (await this.deps.activities()).find(row => row.id === activity.id)
+          const latest = (await this.activities()).find(row => row.id === activity.id)
           if (generation !== this.generation) return
           if (latest ? this.signature(latest) !== signature : activity.activityState !== 'idle' || hasSuccessfulCompletion(activity)) { this.retries.delete(retryKey); continue }
           if (!this.active(registration) || !this.stored!.registrations.includes(registration)) continue
           const title = summary?.title?.slice(0, 100) || 'cc-haha 会话'
-          const data = { hostId: registration.hostId, sessionId: activity.id, ...(activity.requestId ? { requestId: activity.requestId } : {}), eventType: event ?? activity.activityState }
+          const data = { hostId: registration.hostId, sessionId, ...(activity.taskId ? { taskId: activity.taskId } : {}), ...(activity.requestId ? { requestId: activity.requestId } : {}), eventType: event ?? activity.activityState }
           const tool = activity.activityState === 'waiting' && activity.requestId && activity.toolName && registration.preferences.decisions && !inQuietHours(registration, this.now()) && !(typeof activity.autoAnswerDeadline === 'number' && activity.autoAnswerDeadline <= this.now()) && !['AskUserQuestion', 'ExitPlanMode', 'ComputerUse'].includes(activity.toolName)
           // 隐私开关也管锁屏上的普通通知：只有 Bash 的 preview 是命令原文，其他工具的 preview 本来就是通用占位。
           const hideCommand = registration.delivery?.showCommand === false && activity.toolName === 'Bash'
