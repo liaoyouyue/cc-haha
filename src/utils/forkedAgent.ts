@@ -425,6 +425,7 @@ export function createSubagentContext(
 
     // AbortController
     abortController,
+    computerUseTurn: parentContext.computerUseTurn,
 
     // AppState access
     getAppState,
