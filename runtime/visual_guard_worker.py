@@ -41,9 +41,19 @@ _win_engine = None
 # the wire. Pin both streams to UTF-8 instead of trusting the environment.
 # A --windowed build reports None for a stream it has no console for, which is
 # why this is guarded rather than unconditional.
+# Reconfiguring a stream that was already read raises, and this module is also
+# imported by hosts that speak their own protocol on the same streams, so only
+# touch streams that have not been touched yet.
 for _stream in (sys.stdin, sys.stdout):
-    if _stream is not None and hasattr(_stream, "reconfigure"):
+    if _stream is None or not hasattr(_stream, "reconfigure"):
+        continue
+    try:
+        if getattr(_stream, "closed", False):
+            continue
         _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (ValueError, OSError):
+        # Already read from (or otherwise locked) — leave it alone.
+        pass
 
 DWMWA_CLOAKED = 14
 # Renders the window's own content into the DC, so it works whether or not the
