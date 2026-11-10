@@ -614,7 +614,6 @@ export function buildProviderManagedEnv(
     return applyUserModelContextWindows(
       buildOpenAIOfficialRuntimeEnv(provider.models, provider.modelContextWindows),
       options?.configDir,
-      provider.modelContextWindows,
     )
   }
   if (provider.runtimeKind === 'grok_oauth') {
@@ -713,7 +712,6 @@ export function readActiveProviderManagedEnv(
       return applyUserModelContextWindows(
         buildOpenAIOfficialRuntimeEnv(index.officialProviderModels[OPENAI_OFFICIAL_PROVIDER_ID], windows),
         configDir,
-        windows,
       )
     }
     if (isGrokOfficialProviderId(index.activeId)) {
