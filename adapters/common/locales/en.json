@@ -46,6 +46,7 @@
   "chat.attachments.placeholder": "(the user sent attachments)",
   "chat.send.failed": "Failed to send the message; the connection may have dropped. Send /new to start over.",
   "chat.stop.sent": "Stop signal sent.",
+  "chat.stop.failed": "Stop signal could not be sent. Check the session state and retry.",
   "chat.clear.done": "Session context cleared.",
   "chat.clear.failed": "Could not send /clear. Send /new to reconnect the session first.",
   "chat.permission.notFound": "No pending permission request found: {requestId}",

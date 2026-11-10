@@ -52,6 +52,10 @@ export type MockRequest = {
 /** Prompt that makes the scripted model fail the request the way a provider would. */
 export const UPSTREAM_ERROR_TRIGGER = 'MOCK_UPSTREAM_ERROR'
 export const UPSTREAM_ERROR_MESSAGE = 'mock upstream rejected this request'
+export const KIMI_USAGE_LIMIT_TRIGGER = 'MOCK_KIMI_USAGE_LIMIT'
+export const KIMI_USAGE_LIMIT_MESSAGE = "You've reached your usage limit for this billing cycle. Your quota will be refreshed in the next cycle. To continue now, purchase extra usage or upgrade your plan: https://www.kimi.com/code/#pricing"
+export const GOOGLE_ADC_QUOTA_PROJECT_TRIGGER = 'MOCK_GOOGLE_ADC_QUOTA_PROJECT'
+export const GOOGLE_ADC_QUOTA_PROJECT_MESSAGE = 'The aiplatform.googleapis.com API requires a quota project, which is not set by default.'
 export const UPSTREAM_REFUSAL_TRIGGER = 'MOCK_UPSTREAM_REFUSAL'
 /**
  * Prompt whose history the provider rejects as too long, worded the way
@@ -178,6 +182,14 @@ export function decideReply(request: MockRequest): MockReply {
     return { kind: 'error', status: 400, errorType: 'invalid_request_error', message: UPSTREAM_ERROR_MESSAGE }
   }
 
+  if (prompt.includes(KIMI_USAGE_LIMIT_TRIGGER)) {
+    return { kind: 'error', status: 403, errorType: 'permission_error', message: KIMI_USAGE_LIMIT_MESSAGE }
+  }
+
+  if (prompt.includes(GOOGLE_ADC_QUOTA_PROJECT_TRIGGER)) {
+    return { kind: 'error', status: 403, errorType: 'permission_error', message: GOOGLE_ADC_QUOTA_PROJECT_MESSAGE }
+  }
+
   if (prompt.includes(UPSTREAM_REFUSAL_TRIGGER)) {
     return { kind: 'message', content: [], stopReason: 'refusal' }
   }
@@ -195,6 +207,14 @@ export function decideReply(request: MockRequest): MockReply {
       if (hasTool(request, tool)) return toolUse(tool, input)
       if (hasTool(request, 'ToolSearch')) return toolUse('ToolSearch', { query: `select:${tool}` })
     }
+  }
+  // Several writes in one turn, one per request, so a scenario can act between them.
+  if (prompt.startsWith('MOCK_WRITE_SEQUENCE ') && hasTool(request, 'Write')) {
+    const writes = JSON.parse(prompt.slice('MOCK_WRITE_SEQUENCE '.length)) as Array<Record<string, unknown>>
+    const promptIndex = messages.findLastIndex(message => message.role === 'user' && textOf(blocksOf(message)).includes(prompt))
+    const issued = messages.slice(promptIndex + 1)
+      .filter(message => message.role === 'assistant' && blocksOf(message).some(block => block.type === 'tool_use')).length
+    if (issued < writes.length) return toolUse('Write', writes[issued]!)
   }
   if (prompt === 'MOCK_LATE_MCP' && !results.some(block => toolResultText(block).includes('LATE_MCP_AVAILABLE'))) {
     const toolName = 'mcp__late_start__echo'

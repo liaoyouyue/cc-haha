@@ -103,6 +103,35 @@ async function waitForCondition(predicate: () => boolean): Promise<void> {
 }
 
 describe('ElectronServerRuntime', () => {
+  it('restarts only WeChat after invalidating health and waiting for the old worker to exit', async () => {
+    const fetch = vi.fn(async () => Response.json({ ok: true }))
+    const runtime = createRuntime({ fetch: fetch as unknown as typeof globalThis.fetch })
+    await runtime.startServer()
+    const original = [...sidecarMocks.adapterChildren]
+    const wechat = original[2]!
+    const restart = runtime.restartAdaptersSidecars('wechat')
+    expect(runtime.restartAdaptersSidecars('wechat')).toBe(restart)
+    await waitForMockCalls(wechat.kill, 1)
+    expect(sidecarMocks.adapterChildren).toHaveLength(ADAPTER_COUNT)
+    wechat.exitCode = 0
+    wechat.emit('exit', 0, null)
+    await restart
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining('/wechat/runtime/invalidate'), expect.objectContaining({ method: 'POST' }))
+    expect(wechat.kill).toHaveBeenCalledTimes(1)
+    for (const other of original.filter(child => child !== wechat)) expect(other.kill).not.toHaveBeenCalled()
+    expect(sidecarMocks.adapterChildren).toHaveLength(ADAPTER_COUNT + 1)
+    expect(sidecarMocks.spawnSidecar.mock.calls.at(-1)![0].args).toContain('--wechat')
+    runtime.stopAll()
+  })
+
+  it('does not stop any adapter when resetting WeChat health fails', async () => {
+    const runtime = createRuntime({ fetch: (async () => new Response('', { status: 503 })) as typeof fetch })
+    await runtime.startServer()
+    await expect(runtime.restartAdaptersSidecars('wechat')).rejects.toThrow('Unable to reset')
+    for (const child of sidecarMocks.adapterChildren) expect(child.kill).not.toHaveBeenCalled()
+    runtime.stopAll()
+  })
+
   it('drains the authenticated server and every adapter before stopping the server', async () => {
     const order: string[] = []
     const runtime = createRuntime({ fetch: (async (_url, options) => {
@@ -330,6 +359,21 @@ describe('ElectronServerRuntime', () => {
       expect(adapter.env.CC_HAHA_LOCAL_ACCESS_TOKEN).toBe(localToken)
       expect(adapter.env.CC_HAHA_PET_ACCESS_TOKEN).toBeUndefined()
     }
+  })
+
+  it('gives only the server a separate per-launch token for the direct-connection endpoint', async () => {
+    const runtime = createRuntime()
+
+    await runtime.startServer()
+
+    const endpointToken = runtime.getP2PEndpointToken()
+    expect(endpointToken.length).toBeGreaterThanOrEqual(32)
+    expect(endpointToken).not.toBe(runtime.getLocalAccessToken())
+    expect(endpointToken).not.toBe(runtime.getPetAccessToken())
+    expect(sidecarMocks.serverPlans[0]!.env.CC_HAHA_P2P_ENDPOINT_TOKEN).toBe(endpointToken)
+    const adapters = sidecarMocks.spawnSidecar.mock.calls.map(([plan]) => plan).filter(plan => plan.args[0] === 'adapters')
+    for (const adapter of adapters) expect(adapter.env.CC_HAHA_P2P_ENDPOINT_TOKEN).toBeUndefined()
+    expect(createRuntime().getP2PEndpointToken()).not.toBe(endpointToken)
   })
 
   it('gives the server only the dynamic bridge URL while adapters explicitly inherit it', async () => {
@@ -788,6 +832,7 @@ describe('ElectronServerRuntime', () => {
     const runtime = createRuntime()
     await runtime.startServer()
     const firstAdapters = [...sidecarMocks.adapterChildren]
+    for (const child of firstAdapters) child.kill.mockImplementation(() => { child.exitCode = 0; child.emit('exit', 0, null) })
 
     await runtime.restartAdaptersSidecars()
     const restartedAdapters = sidecarMocks.adapterChildren.slice(ADAPTER_COUNT)
@@ -811,6 +856,13 @@ describe('ElectronServerRuntime', () => {
     const secondRestart = runtime.restartAdaptersSidecars()
 
     expect(secondRestart).toBe(firstRestart)
+    await waitForMockCalls(originalAdapters[0]!.kill, 1)
+    expect(sidecarMocks.adapterChildren).toHaveLength(ADAPTER_COUNT)
+    for (const child of originalAdapters.slice(0, -1)) { child.exitCode = 0; child.emit('exit', 0, null) }
+    await Promise.resolve()
+    expect(sidecarMocks.adapterChildren).toHaveLength(ADAPTER_COUNT)
+    originalAdapters.at(-1)!.exitCode = 0
+    originalAdapters.at(-1)!.emit('exit', 0, null)
     await Promise.all([firstRestart, secondRestart])
     expect(sidecarMocks.adapterChildren).toHaveLength(ADAPTER_COUNT * 2)
     for (const adapter of originalAdapters) {
@@ -826,6 +878,7 @@ describe('ElectronServerRuntime', () => {
     await runtime.startServer()
     const firstServer = sidecarMocks.serverChildren[0]!
     const originalAdapters = [...sidecarMocks.adapterChildren]
+    for (const child of originalAdapters) child.kill.mockImplementation(() => { child.exitCode = 0; child.emit('exit', 0, null) })
     sidecarMocks.onAdapterSpawn = () => {
       sidecarMocks.onAdapterSpawn = null
       firstServer.emit('exit', 23, null)

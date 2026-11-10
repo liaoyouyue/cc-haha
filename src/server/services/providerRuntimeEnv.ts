@@ -34,6 +34,7 @@ import {
   BUILT_IN_PROVIDER_IDS,
   DEEPSEEK_ACCOUNT_PROVIDER_ID,
   GROK_OFFICIAL_PROVIDER_ID,
+  ModelContextWindowsSchema,
   OPENAI_OFFICIAL_PROVIDER_ID,
   PROVIDER_DEEPSEEK_ACCOUNT_MODEL_IDS_SCHEMA_VERSION,
   PROVIDER_TOOL_SEARCH_OPT_IN_SCHEMA_VERSION,
@@ -349,6 +350,27 @@ function normalizeProviderOrder(value: unknown, providers: SavedProvider[]): str
   return order
 }
 
+/**
+ * Keep each built-in provider's valid per-model window overrides. One bad
+ * value drops only itself, so a hand-edited index never loses the rest.
+ */
+export function normalizeOfficialProviderContextWindows(
+  value: unknown,
+): Record<string, Record<string, number>> {
+  if (!isRecord(value)) return {}
+  const normalized: Record<string, Record<string, number>> = {}
+  for (const [providerId, windows] of Object.entries(value)) {
+    if (!isRecord(windows)) continue
+    const valid = Object.fromEntries(
+      Object.entries(windows).filter(([model, window]) =>
+        model.trim() !== '' &&
+        ModelContextWindowsSchema.safeParse({ [model]: window }).success),
+    ) as Record<string, number>
+    if (Object.keys(valid).length > 0) normalized[providerId] = valid
+  }
+  return normalized
+}
+
 export function normalizeProvidersIndex(value: unknown): ProvidersIndex | null {
   if (!isRecord(value) || !Array.isArray(value.providers)) {
     return null
@@ -358,6 +380,7 @@ export function normalizeProvidersIndex(value: unknown): ProvidersIndex | null {
     activeProviderId: legacyActiveProviderId,
     providerOrder: rawProviderOrder,
     officialProviderModels: rawOfficialProviderModels,
+    officialProviderContextWindows: rawOfficialProviderContextWindows,
     ...rest
   } = value
   const schemaVersion = typeof value.schemaVersion === 'number' ? value.schemaVersion : 1
@@ -408,6 +431,8 @@ export function normalizeProvidersIndex(value: unknown): ProvidersIndex | null {
     providers,
     providerOrder: normalizeProviderOrder(rawProviderOrder, providers),
     officialProviderModels,
+    officialProviderContextWindows:
+      normalizeOfficialProviderContextWindows(rawOfficialProviderContextWindows),
   }
 }
 
@@ -586,7 +611,11 @@ export function buildProviderManagedEnv(
   options?: { proxyPath?: string; serverPort?: number; configDir?: string },
 ): Record<string, string> {
   if (provider.runtimeKind === 'openai_oauth') {
-    return applyUserModelContextWindows(buildOpenAIOfficialRuntimeEnv(provider.models), options?.configDir)
+    return applyUserModelContextWindows(
+      buildOpenAIOfficialRuntimeEnv(provider.models, provider.modelContextWindows),
+      options?.configDir,
+      provider.modelContextWindows,
+    )
   }
   if (provider.runtimeKind === 'grok_oauth') {
     return applyUserModelContextWindows(buildGrokOfficialRuntimeEnv(provider.models), options?.configDir)
@@ -680,8 +709,11 @@ export function readActiveProviderManagedEnv(
     if (!index?.activeId) return null
 
     if (isOpenAIOfficialProviderId(index.activeId)) {
+      const windows = index.officialProviderContextWindows[OPENAI_OFFICIAL_PROVIDER_ID]
       return applyUserModelContextWindows(
-        buildOpenAIOfficialRuntimeEnv(index.officialProviderModels[OPENAI_OFFICIAL_PROVIDER_ID]), configDir,
+        buildOpenAIOfficialRuntimeEnv(index.officialProviderModels[OPENAI_OFFICIAL_PROVIDER_ID], windows),
+        configDir,
+        windows,
       )
     }
     if (isGrokOfficialProviderId(index.activeId)) {

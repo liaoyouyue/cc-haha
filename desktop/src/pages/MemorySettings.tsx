@@ -153,7 +153,7 @@ export function MemorySettings() {
   }
 
   const handleFileOpen = (file: MemoryFile) => {
-    if (!selectedProjectId || file.path === selectedFile?.path) return
+    if (!selectedProjectId) return
     if (!canLeaveDirtyEdit()) return
     void openFile(selectedProjectId, file.path)
   }
@@ -233,7 +233,8 @@ export function MemorySettings() {
             variant="secondary"
             size="base"
             onClick={handleRefresh}
-            loading={isLoadingProjects || isLoadingFiles}
+            loading={isLoadingProjects || isLoadingFiles || isLoadingFile}
+            disabled={isSaving}
             icon={<RefreshCw size={14} strokeWidth={1.75} aria-hidden="true" />}
           >
             {t('settings.memory.refresh')}

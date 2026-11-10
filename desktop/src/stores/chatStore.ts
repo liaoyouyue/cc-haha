@@ -27,6 +27,8 @@ import { randomSpinnerVerb } from '../config/spinnerVerbs'
 import { notifyDesktop } from '../lib/desktopNotifications'
 import { createAsyncRefreshCoalescer } from '../lib/asyncRefreshCoalescer'
 import { deriveSessionTitle, isPlaceholderSessionTitle } from '../lib/sessionTitle'
+import { formatBytes } from '../lib/formatBytes'
+import { checkUserMessageBudget } from '../lib/userMessageBudget'
 import { t } from '../i18n'
 import {
   VISUAL_SELECTION_BATCH_PROMPT_HEADER,
@@ -48,6 +50,7 @@ import type {
   BackgroundAgentTask,
   BackgroundAgentTaskUsage,
   ChatState,
+  ClientMessage,
   CompactProgress,
   ComputerUsePermissionRequest,
   ComputerUsePermissionResponse,
@@ -480,12 +483,16 @@ type ChatStore = {
    * off screen, so coming back to it redraws at once and only backfills.
    */
   disconnectSession: (sessionId: string, options?: { keepTranscript?: boolean }) => void
+  /**
+   * Returns `false` when the frame is over the server's input budget: nothing
+   * was sent and an error row explains why, so the caller keeps its draft.
+   */
   sendMessage: (
     sessionId: string,
     content: string,
     attachments?: AttachmentRef[],
     options?: { sessionReferences?: Array<{ sessionId: string }>; displayContent?: string; displayAttachments?: AttachmentRef[]; hideDisplayContent?: boolean },
-  ) => void
+  ) => boolean
   respondToPermission: (
     sessionId: string,
     requestId: string,
@@ -1805,6 +1812,10 @@ function strongHistoryMessageIdentities(message: UIMessage): string[] {
       message.transcriptMessageId!.trim(),
       message.content.trim(),
     ]))
+  }
+
+  if (message.type === 'error' && nonEmptyHistoryIdentityPart(message.transcriptMessageId)) {
+    identities.push(JSON.stringify(['transcript', 'error', message.transcriptMessageId!.trim()]))
   }
 
   if (message.type === 'tool_use' || message.type === 'tool_result') {
@@ -3230,6 +3241,20 @@ export const useChatStore = create<ChatStore>((setState, get) => {
       return sessions === patch.sessions ? patch : { ...patch, sessions }
     })
   }
+  const rejectOversizedMessage = (sessionId: string, message: ClientMessage): boolean => {
+    const budget = checkUserMessageBudget(message)
+    if (budget.ok) return false
+    set((state) => ({
+      sessions: updateSessionIn(state.sessions, sessionId, (session) => ({
+        messages: [...session.messages, {
+          id: nextId(), type: 'error',
+          message: t('chat.messageTooLarge', { size: formatBytes(budget.bytes), limit: formatBytes(budget.limit) }),
+          code: 'MESSAGE_TOO_LARGE', timestamp: Date.now(),
+        }],
+      })),
+    }))
+    return true
+  }
   return ({
   applyBoundedUpdate: set,
   markHistoryRowsDurable,
@@ -3552,6 +3577,19 @@ export const useChatStore = create<ChatStore>((setState, get) => {
       subagentTab?.sourceSessionId && subagentTab.subagentToolUseId,
     )
     const isDirectAgentSession = isMemberSession || isSubagentSession
+    const outgoing: ClientMessage = {
+      type: 'user_message',
+      content,
+      attachments,
+      ...(options?.sessionReferences?.length ? { sessionReferences: options.sessionReferences } : {}),
+    }
+    if (!isDirectAgentSession) {
+      // The server closes the socket (1009) for a frame over its input budget
+      // and the client only reconnects, so the turn vanished without a trace:
+      // no bubble, no error. Refuse it before the optimistic row and the title
+      // update, and say why where the reply would have appeared.
+      if (rejectOversizedMessage(sessionId, outgoing)) return false
+    }
     const hideDisplayContent = !isDirectAgentSession && options?.hideDisplayContent === true
     const userFacingContent =
       hideDisplayContent
@@ -3680,7 +3718,7 @@ export const useChatStore = create<ChatStore>((setState, get) => {
             })),
           }))
         })
-      return
+      return true
     }
 
     if (
@@ -3719,7 +3757,7 @@ export const useChatStore = create<ChatStore>((setState, get) => {
           }),
         }))
       })
-      return
+      return true
     }
 
     const selection = useSessionRuntimeStore.getState().selections[sessionId]
@@ -3740,7 +3778,8 @@ export const useChatStore = create<ChatStore>((setState, get) => {
         get().setSessionRuntime(sessionId, defaultSelection)
       }
     }
-    wsManager.send(sessionId, { type: 'user_message', content, attachments, ...(options?.sessionReferences?.length ? { sessionReferences: options.sessionReferences } : {}) })
+    wsManager.send(sessionId, outgoing)
+    return true
   },
 
   respondToPermission: (sessionId, requestId, allowed, options) => {
@@ -3815,8 +3854,9 @@ export const useChatStore = create<ChatStore>((setState, get) => {
   },
 
   setSessionPermissionMode: (sessionId, mode) => {
-    const session = get().sessions[sessionId]
-    if (!session || session.chatState !== 'idle') return
+    // Allowed mid-turn: the server applies it to the running CLI, so tool calls
+    // after the switch use the new mode without interrupting the turn.
+    if (!get().sessions[sessionId]) return
     wsManager.send(sessionId, { type: 'set_permission_mode', mode })
   },
 
@@ -4827,8 +4867,7 @@ export const useChatStore = create<ChatStore>((setState, get) => {
     if (!session || !queuedMessage) return
 
     if (session.chatState === 'idle') {
-      get().removeQueuedUserMessage(sessionId, messageId)
-      get().sendMessage(
+      const sent = get().sendMessage(
         sessionId,
         queuedMessage.content,
         queuedMessage.attachments,
@@ -4838,8 +4877,15 @@ export const useChatStore = create<ChatStore>((setState, get) => {
           displayAttachments: queuedMessage.displayAttachments,
         },
       )
+      if (sent) get().removeQueuedUserMessage(sessionId, messageId)
       return
     }
+
+    const outgoing: ClientMessage = {
+      type: 'user_message', content: queuedMessage.content, attachments: queuedMessage.attachments,
+      ...(queuedMessage.sessionReferences?.length ? { sessionReferences: queuedMessage.sessionReferences } : {}),
+    }
+    if (rejectOversizedMessage(sessionId, outgoing)) return
 
     const now = Date.now()
     set((state) => ({
@@ -4858,12 +4904,7 @@ export const useChatStore = create<ChatStore>((setState, get) => {
       }),
     }))
 
-    wsManager.send(sessionId, {
-      type: 'user_message',
-      content: queuedMessage.content,
-      attachments: queuedMessage.attachments,
-      ...(queuedMessage.sessionReferences?.length ? { sessionReferences: queuedMessage.sessionReferences } : {}),
-    })
+    wsManager.send(sessionId, outgoing)
   },
 
   clearMessages: (sessionId) => {
@@ -5949,6 +5990,7 @@ export const useChatStore = create<ChatStore>((setState, get) => {
           type: 'error',
           message: msg.message,
           code: msg.code,
+          ...(msg.transcriptMessageId ? { transcriptMessageId: msg.transcriptMessageId } : {}),
           ...(msg.businessErrorCode ? { businessErrorCode: msg.businessErrorCode } : {}),
           timestamp: Date.now(),
         }
@@ -8443,6 +8485,27 @@ export function mapHistoryMessagesToUiMessages(
         ...(parsed.attachments ? { attachments: parsed.attachments } : {}),
         timestamp,
       })
+      continue
+    }
+    if (msg.type === 'assistant' && (msg.isApiErrorMessage || msg.error)) {
+      const message = typeof msg.content === 'string'
+        ? msg.content
+        : Array.isArray(msg.content)
+          ? msg.content.flatMap((block: unknown) => {
+              if (!block || typeof block !== 'object') return []
+              const value = block as { type?: unknown; text?: unknown }
+              return value.type === 'text' && typeof value.text === 'string' ? [value.text] : []
+            }).join('\n')
+          : ''
+      if (message.trim()) {
+        uiMessages.push({
+          id: msg.id || nextId(), type: 'error', message,
+          code: msg.error || 'API_ERROR',
+          ...(msg.id ? { transcriptMessageId: msg.id } : {}),
+          ...(msg.businessErrorCode ? { businessErrorCode: msg.businessErrorCode } : {}),
+          timestamp,
+        })
+      }
       continue
     }
     if (msg.type === 'assistant' && typeof msg.content === 'string') {

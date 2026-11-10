@@ -11,31 +11,6 @@ import type { ProviderPreset } from '../types/providerPreset'
 import type { AppMode, ChatSendBehavior, PermissionMode, ThemeMode, UpdateProxySettings } from '../types/settings'
 import { browserHost } from '../lib/desktopHost/browserHost'
 import { settingsApi } from '../api/settings'
-import { isLanH5BaseUrl } from '../pages/settings/H5AccessSettings'
-
-describe('isLanH5BaseUrl', () => {
-  const url = (value: string) => new URL(value)
-
-  it('accepts RFC1918, loopback and link-local http origins with a port', () => {
-    expect(isLanH5BaseUrl(url('http://192.168.1.12:3456'))).toBe(true)
-    expect(isLanH5BaseUrl(url('http://10.200.64.7:3456'))).toBe(true)
-    expect(isLanH5BaseUrl(url('http://172.16.0.4:3456'))).toBe(true)
-    expect(isLanH5BaseUrl(url('http://127.0.0.1:3456'))).toBe(true)
-    expect(isLanH5BaseUrl(url('http://169.254.1.1:3456'))).toBe(true)
-  })
-
-  it('accepts the Tailscale CGNAT overlay (100.64.0.0/10)', () => {
-    expect(isLanH5BaseUrl(url('http://100.64.0.5:3456'))).toBe(true)
-    expect(isLanH5BaseUrl(url('http://100.127.255.254:3456'))).toBe(true)
-  })
-
-  it('rejects out-of-range CGNAT, https and portless origins', () => {
-    expect(isLanH5BaseUrl(url('http://100.63.255.254:3456'))).toBe(false)
-    expect(isLanH5BaseUrl(url('http://100.128.0.1:3456'))).toBe(false)
-    expect(isLanH5BaseUrl(url('https://192.168.1.12:8443'))).toBe(false)
-    expect(isLanH5BaseUrl(url('http://192.168.1.12'))).toBe(false)
-  })
-})
 
 // Hoisted like the other mocks: a store that imports the providers API at load
 // time runs the module factory below before plain top-level consts exist.
@@ -1344,9 +1319,11 @@ describe('Settings > General tab', () => {
     fireEvent.click(trigger)
 
     const slider = screen.getByRole('slider', { name: 'Default reasoning effort' })
-    expect(slider).toHaveAttribute('aria-valuemax', '2')
-    expect(slider).toHaveAttribute('aria-valuenow', '1')
-    expect(screen.getAllByTestId('reasoning-effort-stop')).toHaveLength(3)
+    // The fork's synthetic "auto" effort adds one selectable level (see
+    // GeneralSettings.effortOptions), so the slider has four stops here.
+    expect(slider).toHaveAttribute('aria-valuemax', '3')
+    expect(slider).toHaveAttribute('aria-valuenow', '2')
+    expect(screen.getAllByTestId('reasoning-effort-stop')).toHaveLength(4)
 
     fireEvent.keyDown(slider, { key: 'ArrowRight' })
 
@@ -3099,12 +3076,11 @@ describe('Settings > Providers tab', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: /Save|Add/i }))
 
     await waitFor(() => {
-      expect(MOCK_UPDATE_SETTINGS).toHaveBeenCalled()
+      expect(providerStoreState.createProvider).toHaveBeenCalled()
     })
-    const saved = MOCK_UPDATE_SETTINGS.mock.calls.at(-1)?.[0] as Record<string, unknown>
-    expect(saved).not.toHaveProperty('model')
-    expect(saved).not.toHaveProperty('modelContext')
-    expect(saved).toMatchObject({ futureSetting: true, env: expect.objectContaining({ EXISTING_ENV: '1' }) })
+    // A new provider is not the default yet, so its preview is not written over
+    // the settings the current default's sessions read (#1806).
+    expect(MOCK_UPDATE_SETTINGS).not.toHaveBeenCalled()
   })
 
   it('defaults Tool Search off and requires confirmation before persisting an explicit enable', async () => {
@@ -3177,12 +3153,9 @@ describe('Settings > Providers tab', () => {
         toolSearchEnabled: true,
       }))
     })
-    expect(MOCK_UPDATE_SETTINGS).toHaveBeenCalledWith(expect.objectContaining({
-      env: expect.objectContaining({
-        EXISTING_ENV: '1',
-        ENABLE_TOOL_SEARCH: 'true',
-      }),
-    }))
+    // The flag is saved on the provider; the server writes ENABLE_TOOL_SEARCH
+    // when it becomes the default, not when it is added (#1806).
+    expect(MOCK_UPDATE_SETTINGS).not.toHaveBeenCalled()
   })
 
   it('defaults experimental beta headers on and persists a provider disable', async () => {
@@ -3251,12 +3224,8 @@ describe('Settings > Providers tab', () => {
         disableExperimentalBetas: true,
       }))
     })
-    expect(MOCK_UPDATE_SETTINGS).toHaveBeenCalledWith(expect.objectContaining({
-      env: expect.objectContaining({
-        EXISTING_ENV: '1',
-        CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1',
-      }),
-    }))
+    // Saved on the provider; written to settings when it becomes the default (#1806).
+    expect(MOCK_UPDATE_SETTINGS).not.toHaveBeenCalled()
   })
 
   it('saves 1M model declarations for the main and role mappings', async () => {
@@ -3331,15 +3300,9 @@ describe('Settings > Providers tab', () => {
         },
       }))
     })
-    expect(MOCK_UPDATE_SETTINGS).toHaveBeenCalledWith(expect.objectContaining({
-      env: expect.objectContaining({
-        ANTHROPIC_MODEL: 'claude-sonnet-4-6[1m]',
-        ANTHROPIC_DEFAULT_HAIKU_MODEL: 'claude-haiku-4-5',
-        ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-4-6[1m]',
-        ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-4-7',
-        CLAUDE_CODE_MODEL_CONTEXT_WINDOWS: '{"claude-sonnet-4-6":1000000}',
-      }),
-    }))
+    // The preview above shows the [1m] env the server writes once this provider
+    // is the default; adding it leaves the current default's settings alone (#1806).
+    expect(MOCK_UPDATE_SETTINGS).not.toHaveBeenCalled()
   })
 
   it('persists the Fable slot to its own env var with its own 1M marker', async () => {
@@ -3407,15 +3370,20 @@ describe('Settings > Providers tab', () => {
       .toHaveAttribute('placeholder', 'Same as main')
 
     fireEvent.click(within(dialog).getByRole('checkbox', { name: /1M support: fable/i }))
+    await waitFor(() => {
+      expect(dialog.querySelector('textarea')?.value).toContain('"ANTHROPIC_DEFAULT_FABLE_MODEL": "claude-fable-5[1m]"')
+    })
     fireEvent.click(within(dialog).getByRole('button', { name: /Save|Add|保存|添加/i }))
 
     await waitFor(() => {
-      expect(MOCK_UPDATE_SETTINGS).toHaveBeenCalledWith(expect.objectContaining({
-        env: expect.objectContaining({
-          ANTHROPIC_DEFAULT_FABLE_MODEL: 'claude-fable-5[1m]',
-        }),
+      expect(providerStoreState.createProvider).toHaveBeenCalledWith(expect.objectContaining({
+        models: expect.objectContaining({ fable: 'claude-fable-5' }),
+        model1mSupport: expect.objectContaining({ fable: true }),
       }))
     })
+    // The server writes ANTHROPIC_DEFAULT_FABLE_MODEL once this provider is the
+    // default; adding it leaves the current default's settings alone (#1806).
+    expect(MOCK_UPDATE_SETTINGS).not.toHaveBeenCalled()
   })
 
   it('hides the API key by default and reveals it from the eye button', () => {

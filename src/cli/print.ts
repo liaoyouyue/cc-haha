@@ -341,6 +341,7 @@ import {
 import {
   restoreAgentFromSession,
   restoreSessionStateFromLog,
+  restoreWorktreeForResume,
 } from 'src/utils/sessionRestore.js'
 import { SandboxManager } from 'src/utils/sandbox/sandbox-adapter.js'
 import {
@@ -1319,6 +1320,9 @@ function runHeadlessStreaming(
     | 'finally_post_flush'
     | undefined
   let inputClosed = false
+  // EOF can still require team shutdown. Disposal starts only once terminal
+  // cleanup is chosen, so suspended polls cannot outlive this output stream.
+  let disposed = false
   let shutdownPromptInjected = false
   const leadMailboxPoll = createLeadMailboxPollState()
   const teamFinishedReminder: TeamFinishedReminderState = {}
@@ -2212,7 +2216,7 @@ function runHeadlessStreaming(
   })
 
   const run = async () => {
-    if (running) {
+    if (running || disposed) {
       return
     }
 
@@ -2775,6 +2779,7 @@ function runHeadlessStreaming(
         const POLL_INTERVAL_MS = 500
 
         while (true) {
+          if (disposed) return
           // Check if teammates are still active
           const refreshedState = getAppState()
           const teamName = refreshedState.teamContext?.teamName
@@ -2784,6 +2789,7 @@ function runHeadlessStreaming(
             teamName,
             hasActiveTeammates: hasTeammatesRequiringShutdown(refreshedState),
           })
+          if (disposed) return
 
           if (step.kind === 'stop') {
             logForDebugging(
@@ -2856,6 +2862,7 @@ function runHeadlessStreaming(
                     agentId: teammateId,
                     name: teammateToRemove,
                   })
+                  if (disposed) return
                   logForDebugging(
                     `[print.ts] Removed ${teammateToRemove} from team file`,
                   )
@@ -2867,6 +2874,7 @@ function runHeadlessStreaming(
                     teammateToRemove,
                     'shutdown',
                   )
+                  if (disposed) return
 
                   // Remove from teamContext in AppState
                   setAppState(prev => {
@@ -2923,6 +2931,7 @@ function runHeadlessStreaming(
             teamFinishedReminder,
             teamName,
           )
+          if (disposed) return
           if (teamFinishedPrompt) {
             logForDebugging(
               '[print.ts] Approved team finished, reminding the lead to shut it down',
@@ -2951,12 +2960,14 @@ function runHeadlessStreaming(
         const refreshedAppState = getAppState()
         return hasTeammatesRequiringShutdown(refreshedAppState)
       })()
+      if (disposed) return
 
       if (hasActiveSwarm) {
         // Team members are idle or pane-based - inject prompt to shut down team
         enqueue(createShutdownTeamPrompt())
         void run()
       } else {
+        disposed = true
         // Wait for any in-flight push suggestion before closing the output stream.
         if (suggestionState.inflightPromise) {
           await Promise.race([suggestionState.inflightPromise, sleep(5000)])
@@ -4650,6 +4661,7 @@ function runHeadlessStreaming(
     inputClosed = true
     cronScheduler?.stop()
     if (!running) {
+      disposed = true
       // If a push-suggestion is in-flight, wait for it to emit before closing
       // the output stream (5 s safety timeout to prevent hanging).
       if (suggestionState.inflightPromise) {
@@ -5493,6 +5505,9 @@ async function loadInitialMessages(
             ? { ...result, worktreeSession: undefined }
             : result,
         )
+        // Cd back into the worktree the session was working in, as the
+        // interactive resume does (processResumedConversation).
+        if (!options.forkSession) restoreWorktreeForResume(result.worktreeSession)
 
         // Write mode entry for the resumed session
         if (feature('COORDINATOR_MODE') && coordinatorModeModule) {
@@ -5677,6 +5692,9 @@ async function loadInitialMessages(
           ? { ...result, worktreeSession: undefined }
           : result,
       )
+      // Cd back into the worktree the session was working in, as the
+      // interactive resume does (processResumedConversation).
+      if (!options.forkSession) restoreWorktreeForResume(result.worktreeSession)
 
       // Write mode entry for the resumed session
       if (feature('COORDINATOR_MODE') && coordinatorModeModule) {

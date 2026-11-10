@@ -149,10 +149,14 @@ export class ElectronServerRuntime {
   private readonly resolveSystemProxy?: (url: string) => Promise<string>
   private readonly localAccessToken = randomBytes(32).toString('base64url')
   private readonly petAccessToken = randomBytes(32).toString('base64url')
+  /** Authorizes only the hidden P2P host window's loopback endpoint, never the local API. */
+  private readonly p2pEndpointToken = randomBytes(32).toString('base64url')
   private sidecarEnvPromise: Promise<NodeJS.ProcessEnv> | null = null
   private systemProxyBridge: SystemProxyBridgeLike | null = null
   private server: ActiveServer | null = null
   private adapters: SidecarChild[] = []
+  private adapterLabels = new WeakMap<SidecarChild, string>()
+  private adapterRestartTarget: 'wechat' | undefined
   private startupError: string | null = null
   private restartAfterExit = false
   private automaticRestartAttempts = 0
@@ -226,6 +230,10 @@ export class ElectronServerRuntime {
 
   getPetAccessToken(): string {
     return this.petAccessToken
+  }
+
+  getP2PEndpointToken(): string {
+    return this.p2pEndpointToken
   }
 
   getActiveServerUrl(): string | null {
@@ -314,10 +322,14 @@ export class ElectronServerRuntime {
     return result
   }
 
-  restartAdaptersSidecars(): Promise<void> {
+  restartAdaptersSidecars(target?: 'wechat'): Promise<void> {
     if (this.migrationActive || this.baseEnv.CC_HAHA_MIGRATION_VALIDATION === '1') return Promise.reject(new Error('Data migration is in progress'))
-    if (this.adapterRestartPromise) return this.adapterRestartPromise
-    const operation = this.restartAdaptersSidecarsOnce()
+    if (this.adapterRestartPromise) {
+      return this.adapterRestartTarget === target ? this.adapterRestartPromise
+        : this.adapterRestartPromise.then(() => this.restartAdaptersSidecars(target))
+    }
+    this.adapterRestartTarget = target
+    const operation = this.restartAdaptersSidecarsOnce(target)
     const tracked = operation.finally(() => {
       if (this.adapterRestartPromise === tracked) this.adapterRestartPromise = null
     })
@@ -325,12 +337,26 @@ export class ElectronServerRuntime {
     return tracked
   }
 
-  private async restartAdaptersSidecarsOnce(): Promise<void> {
+  private async restartAdaptersSidecarsOnce(target?: 'wechat'): Promise<void> {
     const serverUrl = await this.getServerUrl()
     const server = this.server
     if (!server || server.url !== serverUrl) return
-    this.stopAdapterChildren(server.adapterChildren)
-    await this.startAdaptersSidecars(serverUrl, undefined, server)
+    if (target === 'wechat') {
+      const response = await this.deps.fetch(`${serverUrl}/api/adapters/wechat/runtime/invalidate`, {
+        method: 'POST', headers: { Authorization: `Bearer ${this.localAccessToken}` },
+        signal: AbortSignal.timeout(5_000),
+      })
+      if (!response.ok) throw new Error('Unable to reset WeChat connection state')
+    }
+    const children = server.adapterChildren.filter(child => !target || this.adapterLabels.get(child) === target)
+    const exits = children.map(child => waitForSidecarExit(child, 5_000))
+    for (const child of children) this.deps.killSidecar(child)
+    const results = await Promise.all(exits)
+    const stopped = children.filter((_child, index) => results[index])
+    this.removeOwnedAdapters(server.adapterChildren, stopped)
+    this.removeOwnedAdapters(this.adapters, stopped)
+    if (results.some(exited => !exited)) throw new Error('Adapter process has not stopped; retry after it exits')
+    await this.startAdaptersSidecars(serverUrl, undefined, server, target)
   }
 
   stopAll(sync = false) {
@@ -508,6 +534,7 @@ export class ElectronServerRuntime {
     serverUrl: string,
     startState?: ServerStartState,
     activeServer?: ActiveServer,
+    target?: 'wechat',
   ): Promise<void> {
     const baseEnv: NodeJS.ProcessEnv = { ...this.withLocalAccessToken(await this.resolveSidecarBaseEnv()), CC_HAHA_MIGRATION_CONTROL: '1' }
     const bridgeUrl = baseEnv.CC_HAHA_SYSTEM_PROXY_URL
@@ -532,6 +559,7 @@ export class ElectronServerRuntime {
       ['qq', '--qq'],
       ['slack', '--slack'],
     ] as const) {
+      if (target && label !== target) continue
       if (!isCurrentGeneration()) break
       try {
         const child = this.deps.spawnSidecar(createAdapterPlan({
@@ -547,10 +575,12 @@ export class ElectronServerRuntime {
           break
         }
         this.captureLogs(child, `claude-adapters:${label}`)
+        this.adapterLabels.set(child, label)
         this.adapters.push(child)
         ownedAdapters?.push(child)
       } catch (error) {
         console.error(`[desktop] failed to start ${label} adapter sidecar`, error)
+        if (target) throw error
       }
     }
   }
@@ -575,6 +605,7 @@ export class ElectronServerRuntime {
     return {
       ...this.withLocalAccessToken(env),
       CC_HAHA_PET_ACCESS_TOKEN: this.petAccessToken,
+      CC_HAHA_P2P_ENDPOINT_TOKEN: this.p2pEndpointToken,
     }
   }
 

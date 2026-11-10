@@ -46,6 +46,7 @@
   "chat.attachments.placeholder": "(người dùng đã gửi tệp đính kèm)",
   "chat.send.failed": "Gửi tin nhắn thất bại; kết nối có thể đã mất. Gửi /new để bắt đầu lại.",
   "chat.stop.sent": "Đã gửi tín hiệu dừng.",
+  "chat.stop.failed": "Không gửi được tín hiệu dừng. Kiểm tra trạng thái phiên và thử lại.",
   "chat.clear.done": "Đã xoá ngữ cảnh phiên.",
   "chat.clear.failed": "Không gửi được /clear. Hãy gửi /new để kết nối lại phiên trước.",
   "chat.permission.notFound": "Không tìm thấy yêu cầu duyệt quyền đang chờ: {requestId}",

@@ -90,6 +90,16 @@ export const ModelContextWindowsSchema = z.record(
   z.string().min(1),
   z.number().int().min(16000).max(10000000),
 )
+
+/**
+ * A built-in OAuth provider has no saved record, so a user's per-model window
+ * override lives beside its model mapping, keyed by provider id then model id.
+ * Absent on older indexes, which read as "no overrides".
+ */
+export const OfficialProviderContextWindowsSchema = z.record(
+  z.string(),
+  ModelContextWindowsSchema,
+)
 /** Per-model reply limits, keyed like `modelContextWindows` (a gateway's catalog). */
 export const ModelMaxOutputTokensSchema = z.record(
   z.string().min(1),
@@ -195,6 +205,7 @@ export const ProvidersIndexSchema = z.object({
   providers: z.array(SavedProviderSchema),
   providerOrder: z.array(z.string()).default([]),
   officialProviderModels: OfficialProviderModelsSchema.default({}),
+  officialProviderContextWindows: OfficialProviderContextWindowsSchema.default({}),
 })
 
 export const CreateProviderSchema = z.object({
