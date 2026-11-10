@@ -6,7 +6,12 @@ import {
   type ModelReasoningProviderKind,
 } from '../../shared/modelReasoning.js'
 import type { ModelApiFormatRule } from '../../shared/modelApiFormats.js'
-import { MODEL_CONTEXT_WINDOWS_ENV_KEY } from '../../utils/model/modelContextWindows.js'
+import {
+  MODEL_CONTEXT_WINDOWS_ENV_KEY,
+  MODEL_MAX_OUTPUT_TOKENS_ENV_KEY,
+  findConfiguredModelLimit,
+  normalizeConfiguredContextWindows,
+} from '../../utils/model/modelContextWindows.js'
 import { PROVIDER_MAX_OUTPUT_TOKENS_ENV_KEY } from '../../utils/managedEnvConstants.js'
 import {
   IMAGE_GENERATION_API_KEY_ENV_KEY,
@@ -21,6 +26,7 @@ import type {
   ApiFormat,
   ModelApiFormat,
   ProviderAuthStrategy,
+  ProviderProxyConfig,
   ProvidersIndex,
   SavedProvider,
 } from '../types/provider.js'
@@ -28,6 +34,7 @@ import {
   BUILT_IN_PROVIDER_IDS,
   DEEPSEEK_ACCOUNT_PROVIDER_ID,
   GROK_OFFICIAL_PROVIDER_ID,
+  ModelContextWindowsSchema,
   OPENAI_OFFICIAL_PROVIDER_ID,
   PROVIDER_DEEPSEEK_ACCOUNT_MODEL_IDS_SCHEMA_VERSION,
   PROVIDER_TOOL_SEARCH_OPT_IN_SCHEMA_VERSION,
@@ -43,6 +50,7 @@ import {
   isOpenAIOfficialProviderId,
 } from './openaiOfficialProvider.js'
 import {
+  GROK_MODEL_CATALOG_ENV_KEY,
   GROK_OAUTH_FILE_ENV_KEY,
   GROK_OAUTH_PROVIDER_ENV_KEY,
   buildGrokOfficialRuntimeEnv,
@@ -77,11 +85,13 @@ export const MANAGED_PROVIDER_ENV_KEYS = [
   'CLAUDE_CODE_AUTO_COMPACT_WINDOW',
   ATTRIBUTION_HEADER_ENV_KEY,
   MODEL_CONTEXT_WINDOWS_ENV_KEY,
+  MODEL_MAX_OUTPUT_TOKENS_ENV_KEY,
   PROVIDER_MAX_OUTPUT_TOKENS_ENV_KEY,
   OPENAI_OAUTH_PROVIDER_ENV_KEY,
   OPENAI_CODEX_OAUTH_FILE_ENV_KEY,
   GROK_OAUTH_PROVIDER_ENV_KEY,
   GROK_OAUTH_FILE_ENV_KEY,
+  GROK_MODEL_CATALOG_ENV_KEY,
   DEEPSEEK_OAUTH_PROVIDER_ENV_KEY,
   DEEPSEEK_OAUTH_FILE_ENV_KEY,
   IMAGE_GENERATION_PROVIDER_KIND_ENV_KEY,
@@ -146,7 +156,16 @@ function isSavedProvider(value: unknown): value is SavedProvider {
     ) &&
     isProviderModels(value.models) &&
     (value.model1mSupport === undefined || isProviderModel1mSupport(value.model1mSupport)) &&
-    (value.imageGeneration === undefined || isImageGenerationConfig(value.imageGeneration))
+    (value.imageGeneration === undefined || isImageGenerationConfig(value.imageGeneration)) &&
+    (value.proxy === undefined || isProviderProxyConfig(value.proxy))
+  )
+}
+
+function isProviderProxyConfig(value: unknown): value is ProviderProxyConfig {
+  if (!isRecord(value)) return false
+  return (
+    (value.mode === 'follow_global' || value.mode === 'direct' || value.mode === 'manual') &&
+    (value.url === undefined || typeof value.url === 'string')
   )
 }
 
@@ -237,22 +256,40 @@ function applyModel1mSupportMapping(
   }
 }
 
+/**
+ * Load-time guard for the per-provider proxy override. Invalid shapes and
+ * `manual` without a URL degrade to absent (follow global) rather than
+ * blocking the whole index from loading.
+ */
+export function normalizeProviderProxyConfig(value: unknown): ProviderProxyConfig | undefined {
+  if (!isProviderProxyConfig(value)) return undefined
+  if (value.mode === 'manual') {
+    const url = value.url?.trim()
+    if (!url) return undefined
+    return { mode: 'manual', url }
+  }
+  return { mode: value.mode }
+}
+
 export function normalizeSavedProvider(provider: SavedProvider): SavedProvider {
   const {
     disableExperimentalBetas: rawDisableExperimentalBetas,
     imageGeneration: rawImageGeneration,
     model1mSupport: rawModel1mSupport,
+    proxy: rawProxy,
     supportsNestedToolResultMedia: rawSupportsNestedToolResultMedia,
     ...rest
-  } = provider
+  } = provider as SavedProvider & { proxy?: unknown }
   const rawProvider = provider as SavedProvider & Record<string, unknown>
   const model1mSupport = normalizeModel1mSupport(rawModel1mSupport)
   const imageGeneration = normalizeImageGeneration(rawImageGeneration)
+  const proxy = normalizeProviderProxyConfig(rawProxy)
   return {
     ...rest,
     apiFormat: provider.apiFormat ?? 'anthropic',
     runtimeKind: provider.runtimeKind ?? 'anthropic_compatible',
     models: normalizeModelMapping(provider.models),
+    ...(proxy !== undefined && { proxy }),
     toolSearchEnabled: normalizeToolSearchEnabled(rawProvider.toolSearchEnabled),
     ...(typeof rawSupportsNestedToolResultMedia === 'boolean'
       ? { supportsNestedToolResultMedia: rawSupportsNestedToolResultMedia }
@@ -313,6 +350,27 @@ function normalizeProviderOrder(value: unknown, providers: SavedProvider[]): str
   return order
 }
 
+/**
+ * Keep each built-in provider's valid per-model window overrides. One bad
+ * value drops only itself, so a hand-edited index never loses the rest.
+ */
+export function normalizeOfficialProviderContextWindows(
+  value: unknown,
+): Record<string, Record<string, number>> {
+  if (!isRecord(value)) return {}
+  const normalized: Record<string, Record<string, number>> = {}
+  for (const [providerId, windows] of Object.entries(value)) {
+    if (!isRecord(windows)) continue
+    const valid = Object.fromEntries(
+      Object.entries(windows).filter(([model, window]) =>
+        model.trim() !== '' &&
+        ModelContextWindowsSchema.safeParse({ [model]: window }).success),
+    ) as Record<string, number>
+    if (Object.keys(valid).length > 0) normalized[providerId] = valid
+  }
+  return normalized
+}
+
 export function normalizeProvidersIndex(value: unknown): ProvidersIndex | null {
   if (!isRecord(value) || !Array.isArray(value.providers)) {
     return null
@@ -322,6 +380,7 @@ export function normalizeProvidersIndex(value: unknown): ProvidersIndex | null {
     activeProviderId: legacyActiveProviderId,
     providerOrder: rawProviderOrder,
     officialProviderModels: rawOfficialProviderModels,
+    officialProviderContextWindows: rawOfficialProviderContextWindows,
     ...rest
   } = value
   const schemaVersion = typeof value.schemaVersion === 'number' ? value.schemaVersion : 1
@@ -372,6 +431,8 @@ export function normalizeProvidersIndex(value: unknown): ProvidersIndex | null {
     providers,
     providerOrder: normalizeProviderOrder(rawProviderOrder, providers),
     officialProviderModels,
+    officialProviderContextWindows:
+      normalizeOfficialProviderContextWindows(rawOfficialProviderContextWindows),
   }
 }
 
@@ -507,22 +568,72 @@ export function providerNeedsProxy(
   return apiFormat !== 'anthropic' || supportsNestedToolResultMedia === false
 }
 
+export function readUserModelContextWindows(configDir: string): Record<string, number> {
+  try {
+    const settings = JSON.parse(fs.readFileSync(path.join(configDir, 'settings.json'), 'utf-8'))
+    const raw = settings?.env?.[MODEL_CONTEXT_WINDOWS_ENV_KEY]
+    return typeof raw === 'string' ? normalizeConfiguredContextWindows(JSON.parse(raw)) : {}
+  } catch {
+    return {}
+  }
+}
+
+function applyUserModelContextWindows(
+  env: Record<string, string>,
+  configDir?: string,
+  providerWindows?: Record<string, number>,
+): Record<string, string> {
+  if (!configDir) return env
+  try {
+    // 用户配置与宿主生成的 cc-haha/settings.json 分离，避免旧快照反过来覆盖供应商配置。
+    const overrides = readUserModelContextWindows(configDir)
+    if (Object.keys(overrides).length === 0) return env
+    const defaults = normalizeConfiguredContextWindows(JSON.parse(env[MODEL_CONTEXT_WINDOWS_ENV_KEY] ?? '{}'))
+    const providerOverrides = normalizeConfiguredContextWindows(providerWindows)
+    const windows = { ...defaults, ...overrides, ...providerOverrides }
+    // 先按配置层选择窗口，再展开完整模型名；不能让低优先级的精确键压过高优先级的基础名。
+    for (const model of Object.keys(windows)) {
+      windows[model] = findConfiguredModelLimit(model, providerOverrides)
+        ?? findConfiguredModelLimit(model, overrides)
+        ?? defaults[model]!
+    }
+    return {
+      ...env,
+      [MODEL_CONTEXT_WINDOWS_ENV_KEY]: JSON.stringify(windows),
+    }
+  } catch {
+    return env
+  }
+}
+
 export function buildProviderManagedEnv(
   provider: SavedProvider,
-  options?: { proxyPath?: string; serverPort?: number },
+  options?: { proxyPath?: string; serverPort?: number; configDir?: string },
 ): Record<string, string> {
   if (provider.runtimeKind === 'openai_oauth') {
-    return buildOpenAIOfficialRuntimeEnv(provider.models)
+    return applyUserModelContextWindows(
+      buildOpenAIOfficialRuntimeEnv(provider.models, provider.modelContextWindows),
+      options?.configDir,
+    )
   }
   if (provider.runtimeKind === 'grok_oauth') {
-    return buildGrokOfficialRuntimeEnv(provider.models)
+    return applyUserModelContextWindows(buildGrokOfficialRuntimeEnv(provider.models), options?.configDir)
   }
   if (provider.runtimeKind === 'deepseek_oauth') {
     // Same request shape as the DeepSeek API provider; only the credential
     // differs (see applyDeepSeekAccountRuntimeEnv).
     return applyDeepSeekAccountRuntimeEnv(
       buildProviderManagedEnv(
-        { ...provider, runtimeKind: 'anthropic_compatible', apiKey: '' },
+        {
+          ...provider,
+          runtimeKind: 'anthropic_compatible',
+          apiKey: '',
+          // The built-in account copies preset windows, not user provider overrides.
+          // Resolve those as preset defaults so global explicit windows can win.
+          modelContextWindows: isDeepSeekAccountProviderId(provider.id)
+            ? undefined
+            : provider.modelContextWindows,
+        },
         options,
       ),
     )
@@ -552,7 +663,7 @@ export function buildProviderManagedEnv(
   const providerCapabilityEnv = getProviderCapabilityEnv(provider, models)
   const maxOutputTokens = provider.requestCompatibility?.maxOutputTokens
 
-  return {
+  return applyUserModelContextWindows({
     ...providerCapabilityEnv,
     ...omitAuthEnv(presetDefaultEnv),
     ...(typeof maxOutputTokens === 'number' && Number.isSafeInteger(maxOutputTokens) && maxOutputTokens > 0 && {
@@ -563,6 +674,9 @@ export function buildProviderManagedEnv(
     }),
     ...(Object.keys(modelContextWindows).length > 0 && {
       [MODEL_CONTEXT_WINDOWS_ENV_KEY]: JSON.stringify(modelContextWindows),
+    }),
+    ...(provider.modelMaxOutputTokens && Object.keys(provider.modelMaxOutputTokens).length > 0 && {
+      [MODEL_MAX_OUTPUT_TOKENS_ENV_KEY]: JSON.stringify(provider.modelMaxOutputTokens),
     }),
     ...(apiFormat === 'anthropic' && {
       ENABLE_TOOL_SEARCH: provider.toolSearchEnabled === true ? 'true' : 'false',
@@ -581,7 +695,7 @@ export function buildProviderManagedEnv(
     ANTHROPIC_DEFAULT_OPUS_MODEL: runtimeModels.opus,
     ...attributionHeaderEnvForModel(runtimeModels.main),
     ...buildImageGenerationManagedEnv(provider),
-  }
+  }, options?.configDir, provider.modelContextWindows)
 }
 
 export function readActiveProviderManagedEnv(
@@ -594,16 +708,22 @@ export function readActiveProviderManagedEnv(
     if (!index?.activeId) return null
 
     if (isOpenAIOfficialProviderId(index.activeId)) {
-      return buildOpenAIOfficialRuntimeEnv(index.officialProviderModels[OPENAI_OFFICIAL_PROVIDER_ID])
+      const windows = index.officialProviderContextWindows[OPENAI_OFFICIAL_PROVIDER_ID]
+      return applyUserModelContextWindows(
+        buildOpenAIOfficialRuntimeEnv(index.officialProviderModels[OPENAI_OFFICIAL_PROVIDER_ID], windows),
+        configDir,
+      )
     }
     if (isGrokOfficialProviderId(index.activeId)) {
-      return buildGrokOfficialRuntimeEnv(index.officialProviderModels[GROK_OFFICIAL_PROVIDER_ID])
+      return applyUserModelContextWindows(
+        buildGrokOfficialRuntimeEnv(index.officialProviderModels[GROK_OFFICIAL_PROVIDER_ID]), configDir,
+      )
     }
     if (isDeepSeekAccountProviderId(index.activeId)) {
       const models = index.officialProviderModels[DEEPSEEK_ACCOUNT_PROVIDER_ID]
       return buildProviderManagedEnv(
         { ...DEEPSEEK_ACCOUNT_PROVIDER, ...(models && { models }) },
-        { serverPort: options?.serverPort },
+        { serverPort: options?.serverPort, configDir },
       )
     }
 
@@ -612,7 +732,44 @@ export function readActiveProviderManagedEnv(
 
     return buildProviderManagedEnv(provider, {
       serverPort: options?.serverPort,
+      configDir,
     })
+  } catch {
+    return null
+  }
+}
+
+export type SavedProviderRuntime = {
+  provider: SavedProvider
+  needsProxy: boolean
+}
+
+/**
+ * Read one saved API provider by id for a per-Agent route. Account sign-ins
+ * (OpenAI/Grok/DeepSeek) and Claude Official carry their credential in the
+ * process-wide transport, so they cannot serve a single request in a process
+ * that runs another provider; they are reported as missing here.
+ */
+export function readSavedProviderRuntime(
+  configDir: string,
+  providerId: string,
+): SavedProviderRuntime | null {
+  try {
+    const raw = fs.readFileSync(path.join(configDir, 'cc-haha', 'providers.json'), 'utf-8')
+    const index = normalizeProvidersIndex(JSON.parse(raw))
+    const provider = index?.providers.find((entry) => entry.id === providerId)
+    if (
+      !provider ||
+      provider.runtimeKind !== 'anthropic_compatible' ||
+      provider.presetId === 'official'
+    ) return null
+    return {
+      provider,
+      needsProxy: providerNeedsProxy(
+        resolveProviderApiFormat(provider),
+        provider.supportsNestedToolResultMedia,
+      ),
+    }
   } catch {
     return null
   }

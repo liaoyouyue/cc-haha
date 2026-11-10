@@ -1,4 +1,7 @@
+import { getProviderRuntimeEnvironment } from '../api/providerRuntimeContext.js'
 import { isOpenAIReasoningModel } from '../../shared/modelReasoning.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
+import { readProviderEnv } from '../../utils/model/providerEnvScope.js'
 
 export const OPENAI_DEFAULT_MAIN_MODEL = 'gpt-6-sol'
 export const OPENAI_DEFAULT_SONNET_MODEL = 'gpt-6-sol'
@@ -7,10 +10,21 @@ export const OPENAI_DEFAULT_OPUS_MODEL = 'gpt-6-astra'
 export const OPENAI_CODEX_EFFECTIVE_CONTEXT_PERCENT = 95
 export const OPENAI_CODEX_STANDARD_CONTEXT_WINDOW = 272_000
 export const OPENAI_CODEX_FRONTIER_CONTEXT_WINDOW = 372_000
+export const OPENAI_CODEX_EXTENDED_CONTEXT_WINDOW = 500_000
 export const OPENAI_CODEX_LARGE_CONTEXT_WINDOW = 1_000_000
 export const OPENAI_CODEX_SPARK_CONTEXT_WINDOW = 128_000
+// `max_context_window` of the GPT-6 / GPT-5.6 rows in the Codex model catalog:
+// the most a user may raise `model_context_window` to.
+export const OPENAI_CODEX_MAX_CONTEXT_WINDOW = 872_000
+export const OPENAI_CODEX_MAX_EFFECTIVE_CONTEXT_WINDOW = Math.floor(
+  (OPENAI_CODEX_MAX_CONTEXT_WINDOW * OPENAI_CODEX_EFFECTIVE_CONTEXT_PERCENT) / 100,
+)
 export const OPENAI_CODEX_STANDARD_EFFECTIVE_CONTEXT_WINDOW = Math.floor(
   (OPENAI_CODEX_STANDARD_CONTEXT_WINDOW * OPENAI_CODEX_EFFECTIVE_CONTEXT_PERCENT) /
+    100,
+)
+export const OPENAI_CODEX_EXTENDED_EFFECTIVE_CONTEXT_WINDOW = Math.floor(
+  (OPENAI_CODEX_EXTENDED_CONTEXT_WINDOW * OPENAI_CODEX_EFFECTIVE_CONTEXT_PERCENT) /
     100,
 )
 export const OPENAI_CODEX_LARGE_EFFECTIVE_CONTEXT_WINDOW = Math.floor(
@@ -33,6 +47,8 @@ export type OpenAIModelCatalogEntry = {
   defaultReasoningEffort: OpenAIReasoningEffort
   supportedReasoningEfforts: OpenAIReasoningEffort[]
   contextWindow?: number
+  /** Effective ceiling a user override may set; unknown means no known cap. */
+  maxContextWindow?: number
 }
 
 export const OPENAI_REASONING_EFFORTS = [
@@ -72,6 +88,7 @@ export const OPENAI_CODEX_MODEL_CATALOG: OpenAIModelCatalogEntry[] = [
     defaultReasoningEffort: 'low',
     supportedReasoningEfforts: GPT_5_6_REASONING_EFFORTS,
     contextWindow: OPENAI_CODEX_STANDARD_EFFECTIVE_CONTEXT_WINDOW,
+    maxContextWindow: OPENAI_CODEX_MAX_EFFECTIVE_CONTEXT_WINDOW,
   },
   {
     value: OPENAI_DEFAULT_MAIN_MODEL,
@@ -81,6 +98,7 @@ export const OPENAI_CODEX_MODEL_CATALOG: OpenAIModelCatalogEntry[] = [
     defaultReasoningEffort: 'medium',
     supportedReasoningEfforts: GPT_5_6_REASONING_EFFORTS,
     contextWindow: OPENAI_CODEX_STANDARD_EFFECTIVE_CONTEXT_WINDOW,
+    maxContextWindow: OPENAI_CODEX_MAX_EFFECTIVE_CONTEXT_WINDOW,
   },
   {
     value: OPENAI_DEFAULT_HAIKU_MODEL,
@@ -90,6 +108,7 @@ export const OPENAI_CODEX_MODEL_CATALOG: OpenAIModelCatalogEntry[] = [
     defaultReasoningEffort: 'medium',
     supportedReasoningEfforts: GPT_5_6_REASONING_EFFORTS,
     contextWindow: OPENAI_CODEX_STANDARD_EFFECTIVE_CONTEXT_WINDOW,
+    maxContextWindow: OPENAI_CODEX_MAX_EFFECTIVE_CONTEXT_WINDOW,
   },
   {
     value: 'gpt-6.1-sol',
@@ -98,7 +117,18 @@ export const OPENAI_CODEX_MODEL_CATALOG: OpenAIModelCatalogEntry[] = [
     descriptionForModel: 'GPT-6.1-Sol - latest workhorse model for coding and everyday work',
     defaultReasoningEffort: 'low',
     supportedReasoningEfforts: GPT_5_6_REASONING_EFFORTS,
-    contextWindow: OPENAI_CODEX_STANDARD_EFFECTIVE_CONTEXT_WINDOW,
+    contextWindow: OPENAI_CODEX_EXTENDED_EFFECTIVE_CONTEXT_WINDOW,
+    maxContextWindow: OPENAI_CODEX_MAX_EFFECTIVE_CONTEXT_WINDOW,
+  },
+  {
+    value: 'gpt-6.1-terra',
+    label: 'GPT-6.1 Terra',
+    description: 'GPT-6.1 Terra Codex model',
+    descriptionForModel: 'GPT-6.1 Terra - Codex model with an extended context window',
+    defaultReasoningEffort: 'low',
+    supportedReasoningEfforts: GPT_5_6_REASONING_EFFORTS,
+    contextWindow: OPENAI_CODEX_EXTENDED_EFFECTIVE_CONTEXT_WINDOW,
+    maxContextWindow: OPENAI_CODEX_MAX_EFFECTIVE_CONTEXT_WINDOW,
   },
   {
     value: 'gpt-5.6-sol',
@@ -108,6 +138,7 @@ export const OPENAI_CODEX_MODEL_CATALOG: OpenAIModelCatalogEntry[] = [
     defaultReasoningEffort: 'low',
     supportedReasoningEfforts: GPT_5_6_REASONING_EFFORTS,
     contextWindow: OPENAI_CODEX_FRONTIER_EFFECTIVE_CONTEXT_WINDOW,
+    maxContextWindow: OPENAI_CODEX_MAX_EFFECTIVE_CONTEXT_WINDOW,
   },
   {
     value: 'gpt-5.6-terra',
@@ -117,6 +148,7 @@ export const OPENAI_CODEX_MODEL_CATALOG: OpenAIModelCatalogEntry[] = [
     defaultReasoningEffort: 'medium',
     supportedReasoningEfforts: GPT_5_6_REASONING_EFFORTS,
     contextWindow: OPENAI_CODEX_FRONTIER_EFFECTIVE_CONTEXT_WINDOW,
+    maxContextWindow: OPENAI_CODEX_MAX_EFFECTIVE_CONTEXT_WINDOW,
   },
   {
     value: 'gpt-5.6-luna',
@@ -126,6 +158,7 @@ export const OPENAI_CODEX_MODEL_CATALOG: OpenAIModelCatalogEntry[] = [
     defaultReasoningEffort: 'medium',
     supportedReasoningEfforts: GPT_5_6_REASONING_EFFORTS,
     contextWindow: OPENAI_CODEX_FRONTIER_EFFECTIVE_CONTEXT_WINDOW,
+    maxContextWindow: OPENAI_CODEX_MAX_EFFECTIVE_CONTEXT_WINDOW,
   },
   {
     value: 'gpt-5.3-codex',
@@ -153,6 +186,7 @@ export const OPENAI_CODEX_MODEL_CATALOG: OpenAIModelCatalogEntry[] = [
     defaultReasoningEffort: 'medium',
     supportedReasoningEfforts: GPT_5_5_REASONING_EFFORTS,
     contextWindow: OPENAI_CODEX_STANDARD_EFFECTIVE_CONTEXT_WINDOW,
+    maxContextWindow: OPENAI_CODEX_STANDARD_EFFECTIVE_CONTEXT_WINDOW,
   },
   {
     value: 'gpt-5.4-mini',
@@ -213,36 +247,43 @@ export function resolveOpenAIReasoningEffortWithPriority(
 }
 
 export function isOpenAIResponsesModel(model: string): boolean {
-  return isOpenAIReasoningModel(model)
+  // The official runtime selects the transport even for newly published IDs
+  // and Claude tier aliases, so capability checks must follow that same route.
+  return isEnvTruthy(readProviderEnv('CC_HAHA_OPENAI_OAUTH_PROVIDER')) ||
+    isOpenAIReasoningModel(model)
 }
 
 export function resolveOpenAICodexModel(model: string): string {
-  if (process.env.OPENAI_CODEX_MODEL?.trim()) {
-    return process.env.OPENAI_CODEX_MODEL.trim()
+  if (getProviderRuntimeEnvironment().OPENAI_CODEX_MODEL?.trim()) {
+    return getProviderRuntimeEnvironment().OPENAI_CODEX_MODEL.trim()
   }
 
-  const normalized = model.trim().toLowerCase()
-  if (isOpenAIResponsesModel(normalized)) {
-    return model
+  const requested = model.trim()
+  const normalized = requested.toLowerCase()
+  // A remote catalog may advertise a new naming scheme before this client
+  // ships. Only Claude compatibility aliases need mapping; preserve real IDs.
+  if (normalized && !normalized.startsWith('claude-') &&
+    !['default', 'main', 'haiku', 'sonnet', 'opus', 'fable'].includes(normalized)) {
+    return requested
   }
 
   if (normalized.includes('haiku')) {
     return (
-      process.env.OPENAI_CODEX_HAIKU_MODEL?.trim() ||
+      getProviderRuntimeEnvironment().OPENAI_CODEX_HAIKU_MODEL?.trim() ||
       OPENAI_DEFAULT_HAIKU_MODEL
     )
   }
 
   if (normalized.includes('sonnet')) {
     return (
-      process.env.OPENAI_CODEX_SONNET_MODEL?.trim() ||
+      getProviderRuntimeEnvironment().OPENAI_CODEX_SONNET_MODEL?.trim() ||
       OPENAI_DEFAULT_SONNET_MODEL
     )
   }
 
   if (normalized.includes('opus')) {
     return (
-      process.env.OPENAI_CODEX_OPUS_MODEL?.trim() || OPENAI_DEFAULT_OPUS_MODEL
+      getProviderRuntimeEnvironment().OPENAI_CODEX_OPUS_MODEL?.trim() || OPENAI_DEFAULT_OPUS_MODEL
     )
   }
 
@@ -256,6 +297,8 @@ export function getOpenAIModelDisplayName(model: string): string | null {
       return 'GPT-6 Astra'
     case 'gpt-6.1-sol':
       return 'GPT-6.1-Sol'
+    case 'gpt-6.1-terra':
+      return 'GPT-6.1 Terra'
     case 'gpt-6-sol':
       return 'GPT-6-Sol'
     case 'gpt-6-luna':
@@ -303,8 +346,16 @@ export function getOpenAICodexContextWindowForModel(
     return OPENAI_CODEX_STANDARD_EFFECTIVE_CONTEXT_WINDOW
   }
 
-  if (normalized === 'gpt-6.1-sol' || normalized === 'gpt-6-sol' || normalized === 'gpt-6-luna') {
+  if (normalized === 'gpt-6-sol' || normalized === 'gpt-6-luna') {
     return OPENAI_CODEX_STANDARD_EFFECTIVE_CONTEXT_WINDOW
+  }
+
+  // OpenAI raised GPT-6.1 Sol's Codex default from 272K to 500K on 2026-10-11
+  // (Codex lead's announcement; the model page says the same). The models.json
+  // bundled in openai/codex still listed 272,000 afterwards, so follow the
+  // announcement, not the bundled file.
+  if (normalized === 'gpt-6.1-sol' || normalized === 'gpt-6.1-terra') {
+    return OPENAI_CODEX_EXTENDED_EFFECTIVE_CONTEXT_WINDOW
   }
 
   if (

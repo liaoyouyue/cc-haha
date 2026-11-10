@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import { ChevronDown, Folder, MessageSquare, MousePointerClick, X } from 'lucide-react'
 import { useTranslation, type TranslationKey } from '../../i18n'
@@ -59,9 +59,22 @@ type Props = {
   attachments: AttachmentPreview[]
   variant?: 'composer' | 'message'
   onRemove?: (id: string) => void
+  /**
+   * Reopen an annotation for editing, anchored on the chip that was clicked.
+   * `annotationNumbers` carries the shared numbering (transcript badge, request
+   * block) so the chip cannot number an annotation differently from the rest.
+   */
+  annotationNumbers?: ReadonlyMap<string, number>
+  onActivate?: (id: string, anchorRect: DOMRect) => void
 }
 
-export function AttachmentGallery({ attachments, variant = 'message', onRemove }: Props) {
+export function AttachmentGallery({
+  attachments,
+  variant = 'message',
+  onRemove,
+  annotationNumbers,
+  onActivate,
+}: Props) {
   const t = useTranslation()
   const [activeImageIndex, setActiveImageIndex] = useState<number | null>(null)
   const [openWith, setOpenWith] = useState<{ items: OpenWithItem[]; anchor: DOMRect; triggerEl: HTMLElement } | null>(null)
@@ -98,6 +111,36 @@ export function AttachmentGallery({ attachments, variant = 'message', onRemove }
       return next
     })
   }
+
+  // Past its height cap the composer tray scrolls, so a card added out of view
+  // would look as if the add did nothing. Scroll just far enough to show the
+  // newest one. Not always the last card: uploads are listed ahead of
+  // references. Every composer attachment carries an id.
+  const composerTrayRef = useRef<HTMLDivElement>(null)
+  // The gallery mounts only after the first attachment is added, so its first
+  // render must be compared with an empty tray rather than skipped.
+  const shownAttachmentIdsRef = useRef<ReadonlyArray<string | undefined>>([])
+  useLayoutEffect(() => {
+    const ids = attachments.map((attachment) => attachment.id)
+    const shown = shownAttachmentIdsRef.current
+    shownAttachmentIdsRef.current = ids
+    const tray = composerTrayRef.current
+    if (!tray) return
+    let addedIndex = -1
+    for (let index = ids.length - 1; index >= 0 && addedIndex < 0; index -= 1) {
+      if (ids[index] && !shown.includes(ids[index])) addedIndex = index
+    }
+    // Adding a reference that is already attached moves its card to the end.
+    if (addedIndex < 0 && ids.length === shown.length && ids[ids.length - 1] !== shown[shown.length - 1]) {
+      addedIndex = ids.length - 1
+    }
+    const card = tray.children[addedIndex]
+    if (!card) return
+    const trayBox = tray.getBoundingClientRect()
+    const cardBox = card.getBoundingClientRect()
+    if (cardBox.bottom > trayBox.bottom) tray.scrollTop += cardBox.bottom - trayBox.bottom
+    else if (cardBox.top < trayBox.top) tray.scrollTop -= trayBox.top - cardBox.top
+  }, [attachments])
 
   if (attachments.length === 0) return null
 
@@ -215,7 +258,18 @@ export function AttachmentGallery({ attachments, variant = 'message', onRemove }
           })}
         </div>
       ) : (
-      <div className={isComposer ? 'flex flex-wrap items-center gap-2' : 'flex max-w-full flex-wrap justify-end gap-2'}>
+      // The composer's cards wrap, so without a cap every few references add a
+      // row and the composer grows until the transcript above it is gone
+      // (#1838). Two rows and part of a third stay in view; the rest scroll.
+      // `p-1` gives the image remove badges, which sit 4px outside their
+      // thumbnail, room inside the scroll box; `-m-1` keeps the cards in place.
+      <div
+        ref={isComposer ? composerTrayRef : undefined}
+        data-testid={isComposer ? 'composer-attachment-tray' : undefined}
+        className={isComposer
+          ? '-m-1 flex max-h-[min(188px,24dvh)] flex-wrap items-center gap-2 overflow-y-auto overscroll-contain p-1'
+          : 'flex max-w-full flex-wrap justify-end gap-2'}
+      >
         {attachments.map((attachment, index) => {
           const imageSrc = attachment.type === 'image' ? attachmentImageSource(attachment) : undefined
 
@@ -367,6 +421,18 @@ export function AttachmentGallery({ attachments, variant = 'message', onRemove }
             isAbsoluteLocalPath(attachment.path) &&
             desktopHost.isDesktop &&
             desktopHost.capabilities.shell
+          const annotationNote = attachment.referenceKind === 'chat-selection'
+            ? attachment.note?.trim()
+            : undefined
+          // A selected-text chip with a note is an annotation: the composer lets
+          // the user reopen it. A plain quote has no note to edit, so it stays inert.
+          const annotationNumber = attachment.id ? annotationNumbers?.get(attachment.id) : undefined
+          const canEditAnnotation =
+            attachment.referenceKind === 'chat-selection' &&
+            annotationNote !== undefined && annotationNote !== '' &&
+            annotationNumber !== undefined &&
+            !!onActivate &&
+            !!attachment.id
 
           const fileVisual = (
             <>
@@ -381,6 +447,11 @@ export function AttachmentGallery({ attachments, variant = 'message', onRemove }
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block min-w-0 max-w-[260px] truncate text-[13px] font-medium leading-5 text-[var(--color-text-primary)]">
+                  {annotationNumber !== undefined && (
+                    <span className="mr-1.5 inline-flex h-[15px] min-w-[15px] items-center justify-center rounded-full bg-[var(--color-brand)] px-1 align-[1px] text-[11px] font-semibold leading-none tabular-nums text-[var(--color-on-primary)]">
+                      {annotationNumber}
+                    </span>
+                  )}
                   {attachment.name}{lineLabel}
                 </span>
                 <span className="block truncate text-[11px] leading-4 text-[var(--color-text-tertiary)]">
@@ -440,7 +511,16 @@ export function AttachmentGallery({ attachments, variant = 'message', onRemove }
                 'rounded-[var(--radius-lg)] bg-[var(--color-surface-container-lowest)] px-2.5 py-1.5 text-[var(--color-text-secondary)]',
               ].join(' ')}
             >
-              {fileVisual}
+              {canEditAnnotation ? (
+                <button
+                  type="button"
+                  aria-label={t('chat.annotationEditLabel', { number: annotationNumber })}
+                  onClick={(event) => onActivate!(attachment.id!, event.currentTarget.getBoundingClientRect())}
+                  className="flex min-w-0 items-center gap-2.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
+                >
+                  {fileVisual}
+                </button>
+              ) : fileVisual}
               {onRemove && attachment.id && (
                 <IconButton
                   icon={<X size={14} strokeWidth={1.75} aria-hidden="true" />}

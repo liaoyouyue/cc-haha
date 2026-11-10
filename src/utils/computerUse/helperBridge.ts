@@ -2,6 +2,11 @@ import { logForDebugging } from '../debug.js'
 import { callPythonHelper } from './pythonBridge.js'
 import { isCuHelperAvailable } from './cuHelperBridge.js'
 import {
+  getNativeWorkerBridge,
+  isNativeWorkerAvailable,
+  NativeCommandResultUnknownError,
+} from './windowsNativeBridge.js'
+import {
   callDaemon,
   DaemonUnavailableError,
   isOverlayShown,
@@ -174,6 +179,29 @@ export async function callHelper<T>(
     // injected mouse event observable instead of racing process startup; the
     // overlay owns its own 1.5s fail-open timeout and never rejects an action.
     await showBadge(command, payload)
+  }
+
+  // Windows native worker (P1 read-only): native-first with Python fallback.
+  // null = not dispatched (worker missing/boot failure) → safe to fall back.
+  // unsupported_command = P1 worker doesn't implement this verb → fall back.
+  // NativeCommandResultUnknownError = dispatched but outcome unknown → rethrow
+  // unconditionally (must NEVER be swallowed into a Python retry).
+  if (isNativeWorkerAvailable()) {
+    try {
+      const r = await getNativeWorkerBridge().callNative<T>(command, payload)
+      if (r !== null) return r as T
+    } catch (err) {
+      const code = (err as { code?: string }).code
+      if (err instanceof NativeCommandResultUnknownError || code === 'result_unknown') {
+        throw err
+      }
+      if (code !== 'unsupported_command') {
+        // Worker ran but errored (e.g. capture failure) — surface it, don't
+        // mask it by re-running the action through Python.
+        throw err
+      }
+      // unsupported_command → fall through to Python below.
+    }
   }
   return viaPython<T>(command, payload)
 }

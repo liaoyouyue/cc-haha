@@ -96,6 +96,66 @@ describe('Responses tool finalization and snapshots', () => {
   })
 })
 
+describe('Responses empty text deltas (#1451)', () => {
+  const heartbeat = event('response.output_text.delta', {
+    item_id: 'SSE-Keep-Alive', output_index: 0, content_index: 0,
+    delta: '', 'SSE-Keep-Alive': true,
+  })
+  const summary = event('response.output_text.delta', { output_index: 1, content_index: 0, delta: 'valid summary' })
+    + event('response.output_text.done', { output_index: 1, content_index: 0, text: 'valid summary' })
+
+  test('an independent heartbeat never allocates a trailing empty text block', async () => {
+    const events = await collect(heartbeat + summary + completed([]))
+    expect(events.filter(item => item.type === 'content_block_start')).toHaveLength(1)
+    expect(events.filter(item => item.type === 'content_block_stop')).toHaveLength(1)
+    expect(events.filter(item => item.delta?.type === 'text_delta').map(item => item.delta.text).join('')).toBe('valid summary')
+  })
+
+  test('empty deltas do not consume an index, including refusal deltas', async () => {
+    for (const type of ['response.output_text.delta', 'response.refusal.delta']) {
+      const events = await collect(event(type, { output_index: 0, delta: '' }) + summary + completed([]))
+      expect(events.find(item => item.type === 'content_block_start')?.index).toBe(0)
+      expect(events.filter(item => item.type === 'content_block_start')).toHaveLength(1)
+    }
+  })
+
+  test('done-only text and refusal still supply their content after an empty delta', async () => {
+    for (const [type, field] of [['output_text', 'text'], ['refusal', 'refusal']]) {
+      const input = event(`response.${type}.delta`, { output_index: 0, delta: '' })
+        + event(`response.${type}.done`, { output_index: 0, [field!]: 'done-only content' }) + completed([])
+      const result = await openaiResponsesStreamToAnthropicResponse(stream(input), 'fixture')
+      expect(result.content).toEqual([{ type: 'text', text: 'done-only content' }])
+    }
+  })
+
+  test('an empty trailing delta preserves the completed text and usage', async () => {
+    const input = summary + event('response.output_text.delta', { output_index: 0, delta: '' })
+      + event('response.completed', { response: { status: 'completed', output: [], usage: { input_tokens: 5, output_tokens: 3 } } })
+    const result = await openaiResponsesStreamToAnthropicResponse(stream(input), 'fixture')
+    expect(result.content).toEqual([{ type: 'text', text: 'valid summary' }])
+    expect(result.usage).toEqual({ input_tokens: 5, output_tokens: 3 })
+  })
+
+  test('empty deltas can share a live text or refusal index without losing content', async () => {
+    for (const [type, field] of [['output_text', 'text'], ['refusal', 'refusal']]) {
+      const input = event(`response.${type}.delta`, { output_index: 0, delta: '' })
+        + event(`response.${type}.delta`, { output_index: 0, delta: 'kept ' })
+        + event(`response.${type}.delta`, { output_index: 0, delta: '' })
+        + event(`response.${type}.delta`, { output_index: 0, delta: 'content' })
+        + event(`response.${type}.done`, { output_index: 0, [field!]: 'kept content' }) + completed([])
+      const result = await openaiResponsesStreamToAnthropicResponse(stream(input), 'fixture')
+      expect(result.content).toEqual([{ type: 'text', text: 'kept content' }])
+    }
+  })
+
+  test('a heartbeat does not suppress tool completion or upstream errors', async () => {
+    const toolResult = await openaiResponsesStreamToAnthropicResponse(stream(heartbeat + startTool + completed([tool])), 'fixture')
+    expect(toolResult.content).toEqual([{ type: 'tool_use', id: 'call_1', name: 'Write', input: { path: 'fixture', text: '你好' } }])
+    expect(toolResult.stop_reason).toBe('tool_use')
+    await expect(openaiResponsesStreamToAnthropicResponse(stream(heartbeat + event('response.failed', { response: { error: { message: 'heartbeat failure' } } })), 'fixture')).rejects.toThrow('heartbeat failure')
+  })
+})
+
 describe('Responses non-streaming terminal validation', () => {
   test('failure, cancellation and unknown incomplete never become successful output', () => {
     for (const status of ['failed', 'cancelled', 'incomplete', 'in_progress']) {
@@ -211,4 +271,94 @@ test('different malformed arguments with identical truncated markers remain a sn
   const delta = prefix + 'X'
   const final = prefix + 'Y'
   await expect(collect(startTool + event('response.function_call_arguments.delta', { item_id: 'fc_1', delta }) + completed([{ ...tool, arguments: final }]))).rejects.toThrow('snapshot conflicts')
+})
+
+// #1451: some Responses-compatible relays keep the connection warm with an
+// empty text delta that carries no content at all. It must never become a
+// business content block, because a trailing empty block becomes the last
+// assistant message and makes compaction read the summary as absent.
+describe('Responses empty text deltas never open a block (#1451)', () => {
+  const keepAlive = event('response.output_text.delta', {
+    output_index: 0, content_index: 0, delta: '', 'SSE-Keep-Alive': true,
+  })
+  const summaryDelta = event('response.output_text.delta', { output_index: 1, content_index: 0, delta: 'valid summary' })
+  const summaryDone = event('response.output_text.done', { output_index: 1, content_index: 0, text: 'valid summary' })
+  const textBlocks = (input: string) => collect(input).then(events => events.filter(item => item.type === 'content_block_start'))
+
+  test('a keep-alive delta produces no block of its own', async () => {
+    const blocks = await textBlocks(keepAlive + summaryDelta + summaryDone + completed())
+    expect(blocks).toHaveLength(1)
+    expect(blocks[0].content_block).toEqual({ type: 'text', text: '' })
+  })
+
+  test('the summary still reaches the collector when a keep-alive precedes it', async () => {
+    const input = keepAlive + summaryDelta + summaryDone + completed()
+    const result = await openaiResponsesStreamToAnthropicResponse(stream(input), 'fixture')
+    expect(result.content).toEqual([{ type: 'text', text: 'valid summary' }])
+  })
+
+  test('a keep-alive sharing the summary index does not fragment the block', async () => {
+    const shared = event('response.output_text.delta', { output_index: 0, content_index: 0, delta: '' })
+    const input = shared + event('response.output_text.delta', { output_index: 0, content_index: 0, delta: 'valid summary' }) + event('response.output_text.done', { output_index: 0, content_index: 0, text: 'valid summary' }) + completed()
+    const blocks = await textBlocks(input)
+    expect(blocks).toHaveLength(1)
+    expect(await openaiResponsesStreamToAnthropicResponse(stream(input), 'fixture')).toMatchObject({ content: [{ type: 'text', text: 'valid summary' }] })
+  })
+
+  test('a keep-alive after completion is ignored instead of rejecting the stream', async () => {
+    const input = summaryDelta + summaryDone + event('response.output_text.delta', { output_index: 1, content_index: 0, delta: '' }) + completed()
+    await expect(collect(input)).resolves.toBeDefined()
+    expect(await textBlocks(input)).toHaveLength(1)
+  })
+
+  test('a done-only provider still produces its block', async () => {
+    const input = event('response.output_text.done', { output_index: 0, content_index: 0, text: 'valid summary' }) + completed()
+    expect(await openaiResponsesStreamToAnthropicResponse(stream(input), 'fixture')).toMatchObject({ content: [{ type: 'text', text: 'valid summary' }] })
+  })
+
+  test('keep-alives leave a tool call and its single stop untouched', async () => {
+    const input = keepAlive + startTool + event('response.function_call_arguments.delta', { item_id: 'fc_1', delta: tool.arguments }) + completed([tool])
+    const events = await collect(input)
+    expect(events.filter(item => item.type === 'content_block_start')).toHaveLength(1)
+    expect(events.filter(item => item.type === 'content_block_stop')).toHaveLength(1)
+    expect(events.find(item => item.type === 'message_delta')?.delta.stop_reason).toBe('tool_use')
+  })
+
+  test('a stream of keep-alives alone still terminates as an empty reply', async () => {
+    const input = keepAlive + keepAlive + completed([])
+    const events = await collect(input)
+    expect(events.some(item => item.type === 'content_block_start')).toBe(false)
+    expect(events.find(item => item.type === 'message_delta')?.delta.stop_reason).toBe('end_turn')
+    expect(await openaiResponsesStreamToAnthropicResponse(stream(input), 'fixture')).toMatchObject({ content: [{ type: 'text', text: '' }] })
+  })
+
+  test('keep-alives no longer mask a completed response that is missing output', async () => {
+    await expect(collect(keepAlive + completed())).rejects.toThrow('missing output')
+  })
+
+  // The empty-delta guard now runs before ensureTextBlock, which makes the
+  // "arrived after block completion" throw reachable only for non-empty deltas.
+  // It was unasserted before; pin it so a refactor cannot drop the invariant
+  // along with the guard.
+  test('a non-empty delta after output_text.done still rejects the stream', async () => {
+    const input = summaryDelta + summaryDone + event('response.output_text.delta', { output_index: 1, content_index: 0, delta: 'late arrival' }) + completed()
+    await expect(collect(input)).rejects.toThrow('text delta arrived after block completion')
+  })
+})
+
+// `response.refusal.delta` falls through the same edited case, so an empty
+// refusal delta is dropped by the same guard. It had no contract case at all.
+describe('Responses refusal deltas follow the same empty-delta contract (#1451)', () => {
+  const refusalDelta = (delta: string) => event('response.refusal.delta', { output_index: 0, content_index: 0, delta })
+  const refusalDone = (refusal: string) => event('response.refusal.done', { output_index: 0, content_index: 0, refusal })
+
+  test('an empty refusal delta produces no block of its own', async () => {
+    const events = await collect(refusalDelta('') + refusalDelta('I cannot help with that') + refusalDone('I cannot help with that') + completed())
+    expect(events.filter(item => item.type === 'content_block_start')).toHaveLength(1)
+  })
+
+  test('a real refusal delta still reaches the collector', async () => {
+    const input = refusalDelta('') + refusalDelta('I cannot help with that') + refusalDone('I cannot help with that') + completed()
+    expect(await openaiResponsesStreamToAnthropicResponse(stream(input), 'fixture')).toMatchObject({ content: [{ type: 'text', text: 'I cannot help with that' }] })
+  })
 })

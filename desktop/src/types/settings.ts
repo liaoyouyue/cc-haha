@@ -3,6 +3,8 @@
 export type PermissionMode = 'default' | 'acceptEdits' | 'auto' | 'plan' | 'bypassPermissions' | 'dontAsk'
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+/** Settings-layer synthetic value: the harness picks the wire level per request. */
+export type SelectableEffortLevel = EffortLevel | 'auto'
 export type ReasoningEffortLevel = EffortLevel
 /**
  * The six 「纸 · 墨 · 印」 palettes, in the order the appearance picker shows
@@ -51,7 +53,7 @@ export function isDarkThemeMode(value: unknown): value is DarkThemeMode {
   return typeof value === 'string' && (DARK_THEME_MODES as readonly string[]).includes(value)
 }
 
-export type WebSearchMode = 'auto' | 'anthropic' | 'tavily' | 'brave' | 'disabled'
+export type WebSearchMode = 'auto' | 'anthropic' | 'tavily' | 'brave' | 'deepseek' | 'disabled'
 
 export type ChatSendBehavior = 'enter' | 'modifierEnter'
 
@@ -81,6 +83,7 @@ export type WebSearchSettings = {
   mode?: WebSearchMode
   tavilyApiKey?: string
   braveApiKey?: string
+  deepseekApiKey?: string
 }
 
 export type UpdateProxyMode = 'system' | 'manual'
@@ -136,6 +139,9 @@ export type DesktopTerminalStartupShell =
 export type DesktopTerminalSettings = {
   startupShell: DesktopTerminalStartupShell
   customShellPath: string
+  /** An installed font family name; empty keeps the built-in monospace stack. */
+  fontFamily: string
+  fontSize: number
 }
 
 export type ModelInfo = {
@@ -143,6 +149,8 @@ export type ModelInfo = {
   name: string
   description: string
   context: string
+  /** Highest window a user may set for this model; absent when no cap is known. */
+  maxContext?: string
   defaultReasoningEffort?: ReasoningEffortLevel
   supportedReasoningEfforts?: ReasoningEffortLevel[]
 }
@@ -158,6 +166,8 @@ export type UserSettings = {
   effort?: EffortLevel
   alwaysThinkingEnabled?: boolean
   workflowKeywordTriggerEnabled?: boolean
+  /** Desktop composer next-prompt suggestions; absent means off (opt-in, costs tokens). */
+  nextPromptSuggestionsEnabled?: boolean
   leanModeEnabled?: boolean
   agentTeamsEnabled?: boolean
   /** 同一会话的普通前台/后台 SubAgent 并发上限，缺省或 null 表示不限。 */

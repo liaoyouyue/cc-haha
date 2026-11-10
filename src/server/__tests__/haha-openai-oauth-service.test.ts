@@ -216,8 +216,13 @@ describe('HahaOpenAIOAuthService — session management', () => {
 
   test('consumeSession removes session after fetch', async () => {
     const session = await service.startSession({ serverPort: 54321 })
-    expect(service.consumeSession(session.state)).not.toBeNull()
-    expect(service.getSession(session.state)).toBeNull()
+    try {
+      expect(service.consumeSession(session.state)).not.toBeNull()
+      expect(service.getSession(session.state)).toBeNull()
+    } finally {
+      // Consumed sessions are no longer owned by service.dispose().
+      session.authCodeListener?.close()
+    }
   })
 
   test('callback listener exchanges the authorization code and saves tokens', async () => {
@@ -521,7 +526,7 @@ describe('HahaOpenAIOAuthService — ensureFreshAccessToken', () => {
     expect(loaded?.clientId).toBe('app_EMoamEEZ73f0CkXaXp7hrann')
   })
 
-  test('returns null when refresh fails', async () => {
+  test('propagates the cause when refresh fails', async () => {
     await service.saveTokens({
       accessToken: 'expired',
       refreshToken: 'bad-refresh',
@@ -533,6 +538,6 @@ describe('HahaOpenAIOAuthService — ensureFreshAccessToken', () => {
       throw new Error('401 Unauthorized')
     })
 
-    expect(await service.ensureFreshAccessToken()).toBeNull()
+    await expect(service.ensureFreshAccessToken()).rejects.toThrow('401 Unauthorized')
   })
 })

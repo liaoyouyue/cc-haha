@@ -12,6 +12,7 @@ import * as os from 'os'
 import { ApiError } from '../middleware/errorHandler.js'
 import { buildOpenaiEndpoint } from '../proxy/openaiEndpoint.js'
 import { normalizeAnthropicBaseUrl } from '../../services/api/anthropicBaseUrl.js'
+import { getOpenAIModelCatalogEntry } from '../../services/openaiAuth/models.js'
 import { readRecoverableJsonFile } from './recoverableJsonFile.js'
 import { ManagedSettingsService } from './managedSettingsService.js'
 import { anthropicToOpenaiChat } from '../proxy/transform/anthropicToOpenaiChat.js'
@@ -30,6 +31,7 @@ import {
 import { hahaOpenAIOAuthService } from './hahaOpenAIOAuthService.js'
 import { hahaOAuthService } from './hahaOAuthService.js'
 import {
+  GROK_MODEL_CATALOG_ENV_KEY,
   GROK_OFFICIAL_PROVIDER,
   isGrokOfficialProviderId,
 } from './grokOfficialProvider.js'
@@ -42,6 +44,14 @@ import {
   CLAUDE_OFFICIAL_DEFAULT_MODELS,
 } from './claudeOfficialRuntime.js'
 import { SettingsService } from './settingsService.js'
+import {
+  fetchMagpieModels,
+  isMagpieProvider,
+  magpieModelLimits,
+  probeMagpie,
+  type MagpieModel,
+  type MagpieStatus,
+} from './magpieGateway.js'
 import { hahaGrokOAuthService } from './hahaGrokOAuthService.js'
 import {
   CURRENT_PROVIDER_INDEX_SCHEMA_VERSION,
@@ -68,10 +78,13 @@ import {
   getNetworkProxyFetchOptions,
   loadNetworkSettings,
   type NetworkSettings,
+
+  resolveProviderNetworkSettings,
 } from './networkSettings.js'
 import { normalizeModelStringForAPI } from '../../utils/model/model.js'
 import type {
   SavedProvider,
+  ProviderProxyConfig,
   ProvidersIndex,
   CreateProviderInput,
   UpdateProviderInput,
@@ -105,6 +118,7 @@ const DEFAULT_INDEX: ProvidersIndex = {
   providers: [],
   providerOrder: [...BUILT_IN_PROVIDER_IDS],
   officialProviderModels: {},
+  officialProviderContextWindows: {},
 }
 
 function isPermutation(candidateIds: string[], expectedIds: string[]): boolean {
@@ -160,11 +174,14 @@ function buildSavedProvider(input: CreateProviderInput): SavedProvider {
     ...(input.model1mSupport !== undefined && { model1mSupport: input.model1mSupport }),
     ...(input.autoCompactWindow !== undefined && { autoCompactWindow: input.autoCompactWindow }),
     ...(input.modelContextWindows !== undefined && { modelContextWindows: input.modelContextWindows }),
+    ...(input.modelMaxOutputTokens !== undefined && { modelMaxOutputTokens: input.modelMaxOutputTokens }),
     toolSearchEnabled: input.toolSearchEnabled ?? false,
     ...(input.disableExperimentalBetas === true && { disableExperimentalBetas: true }),
     ...(input.supportsNestedToolResultMedia !== undefined && { supportsNestedToolResultMedia: input.supportsNestedToolResultMedia }),
     ...(input.requestCompatibility !== undefined && { requestCompatibility: input.requestCompatibility }),
+    ...(input.upstreamHeaders !== undefined && { upstreamHeaders: input.upstreamHeaders }),
     ...(imageGeneration !== undefined && { imageGeneration }),
+    ...(input.proxy !== undefined && { proxy: input.proxy }),
     ...(input.notes !== undefined && { notes: input.notes }),
   }
 }
@@ -249,11 +266,21 @@ export class ProviderService {
     return this.readSettings()
   }
 
-  async updateManagedSettings(settings: Record<string, unknown>): Promise<void> {
-    await this.managedSettingsService.updateSettings((current) => ({
-      settings: Object.assign({}, current, settings),
-      result: undefined,
-    }))
+  async updateManagedSettings(settings: Record<string, unknown>, expectedActiveProviderId?: string): Promise<void> {
+    await this.managedSettingsService.updateSettings(async (current) => {
+      // Check after earlier settings writes finish: another client may have
+      // switched the default while this editor still showed the old provider.
+      if (expectedActiveProviderId !== undefined) {
+        const index = await this.readIndex()
+        if (index.activeId !== expectedActiveProviderId) {
+          throw new ApiError(409, 'The default provider changed. Review it before saving again.', 'PROVIDER_SETTINGS_OWNER_CHANGED')
+        }
+      }
+      return {
+        settings: Object.assign({}, current, settings),
+        result: undefined,
+      }
+    })
   }
 
   // --- CRUD ---
@@ -270,10 +297,7 @@ export class ProviderService {
   async getProvider(id: string): Promise<SavedProvider> {
     const index = await this.readIndex()
     if (isOpenAIOfficialProviderId(id)) {
-      return {
-        ...OPENAI_OFFICIAL_PROVIDER,
-        models: this.resolveOfficialProviderModels(index, OPENAI_OFFICIAL_PROVIDER_ID),
-      }
+      return this.resolveOpenAIOfficialProvider(index)
     }
     if (isGrokOfficialProviderId(id)) {
       return {
@@ -291,6 +315,21 @@ export class ProviderService {
     const provider = index.providers.find((p) => p.id === id)
     if (!provider) throw ApiError.notFound(`Provider not found: ${id}`)
     return provider
+  }
+
+  /** The built-in ChatGPT provider as saved: the user's model mapping and window overrides over its defaults. */
+  private resolveOpenAIOfficialProvider(
+    index: ProvidersIndex,
+    models?: ModelMapping,
+  ): SavedProvider {
+    return {
+      ...OPENAI_OFFICIAL_PROVIDER,
+      models: models ?? this.resolveOfficialProviderModels(index, OPENAI_OFFICIAL_PROVIDER_ID),
+      modelContextWindows: {
+        ...OPENAI_OFFICIAL_PROVIDER.modelContextWindows,
+        ...index.officialProviderContextWindows[OPENAI_OFFICIAL_PROVIDER_ID],
+      },
+    }
   }
 
   private resolveOfficialProviderModels(
@@ -313,12 +352,30 @@ export class ProviderService {
     return this.resolveOfficialProviderModels(index, id)
   }
 
+  /** The user's per-model context-window overrides for a built-in provider; empty when none are set. */
+  async getOfficialProviderContextWindows(id: string): Promise<Record<string, number>> {
+    if (!isBuiltInProviderId(id)) {
+      throw ApiError.notFound(`Official provider not found: ${id}`)
+    }
+    const index = await this.readIndex()
+    return { ...index.officialProviderContextWindows[id] }
+  }
+
+  /**
+   * `options.modelContextWindows` replaces the provider's window overrides
+   * (`{}` clears them); leaving it out keeps what is saved.
+   */
   async updateOfficialProviderModels(
     id: string,
     models: ModelMapping,
+    options?: { modelContextWindows?: Record<string, number> },
   ): Promise<ModelMapping> {
     if (!isBuiltInProviderId(id)) {
       throw ApiError.notFound(`Official provider not found: ${id}`)
+    }
+    const contextWindows = options?.modelContextWindows
+    if (contextWindows !== undefined) {
+      this.assertOfficialContextWindows(id, contextWindows)
     }
 
     const index = await this.readIndex()
@@ -326,6 +383,12 @@ export class ProviderService {
     index.officialProviderModels = {
       ...index.officialProviderModels,
       [id]: normalized,
+    }
+    if (contextWindows !== undefined) {
+      const { [id]: _replaced, ...others } = index.officialProviderContextWindows
+      index.officialProviderContextWindows = Object.keys(contextWindows).length > 0
+        ? { ...others, [id]: contextWindows }
+        : others
     }
     await this.writeIndex(index)
 
@@ -338,7 +401,7 @@ export class ProviderService {
 
     if (index.activeId === id) {
       const provider = id === OPENAI_OFFICIAL_PROVIDER_ID
-        ? { ...OPENAI_OFFICIAL_PROVIDER, models: normalized }
+        ? this.resolveOpenAIOfficialProvider(index, normalized)
         : id === DEEPSEEK_ACCOUNT_PROVIDER_ID
           ? { ...DEEPSEEK_ACCOUNT_PROVIDER, models: normalized }
           : { ...GROK_OFFICIAL_PROVIDER, models: normalized }
@@ -347,6 +410,26 @@ export class ProviderService {
     }
 
     return normalized
+  }
+
+  /**
+   * Only ChatGPT Official runs on windows the user can set (the other built-in
+   * providers take theirs from their own catalogs), and no model may be set
+   * above what its catalog allows.
+   */
+  private assertOfficialContextWindows(id: string, windows: Record<string, number>): void {
+    if (Object.keys(windows).length === 0) return
+    if (id !== OPENAI_OFFICIAL_PROVIDER_ID) {
+      throw ApiError.badRequest('Context window overrides are only supported for ChatGPT Official')
+    }
+    for (const [model, window] of Object.entries(windows)) {
+      const max = getOpenAIModelCatalogEntry(model)?.maxContextWindow
+      if (max !== undefined && window > max) {
+        throw ApiError.badRequest(
+          `${model}: context window ${window} is above the limit of ${max}`,
+        )
+      }
+    }
   }
 
   async addProvider(input: CreateProviderInput): Promise<SavedProvider> {
@@ -410,12 +493,18 @@ export class ProviderService {
       ...(input.model1mSupport !== undefined && input.model1mSupport !== null && { model1mSupport: input.model1mSupport }),
       ...(typeof input.autoCompactWindow === 'number' && { autoCompactWindow: input.autoCompactWindow }),
       ...(input.modelContextWindows !== undefined && input.modelContextWindows !== null && { modelContextWindows: input.modelContextWindows }),
+      ...(input.modelMaxOutputTokens !== undefined && input.modelMaxOutputTokens !== null && { modelMaxOutputTokens: input.modelMaxOutputTokens }),
       ...(input.toolSearchEnabled !== undefined && { toolSearchEnabled: input.toolSearchEnabled }),
       ...(input.supportsNestedToolResultMedia !== undefined && { supportsNestedToolResultMedia: input.supportsNestedToolResultMedia }),
       ...(input.requestCompatibility !== undefined && input.requestCompatibility !== null && { requestCompatibility: input.requestCompatibility }),
+      ...(input.upstreamHeaders !== undefined && input.upstreamHeaders !== null && { upstreamHeaders: input.upstreamHeaders }),
       ...(input.disableExperimentalBetas === true && { disableExperimentalBetas: true }),
       ...(imageGeneration !== undefined && imageGeneration !== null && { imageGeneration }),
+      ...(input.proxy !== undefined && input.proxy !== null && { proxy: input.proxy }),
       ...(input.notes !== undefined && { notes: input.notes }),
+    }
+    if (input.proxy === null) {
+      delete updated.proxy
     }
     if (input.model1mSupport === null) {
       delete updated.model1mSupport
@@ -426,8 +515,14 @@ export class ProviderService {
     if (input.modelContextWindows === null) {
       delete updated.modelContextWindows
     }
+    if (input.modelMaxOutputTokens === null) {
+      delete updated.modelMaxOutputTokens
+    }
     if (input.requestCompatibility === null) {
       delete updated.requestCompatibility
+    }
+    if (input.upstreamHeaders === null) {
+      delete updated.upstreamHeaders
     }
     if (input.disableExperimentalBetas === false) {
       delete updated.disableExperimentalBetas
@@ -496,10 +591,7 @@ export class ProviderService {
   async activateProvider(id: string): Promise<void> {
     const index = await this.readIndex()
     const provider = isOpenAIOfficialProviderId(id)
-      ? {
-          ...OPENAI_OFFICIAL_PROVIDER,
-          models: this.resolveOfficialProviderModels(index, OPENAI_OFFICIAL_PROVIDER_ID),
-        }
+      ? this.resolveOpenAIOfficialProvider(index)
       : isGrokOfficialProviderId(id)
         ? {
             ...GROK_OFFICIAL_PROVIDER,
@@ -530,6 +622,56 @@ export class ProviderService {
     }
   }
 
+  // --- Magpie (local gateway) ---
+
+  /**
+   * Magpie as this computer runs it now, with its catalog. Saved Magpie
+   * providers follow it: a moved port and each model's window and reply limit
+   * are written back to them, so every session, settings sync and Agent route
+   * built from the saved provider sees the same limits.
+   */
+  async getMagpieState(options?: { force?: boolean }): Promise<{ status: MagpieStatus; models: MagpieModel[] | null }> {
+    const status = await probeMagpie()
+    const models = status.running ? await fetchMagpieModels(status.baseUrl, { force: options?.force }) : null
+    if (status.running) await this.syncMagpieProviders(status.baseUrl, models)
+    return { status, models }
+  }
+
+  /** Before a Magpie session starts, so it launches with the current catalog's limits. */
+  async refreshMagpieProvider(id: string | null | undefined): Promise<void> {
+    const index = await this.readIndex()
+    const provider = index.providers.find((candidate) => candidate.id === (id ?? index.activeId))
+    if (!isMagpieProvider(provider)) return
+    try {
+      await this.getMagpieState()
+    } catch {
+      // Not running: the session reports that itself; the last limits stay.
+    }
+  }
+
+  private async syncMagpieProviders(baseUrl: string, models: MagpieModel[] | null): Promise<void> {
+    const index = await this.readIndex()
+    const limits = models ? magpieModelLimits(models) : null
+    const changed: SavedProvider[] = []
+    index.providers = index.providers.map((provider) => {
+      if (!isMagpieProvider(provider)) return provider
+      const next: SavedProvider = { ...provider, baseUrl }
+      if (limits) {
+        delete next.modelContextWindows
+        delete next.modelMaxOutputTokens
+        if (Object.keys(limits.modelContextWindows).length) next.modelContextWindows = limits.modelContextWindows
+        if (Object.keys(limits.modelMaxOutputTokens).length) next.modelMaxOutputTokens = limits.modelMaxOutputTokens
+      }
+      if (JSON.stringify(next) === JSON.stringify(provider)) return provider
+      changed.push(next)
+      return next
+    })
+    if (!changed.length) return
+    await this.writeIndex(index)
+    const active = changed.find((provider) => provider.id === index.activeId)
+    if (active) await this.syncToSettings(active)
+  }
+
   async activateOfficial(): Promise<void> {
     const index = await this.readIndex()
     index.activeId = null
@@ -549,6 +691,7 @@ export class ProviderService {
     return buildProviderManagedEnv(provider, {
       proxyPath: options?.proxyPath,
       serverPort: ProviderService.serverPort,
+      configDir: this.getConfigDir(),
     })
   }
 
@@ -567,13 +710,17 @@ export class ProviderService {
       for (const key of getManagedEnvKeys()) {
         delete cleanedEnv[key]
       }
+      const providerEnv = this.buildManagedEnv(provider)
+      // Discovered capabilities belong to this server's launch snapshot, not
+      // persisted settings that outlive the authenticated catalog cache.
+      delete providerEnv[GROK_MODEL_CATALOG_ENV_KEY]
 
       return {
         settings: {
           ...settings,
           env: {
             ...cleanedEnv,
-            ...this.buildManagedEnv(provider),
+            ...providerEnv,
           },
         },
         result: undefined,
@@ -736,6 +883,7 @@ export class ProviderService {
     modelApiFormats: ModelApiFormatRule<ModelApiFormat>[]
     upstreamHeaders: Record<string, string>
     requestCompatibility?: RequestCompatibility
+    proxy?: ProviderProxyConfig
   } | null> {
     const toProxyConfig = (provider: SavedProvider) => {
       const presetDefaultEnv = getPresetDefaultEnv(provider.presetId)
@@ -748,8 +896,9 @@ export class ProviderService {
         supportsNestedToolResultMedia: provider.supportsNestedToolResultMedia ?? true,
         authStrategy: provider.authStrategy ?? getPresetAuthStrategy(provider.presetId),
         modelApiFormats: getPresetModelApiFormats(provider.presetId),
-        upstreamHeaders: getPresetUpstreamHeaders(provider.presetId),
+        upstreamHeaders: mergeProviderUpstreamHeaders(provider),
         ...(provider.requestCompatibility !== undefined && { requestCompatibility: provider.requestCompatibility }),
+        ...(provider.proxy !== undefined && { proxy: provider.proxy }),
       }
     }
     if (providerId) {
@@ -815,8 +964,10 @@ export class ProviderService {
       authStrategy,
       apiFormat,
       presetId: provider.presetId,
+      proxy: provider.proxy,
       supportsNestedToolResultMedia: provider.supportsNestedToolResultMedia,
       requestCompatibility: provider.requestCompatibility,
+      ...(provider.upstreamHeaders !== undefined && { upstreamHeaders: provider.upstreamHeaders }),
     })
   }
 
@@ -824,15 +975,17 @@ export class ProviderService {
     const modelId = normalizeModelStringForAPI(input.modelId)
     const authStrategy = input.authStrategy ?? 'api_key'
     const base = input.baseUrl.replace(/\/+$/, '')
-    const networkSettings = await loadNetworkSettings()
+    const networkSettings = resolveProviderNetworkSettings(await loadNetworkSettings(), input.proxy)
 
     // The unsaved-config test has no saved provider to read a preset from, so the
     // caller passes its presetId and the server resolves the same rules the proxy
-    // would. Keeps the probe honest without accepting rule data over HTTP.
+    // would; any user-configured headers are merged over them exactly as the
+    // proxy merges them for a saved provider. Keeps the probe honest without
+    // accepting rule data over HTTP.
     const presetId = input.presetId ?? ''
     const modelApiFormats = presetId ? getPresetModelApiFormats(presetId) : []
     const upstreamHeaders = resolveUpstreamHeaders(
-      presetId ? getPresetUpstreamHeaders(presetId) : {},
+      { ...(presetId ? getPresetUpstreamHeaders(presetId) : {}), ...input.upstreamHeaders },
       { sessionId: connectivityProbeSessionId() },
     )
     // Same resolution the proxy performs, so the probe reaches what production
@@ -1035,6 +1188,20 @@ export class ProviderService {
 }
 
 // ─── Helpers ───────────────────────────────────────────────
+
+/**
+ * The upstream header templates a provider's proxied requests carry: the
+ * preset's own headers overlaid with the user's saved ones, user values winning
+ * on a name collision (issue #1509). The merge happens on the raw templates so
+ * `resolveUpstreamHeaders` applies its blocked-header, placeholder, and newline
+ * guards to both sources identically.
+ */
+function mergeProviderUpstreamHeaders(provider: Pick<SavedProvider, 'presetId' | 'upstreamHeaders'>): Record<string, string> {
+  return {
+    ...getPresetUpstreamHeaders(provider.presetId),
+    ...provider.upstreamHeaders,
+  }
+}
 
 /**
  * A connectivity probe is not part of a conversation, but gateways that bind the

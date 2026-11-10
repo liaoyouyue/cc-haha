@@ -1,4 +1,7 @@
 import { feature } from 'bun:bundle'
+import { resolveAgentProviderRuntime } from '../../services/api/agentProviderRuntime.js'
+import { bindProviderRuntimeGenerator, getProviderRuntimeContext, type ProviderRuntimeContext } from '../../services/api/providerRuntimeContext.js'
+import { getAgentProviderModel, getBuiltInAgentProviderId } from './agentProviderModel.js'
 import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
 import uniqBy from 'lodash-es/uniqBy.js'
@@ -41,6 +44,7 @@ import type {
   UserMessage,
 } from '../../types/message.js'
 import { createAttachmentMessage } from '../../utils/attachments.js'
+import { convertEffortValueToLevel, type EffortLevel } from '../../utils/effort.js'
 import { AbortError } from '../../utils/errors.js'
 import { getDisplayPath } from '../../utils/file.js'
 import {
@@ -56,8 +60,6 @@ import { registerFrontmatterHooks } from '../../utils/hooks/registerFrontmatterH
 import { clearSessionHooks } from '../../utils/hooks/sessionHooks.js'
 import { executeSubagentStartHooks } from '../../utils/hooks.js'
 import { createUserMessage } from '../../utils/messages.js'
-import { getAgentModel } from '../../utils/model/agent.js'
-import type { ModelAlias } from '../../utils/model/aliases.js'
 import {
   isChainParticipant,
   recordSidechainTranscript,
@@ -96,6 +98,13 @@ export function resolveSubagentEffortValue(
   parentEffort: AgentDefinition['effort'],
 ): AgentDefinition['effort'] {
   return agentEffort ?? parentEffort
+}
+
+/** The effort a run's metadata sidecar records; `null` leaves it to the model. */
+export function recordedSubagentEffort(
+  effort: AgentDefinition['effort'],
+): EffortLevel | null {
+  return effort === undefined ? null : convertEffortValueToLevel(effort)
 }
 
 export function resolvePersistedAgentType(
@@ -320,7 +329,18 @@ function isRecordableMessage(
   )
 }
 
-export async function* runAgent({
+export async function* runAgent(
+  options: Parameters<typeof runAgentInProviderContext>[0],
+): AsyncGenerator<Message, void> {
+  const providerId = getBuiltInAgentProviderId(options.agentDefinition)
+  const runtime = options.providerRuntime ?? (providerId
+    ? await resolveAgentProviderRuntime(providerId)
+    : getProviderRuntimeContext())
+  const iterator = runAgentInProviderContext(options)
+  yield* runtime ? bindProviderRuntimeGenerator(runtime, iterator) : iterator
+}
+
+async function* runAgentInProviderContext({
   agentDefinition,
   promptMessages,
   toolUseContext,
@@ -350,8 +370,13 @@ export async function* runAgent({
   extraMetadata,
   workflow,
   onQueryProgress,
+  providerParentModel,
 }: {
   agentDefinition: AgentDefinition
+  /** A resolved snapshot shared by task metadata and the lazy query stream. */
+  providerRuntime?: ProviderRuntimeContext
+  /** Recorded provider model for a resumed child whose invoker has changed. */
+  providerParentModel?: string
   promptMessages: Message[]
   toolUseContext: ToolUseContext
   canUseTool: CanUseToolFn
@@ -370,7 +395,7 @@ export async function* runAgent({
     abortController?: AbortController
     agentId?: AgentId
   }
-  model?: ModelAlias
+  model?: string
   maxTurns?: number
   /** Preserve toolUseResult on messages for subagents with viewable transcripts */
   preserveToolUseResults?: boolean
@@ -448,11 +473,13 @@ export async function* runAgent({
   const rootSetAppState =
     toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState
 
-  const resolvedAgentModel = getAgentModel(
-    agentDefinition.model,
+  const resolvedAgentModel = getAgentProviderModel(
+    agentDefinition,
     toolUseContext.options.mainLoopModel,
     model,
     permissionMode,
+    getProviderRuntimeContext(),
+    providerParentModel,
   )
 
   const agentId = override?.agentId ? override.agentId : createAgentId()
@@ -907,10 +934,17 @@ export async function* runAgent({
       agentDefinition.agentType,
     ),
     ...(model && { model }),
+    effort: recordedSubagentEffort(
+      resolveSubagentEffortValue(agentDefinition.effort, appState.effortValue),
+    ),
     ...(worktreePath && { worktreePath }),
     ...(description && { description }),
     ...(spawningToolUseId && { toolUseId: spawningToolUseId }),
     ...(ownerAgentId && { ownerAgentId }),
+    ...(getProviderRuntimeContext() && {
+      providerId: getProviderRuntimeContext()!.providerId,
+      providerModel: resolvedAgentModel,
+    }),
     ...(workflow && { workflow }),
     ...extraMetadata,
   }).catch(_err => logForDebugging(`Failed to write agent metadata: ${_err}`))

@@ -17,7 +17,7 @@
  */
 
 import * as path from 'node:path'
-import { enqueue } from './chat-queue.js'
+import { enqueueInboundPowerActivity, type InboundPowerLease } from './inbound-power-activity.js'
 import { adapterMigrationLifecycle } from './migration-lifecycle.js'
 import {
   getConfiguredWorkDir,
@@ -25,6 +25,7 @@ import {
   type AdapterPlatformConfig,
 } from './config.js'
 import { formatImHelp, formatImStatus, formatPermissionRequest } from './format.js'
+import { t } from './i18n.js'
 import type { AdapterHttpClient } from './http-client.js'
 import { MessageBuffer } from './message-buffer.js'
 import type { MessageDedup } from './message-dedup.js'
@@ -35,9 +36,9 @@ import {
   parsePermissionCommand,
   type PermissionDecision,
 } from './permission.js'
-import { restoreStoredSessionBinding, SESSION_RECONNECT_NOTICE, type SessionRestoreResult } from './session-recovery.js'
+import { restoreStoredSessionBinding, sessionReconnectNotice, type SessionRestoreResult } from './session-recovery.js'
 import { SessionSelectionController } from './session-selection.js'
-import { syncImPermissionState } from './permission-sync.js'
+import { deliverImPermissionPrompt, syncImPermissionState } from './permission-sync.js'
 import type { SessionStore } from './session-store.js'
 import type { AttachmentRef, ServerMessage, WsBridge } from './ws-bridge.js'
 import { ImageBlockWatcher } from './attachment/image-block-watcher.js'
@@ -142,6 +143,7 @@ export class ImChatRuntime {
   private readonly httpClient: AdapterHttpClient
   private readonly defaultWorkDir: string
   private readonly dedup: MessageDedup
+  private readonly pendingInboundKeys = new Set<string>()
   private readonly flushIntervalMs: number
   private readonly flushCharThreshold: number
 
@@ -192,76 +194,98 @@ export class ImChatRuntime {
    * their session mutations. The returned promise settles when this message
    * has been handled; adapters normally ignore it, tests await it.
    */
-  handleInbound(message: InboundChatMessage): Promise<void> {
+  async handleInbound(message: InboundChatMessage): Promise<void> {
     const { chatId, dedupKey } = message
-    if (!chatId) return Promise.resolve()
-    if (dedupKey && !this.dedup.tryRecord(`${this.port.platform}:${dedupKey}`)) {
-      return Promise.resolve()
-    }
+    if (!chatId || adapterMigrationLifecycle.isQuiescing) return
 
     const text = message.text.trim()
     const hasAttachments = message.hasAttachments
       ?? ((message.attachments?.length ?? 0) > 0 || Boolean(message.loadAttachments))
-    if (!text && !hasAttachments) return Promise.resolve()
-
-    return enqueue(chatId, async () => {
-      try {
-        await this.routeInbound({ ...message, text }, hasAttachments)
-      } catch (err) {
-        this.port.setBusy?.(chatId, false)
-        const detail = err instanceof Error ? err.message : String(err)
-        console.error(`${this.port.logPrefix} Failed to handle message for ${chatId}:`, err)
-        await this.notifySafely(chatId, `处理消息失败：${detail}`)
+    if (!text && !hasAttachments) return
+    const key = dedupKey ? `${this.port.platform}:${dedupKey}` : ''
+    if (key && (this.pendingInboundKeys.has(key) || this.dedup.has(key))) return
+    // Reserve during queueing/downloads, but only retain a replay key after
+    // handling succeeds. A disconnected or rejected send must remain retryable.
+    if (key) this.pendingInboundKeys.add(key)
+    try {
+      // Unpaired strangers must not hold the host awake. Pair synchronously before
+      // admission so the next message can observe the newly authorized sender.
+      if (!isAllowedUser(this.port.platform, message.userId)) {
+        await this.handlePairing({ ...message, text })
+        if (key) this.dedup.tryRecord(key)
+        return
       }
-    })
+
+      await enqueueInboundPowerActivity(
+        this.httpClient,
+        chatId,
+        async lease => {
+          if (await this.routeInbound({ ...message, text }, hasAttachments, lease)) {
+            if (key) this.dedup.tryRecord(key)
+          }
+        },
+        async err => {
+          this.port.setBusy?.(chatId, false)
+          const detail = err instanceof Error ? err.message : String(err)
+          console.error(`${this.port.logPrefix} Failed to handle message for ${chatId}:`, err)
+          await this.notifySafely(chatId, t('chat.error.processFailed', { detail }))
+        },
+      )
+    } finally {
+      if (key) this.pendingInboundKeys.delete(key)
+    }
+  }
+
+  private async handlePairing(message: InboundChatMessage): Promise<void> {
+    const { chatId, userId, displayName, text } = message
+    const paired = text ? tryPair(text, { userId, displayName }, this.port.platform) : false
+    await this.notifySafely(
+      chatId,
+      paired ? t('chat.pairing.success') : t('chat.pairing.unauthorized'),
+    )
   }
 
   private async routeInbound(
     message: InboundChatMessage,
     hasAttachments: boolean,
-  ): Promise<void> {
-    const { chatId, userId, displayName, text } = message
+    lease?: InboundPowerLease,
+  ): Promise<boolean> {
+    const { chatId, userId, text } = message
 
     if (!isAllowedUser(this.port.platform, userId)) {
-      const paired = text
-        ? tryPair(text, { userId, displayName }, this.port.platform)
-        : false
-      await this.port.sendNotice(
-        chatId,
-        paired
-          ? '配对成功！现在可以开始聊天了。\n\n发送消息即可与 Claude 对话，发送 /help 查看可用命令。'
-          : '未授权。请在 Claude Code 桌面端生成配对码后发送给我。',
-      )
-      return
+      await this.handlePairing(message)
+      return true
     }
 
-    if (!hasAttachments && (await this.tryHandleCommand(chatId, text))) return
+    if (!hasAttachments) {
+      const handled = await this.tryHandleCommand(chatId, text, lease)
+      if (handled !== null) return handled
+    }
 
     const decision = hasAttachments
       ? null
       : parsePermissionCommand(text, this.pendingPermissions.get(chatId))
     if (decision) {
-      await this.applyPermissionDecision(chatId, decision)
-      return
+      return this.applyPermissionDecision(chatId, decision)
     }
 
-    if (!hasAttachments && await this.sessionSelection.handleInput(chatId, text)) return
+    if (!hasAttachments && await this.sessionSelection.handleInput(chatId, text)) return true
 
     if (!hasAttachments && this.pendingProjectSelection.has(chatId)) {
       if (text) await this.startNewSession(chatId, text)
-      return
+      return true
     }
 
     const ready = await this.ensureSession(chatId)
-    if (!ready) return
+    if (!ready) return false
 
     // Only now — sender authorized, session bound, still inside this chat's
     // queue — is it safe to pull the bytes down.
     const attachments = message.attachments
       ?? (message.loadAttachments ? await message.loadAttachments() : [])
 
-    const effective = text || (attachments.length > 0 ? '(用户发送了附件)' : '')
-    if (!effective && attachments.length === 0) return
+    const effective = text || (attachments.length > 0 ? t('chat.attachments.placeholder') : '')
+    if (!effective && attachments.length === 0) return false
 
     this.port.setBusy?.(chatId, true)
     this.getRuntimeState(chatId).state = 'thinking'
@@ -269,23 +293,29 @@ export class ImChatRuntime {
       chatId,
       effective,
       attachments.length > 0 ? attachments : undefined,
+      lease?.id,
     )
+    // Socket send is not admission: the server releases this exact id only after
+    // its own busy state takes over, including startup and rejection paths.
+    if (sent && lease) lease.transferred = true
     if (!sent) {
       this.port.setBusy?.(chatId, false)
       this.getRuntimeState(chatId).state = 'idle'
-      await this.port.sendNotice(chatId, '消息发送失败，连接可能已断开。请发送 /new 重新开始。')
+      await this.port.sendNotice(chatId, t('chat.send.failed'))
     }
+    return sent
   }
 
-  /** Returns true when `text` was a command and has been fully handled. */
-  private async tryHandleCommand(chatId: string, text: string): Promise<boolean> {
+  /** null means ordinary text; false means a command failed and can be retried. */
+  private async tryHandleCommand(chatId: string, text: string, lease?: InboundPowerLease): Promise<boolean | null> {
     if (HELP_ALIASES.has(text)) {
       await this.port.sendNotice(chatId, formatImHelp())
       return true
     }
     if (STATUS_ALIASES.has(text)) {
-      await this.port.sendNotice(chatId, await this.buildStatusText(chatId))
-      return true
+      const status = await this.buildStatusText(chatId)
+      await this.port.sendNotice(chatId, status)
+      return status !== SESSION_RECONNECT_NOTICE
     }
     if (PROJECTS_ALIASES.has(text)) {
       await this.showProjectPicker(chatId)
@@ -303,39 +333,40 @@ export class ImChatRuntime {
     if (STOP_ALIASES.has(text)) {
       const result = await this.ensureExistingSession(chatId)
       if (result.status !== 'restored') {
-        await this.port.sendNotice(chatId, result.status === 'unavailable' ? SESSION_RECONNECT_NOTICE : formatImStatus(null))
-        return true
+        await this.port.sendNotice(chatId, result.status === 'unavailable' ? sessionReconnectNotice() : formatImStatus(null))
+        return result.status !== 'unavailable'
       }
-      this.bridge.sendStopGeneration(chatId)
-      await this.port.sendNotice(chatId, '已发送停止信号。')
-      return true
+      const sent = this.bridge.sendStopGeneration(chatId)
+      await this.notifySafely(chatId, sent ? t('chat.stop.sent') : t('chat.stop.failed'))
+      return sent
     }
     if (CLEAR_ALIASES.has(text)) {
       const result = await this.ensureExistingSession(chatId)
       if (result.status !== 'restored') {
-        await this.port.sendNotice(chatId, result.status === 'unavailable' ? SESSION_RECONNECT_NOTICE : formatImStatus(null))
-        return true
+        await this.port.sendNotice(chatId, result.status === 'unavailable' ? sessionReconnectNotice() : formatImStatus(null))
+        return result.status !== 'unavailable'
       }
       this.clearTransientChatState(chatId)
-      const sent = this.bridge.sendUserMessage(chatId, '/clear')
+      const sent = this.bridge.sendUserMessage(chatId, '/clear', undefined, lease?.id)
+      if (sent && lease) lease.transferred = true
       if (sent) this.getRuntimeState(chatId).state = 'thinking'
-      await this.port.sendNotice(
+      await this.notifySafely(
         chatId,
-        sent ? '已清空当前会话上下文。' : '无法发送 /clear，请先发送 /new 重新连接会话。',
+        sent ? t('chat.clear.done') : t('chat.clear.failed'),
       )
-      return true
+      return sent
     }
-    return false
+    return null
   }
 
   private async applyPermissionDecision(
     chatId: string,
     decision: PermissionDecision,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const pending = this.pendingPermissions.get(chatId)
     if (!pending?.has(decision.requestId)) {
-      await this.port.sendNotice(chatId, `未找到待确认的权限请求：${decision.requestId}`)
-      return
+      await this.port.sendNotice(chatId, t('chat.permission.notFound', { requestId: decision.requestId }))
+      return true
     }
     const sent = this.bridge.sendPermissionResponse(
       chatId,
@@ -348,10 +379,11 @@ export class ImChatRuntime {
       const runtime = this.getRuntimeState(chatId)
       runtime.pendingPermissionCount = Math.max(0, runtime.pendingPermissionCount - 1)
     }
-    await this.port.sendNotice(
+    await this.notifySafely(
       chatId,
-      sent ? `${formatPermissionDecisionStatus(decision)}。` : '权限响应发送失败，请检查会话状态。',
+      sent ? formatPermissionDecisionStatus(decision) : t('chat.permission.sendFailed'),
     )
+    return sent
   }
 
   // ---------- server stream ----------
@@ -408,22 +440,16 @@ export class ImChatRuntime {
         break
 
       case 'permission_request': {
-        runtime.pendingPermissionCount += 1
-        runtime.state = 'permission_pending'
-        let pending = this.pendingPermissions.get(chatId)
-        if (!pending) {
-          pending = new Set()
-          this.pendingPermissions.set(chatId, pending)
-        }
-        pending.add(msg.requestId)
-        this.port.setBusy?.(chatId, false)
-        // Close the in-flight reply first: the approval prompt is a separate
-        // message and must not be swallowed by an editing stream.
-        await this.finishResponse(chatId)
-        await this.port.sendNotice(
-          chatId,
-          `${formatPermissionRequest(msg.toolName, msg.input, msg.requestId)}\n\n${formatPermissionInstructions(msg.requestId)}`,
-        )
+        await deliverImPermissionPrompt(chatId, msg.requestId, runtime, this.pendingPermissions, async (isCurrent) => {
+          this.port.setBusy?.(chatId, false)
+          // Close the reply before sending the separate approval prompt.
+          await this.finishResponse(chatId)
+          if (!isCurrent()) return
+          await this.port.sendNotice(
+            chatId,
+            `${formatPermissionRequest(msg.toolName, msg.input, msg.requestId)}\n\n${formatPermissionInstructions(msg.requestId)}`,
+          )
+        })
         break
       }
 
@@ -462,21 +488,21 @@ export class ImChatRuntime {
       const stored = this.sessionStore.get(chatId)
       const workDir = stored?.workDir || this.defaultWorkDir
       if (workDir) {
-        await this.port.sendNotice(chatId, '会话上下文已失效，正在自动重建...')
+        await this.port.sendNotice(chatId, t('chat.session.rebuilding'))
         this.clearTransientChatState(chatId)
         this.bridge.resetSession(chatId)
         this.sessionStore.delete(chatId)
         const ok = await this.createSessionForChat(chatId, workDir)
         await this.port.sendNotice(
           chatId,
-          ok ? '已重建会话，请重新发送消息。' : '重建会话失败，请发送 /new 手动新建。',
+          ok ? t('chat.session.rebuilt') : t('chat.session.rebuildFailed'),
         )
         return
       }
-      await this.port.sendNotice(chatId, '会话上下文已失效，请发送 /new 新建会话。')
+      await this.port.sendNotice(chatId, t('chat.session.expired'))
       return
     }
-    await this.port.sendNotice(chatId, `错误: ${msg.message}`)
+    await this.port.sendNotice(chatId, t('chat.error.generic', { message: msg.message }))
   }
 
   private async dispatchOutboundImage(chatId: string, pending: PendingUpload): Promise<void> {
@@ -519,7 +545,7 @@ export class ImChatRuntime {
     const result = await this.ensureExistingSession(chatId)
     if (result.status === 'restored') return true
     if (result.status === 'unavailable') {
-      await this.port.sendNotice(chatId, SESSION_RECONNECT_NOTICE)
+      await this.port.sendNotice(chatId, sessionReconnectNotice())
       return false
     }
 
@@ -542,14 +568,14 @@ export class ImChatRuntime {
       this.bridge.onServerMessage(chatId, (msg) => this.handleServerMessage(chatId, msg))
       const opened = await this.bridge.waitForOpen(chatId)
       if (!opened) {
-        await this.port.sendNotice(chatId, '连接服务器超时，请重试。')
+        await this.port.sendNotice(chatId, t('chat.connect.timeout'))
         return false
       }
       return true
     } catch (err) {
       await this.port.sendNotice(
         chatId,
-        `无法创建会话: ${err instanceof Error ? err.message : String(err)}`,
+        t('chat.session.createFailed', { message: err instanceof Error ? err.message : String(err) }),
       )
       return false
     }
@@ -562,7 +588,7 @@ export class ImChatRuntime {
       if (projects.length === 0) {
         await this.port.sendNotice(
           chatId,
-          `没有找到最近的项目。发送 /new 会使用默认工作目录：${this.defaultWorkDir}\n也可以发送 /new /path/to/project 指定项目。`,
+          t('chat.projects.none', { dir: this.defaultWorkDir }),
         )
         return
       }
@@ -572,12 +598,12 @@ export class ImChatRuntime {
       this.pendingProjectSelection.add(chatId)
       await this.port.sendNotice(
         chatId,
-        `选择项目（回复编号）：\n\n${lines.join('\n\n')}\n\n下次可直接 /new <编号、名称或绝对路径> 快速新建会话`,
+        t('chat.projects.select', { list: lines.join('\n\n') }),
       )
     } catch (err) {
       await this.port.sendNotice(
         chatId,
-        `无法获取项目列表: ${err instanceof Error ? err.message : String(err)}`,
+        t('chat.projects.listFailed', { message: err instanceof Error ? err.message : String(err) }),
       )
     }
   }
@@ -592,7 +618,7 @@ export class ImChatRuntime {
     if (!query) {
       if (this.defaultWorkDir) {
         const ok = await this.createSessionForChat(chatId, this.defaultWorkDir)
-        if (ok) await this.port.sendNotice(chatId, '已新建会话，可以开始对话了。')
+        if (ok) await this.port.sendNotice(chatId, t('chat.session.created'))
       } else {
         await this.showProjectPicker(chatId)
       }
@@ -606,19 +632,22 @@ export class ImChatRuntime {
         if (ok) {
           await this.port.sendNotice(
             chatId,
-            `已新建会话：${project.projectName}${project.branch ? ` (${project.branch})` : ''}`,
+            t('chat.session.createdNamed', {
+              name: project.projectName,
+              branch: project.branch ? ` (${project.branch})` : '',
+            }),
           )
         }
         return
       }
       if (ambiguous) {
         const list = ambiguous.map((p, i) => `${i + 1}. ${p.projectName} - ${p.realPath}`).join('\n')
-        await this.port.sendNotice(chatId, `匹配到多个项目，请更精确：\n\n${list}`)
+        await this.port.sendNotice(chatId, t('chat.projects.ambiguous', { list }))
         return
       }
       await this.port.sendNotice(
         chatId,
-        `未找到匹配 "${query}" 的项目。发送 /projects 查看完整列表。`,
+        t('chat.projects.notFound', { query }),
       )
     } catch (err) {
       await this.port.sendNotice(chatId, err instanceof Error ? err.message : String(err))
@@ -627,7 +656,7 @@ export class ImChatRuntime {
 
   async buildStatusText(chatId: string): Promise<string> {
     const result = await this.ensureExistingSession(chatId)
-    if (result.status === 'unavailable') return SESSION_RECONNECT_NOTICE
+    if (result.status === 'unavailable') return sessionReconnectNotice()
     if (result.status === 'missing') return formatImStatus(null)
     const stored = result.session
 

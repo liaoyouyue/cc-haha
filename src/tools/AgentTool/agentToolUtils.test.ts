@@ -22,6 +22,7 @@ import { registerTask } from '../../utils/task/framework.js'
 import {
   emitAgentToolActivitiesForMessage,
   extractAgentToolActivities,
+  finalizeAgentTool,
   runAsyncAgentLifecycle,
 } from './agentToolUtils.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from '../SyntheticOutputTool/SyntheticOutputTool.js'
@@ -491,5 +492,90 @@ describe('emitAgentToolActivitiesForMessage', () => {
     } finally {
       emitSpy.mockRestore()
     }
+  })
+})
+
+// #1468: a provider ending the stream with an empty text block appends a
+// blank assistant message; the AgentTool result must still surface the real
+// reply instead of an empty text block.
+describe('finalizeAgentTool content selection', () => {
+  const metadata = {
+    prompt: 'Do the thing',
+    resolvedAgentModel: 'test-model',
+    isBuiltInAgent: true,
+    startTime: Date.now(),
+    agentType: 'general-purpose',
+    isAsync: false,
+  }
+
+  test('falls back to the real reply past a blank trailing assistant', () => {
+    const reply = createAssistantMessage({ content: [{ type: 'text', text: '真实答案' }] })
+    const blank = createAssistantMessage({ content: [{ type: 'text', text: '' }] })
+
+    const result = finalizeAgentTool([reply, blank] as Message[], 'agent-1', metadata)
+
+    expect(result.content).toEqual([{ type: 'text', text: '真实答案' }])
+  })
+
+  test('falls back to the real reply past a tool_use-only tail (loop exited mid-turn)', () => {
+    const reply = createAssistantMessage({ content: [{ type: 'text', text: 'real answer' }] })
+    const toolUseOnly = createAssistantMessage({
+      content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'ls' } }],
+    })
+
+    const result = finalizeAgentTool([reply, toolUseOnly] as Message[], 'agent-1', metadata)
+
+    expect(result.content).toEqual([{ type: 'text', text: 'real answer' }])
+  })
+
+  test('stays usable (empty text array) when every assistant is blank', () => {
+    const blank = createAssistantMessage({ content: [{ type: 'text', text: '' }] })
+
+    const result = finalizeAgentTool([blank] as Message[], 'agent-1', metadata)
+
+    expect(result.content).toEqual([{ type: 'text', text: '' }])
+  })
+})
+
+describe('finalizeAgentTool usage basis', () => {
+  const metadata = {
+    prompt: 'write an article',
+    resolvedAgentModel: 'test-model',
+    isBuiltInAgent: false,
+    startTime: 0,
+    agentType: 'general-purpose',
+    isAsync: false,
+  }
+
+  // The number is shown as the run's "usage", which means work the engine
+  // generated. Input and cache tokens describe what was already in the window;
+  // counting them made a run's number track how much it had read. Summing over
+  // turns matters too: taking only the last turn dropped every earlier turn's
+  // output, understating a two-turn agent by a wide margin.
+  test('counts output tokens summed over turns, ignoring input and cache', () => {
+    const messages = [
+      createAssistantMessage({
+        content: 'first turn',
+        usage: {
+          input_tokens: 1000,
+          cache_read_input_tokens: 5000,
+          cache_creation_input_tokens: 200,
+          output_tokens: 300,
+        },
+      }),
+      createAssistantMessage({
+        content: 'second turn',
+        usage: {
+          input_tokens: 4000,
+          cache_read_input_tokens: 9000,
+          cache_creation_input_tokens: 0,
+          output_tokens: 700,
+        },
+      }),
+    ] as Message[]
+
+    const result = finalizeAgentTool(messages, 'agent-1', metadata)
+
+    expect(result.totalTokens).toBe(1000)
   })
 })

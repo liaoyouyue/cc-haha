@@ -707,7 +707,9 @@ function TaskCard({
       : owner.name
     : task.status === 'completed'
       ? t('agentTeams.task.completedNoOwner')
-      : t('agentTeams.task.unclaimed')
+      : task.status === 'in_progress'
+        ? t('agentTeams.task.runningNoOwner')
+        : t('agentTeams.task.unclaimed')
 
   return (
     <button

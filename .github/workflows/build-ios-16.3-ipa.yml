@@ -12,7 +12,7 @@ jobs:
       cancel-in-progress: false
 
     env:
-      DEVELOPER_DIR: /Applications/Xcode_16.1.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_26.1.1.app/Contents/Developer
 
     steps:
       - name: Checkout
@@ -49,14 +49,36 @@ jobs:
       - name: Generate native iOS project
         working-directory: repo/mobile
         run: |
-          npx expo prebuild --platform ios --no-install --clean
+          npx expo prebuild --platform ios --clean
+
+      - name: Lower iOS deployment target in Xcode project
+        working-directory: repo/mobile
+        run: |
+          echo "=== iOS directory structure ==="
+          ls -la ios/ 2>/dev/null || echo "ios/ not found"
+          find ios -type d -name "*.xcodeproj" 2>/dev/null || echo "No xcodeproj found"
+          find ios -name "project.pbxproj" 2>/dev/null || echo "No project.pbxproj found"
+          # Find and modify the Xcode project file
+          for f in $(find ios -name "project.pbxproj" 2>/dev/null); do
+            echo "Modifying: $f"
+            sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = 16.4/IPHONEOS_DEPLOYMENT_TARGET = 16.3/g' "$f"
+          done
+          echo "=== Done ==="
 
       - name: Build unsigned .app
         working-directory: repo/mobile
         run: |
+          echo "=== iOS directory ==="
+          ls -la ios/
+          # Find workspace and scheme
+          WORKSPACE=$(find ios -maxdepth 1 -name "*.xcworkspace" -type d | head -1)
+          [ -z "$WORKSPACE" ] && WORKSPACE=$(find ios -name "*.xcworkspace" -type d | grep -v project.xcworkspace | head -1)
+          SCHEME=$(find ios -name "*.xcodeproj" -type d | head -1 | xargs basename | sed 's/.xcodeproj$//')
+          echo "Workspace: $WORKSPACE"
+          echo "Scheme: $SCHEME"
           xcodebuild \
-            -workspace ios/cc-haha.xcworkspace \
-            -scheme cc-haha \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
             -configuration Release \
             -sdk iphoneos \
             -derivedDataPath build/derived \

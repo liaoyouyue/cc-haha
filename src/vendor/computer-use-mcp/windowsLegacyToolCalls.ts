@@ -2870,18 +2870,71 @@ async function handleComputerBatch(
       // handleType, or a frontmost gate, landing between mouse_down and
       // mouse_up.
       await releaseHeldMouse(adapter, mouseOwner(overrides));
+      // P4-a: failed batches benefit most from tail observation - the model
+      // sees WHERE the batch broke without an extra screenshot round trip.
       return okJson(
-        {
+        (await withTailObservation(adapter, overrides, {
           completed: results.slice(0, -1),
           failed: result,
           remaining: actions.length - results.length,
-        },
+        })) as Record<string, unknown>,
         inner.telemetry,
       );
     }
   }
 
-  return okJson({ completed: results });
+  return okJson(await withTailObservation(adapter, overrides, { completed: results }));
+}
+
+/**
+ * P4-a tail observation (opt-in, CC_HAHA_CU_TAIL_OBS=1): append a small
+ * post-batch crop so the model can confirm the batch outcome without a full
+ * screenshot round trip. The crop is captured NOW (after the last action) and
+ * stamped - it is evidence of state at capture time, NOT proof the page
+ * settled; the model still decides whether to wait or re-observe.
+ *
+ * Safety invariants kept: this never replaces or relaxes any gate; the
+ * appended image carries no coordinate-privileges (the model must take a
+ * fresh screenshot before clicking based on it - same rule as zoom).
+ */
+async function withTailObservation(
+  adapter: ComputerUseHostAdapter,
+  overrides: ComputerUseOverrides,
+  payload: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  if (process.env.CC_HAHA_CU_TAIL_OBS !== "1") return payload;
+  const last = overrides.lastScreenshot;
+  if (!last?.base64) return payload; // no pre-batch screenshot, nothing to anchor a crop to
+
+  try {
+    // Center quarter of the pre-batch screenshot. Small on purpose:
+    // ~7ms crop vs 64ms full screen (V1 measurements).
+    const w = last.displayWidth / 4;
+    const h = last.displayHeight / 4;
+    const regionLogical = {
+      x: last.originX + (last.displayWidth - w) / 2,
+      y: last.originY + (last.displayHeight - h) / 2,
+      w,
+      h,
+    };
+    const zoomed = await adapter.executor.zoom(regionLogical, [], last.displayId);
+    return {
+      ...payload,
+      tailObservation: {
+        capturedAfterBatch: true,
+        capturedAtMs: Date.now(),
+        note:
+          "Captured immediately after the batch last action. This shows the state " +
+          "at capture time - it does NOT prove the page has settled. Do NOT click " +
+          "using coordinates from this crop; take a fresh screenshot first.",
+        image: { type: "image", data: zoomed.base64, mimeType: "image/jpeg" },
+      },
+    };
+  } catch {
+    // Tail observation is best-effort: a capture failure must never fail the
+    // batch whose actions already ran.
+    return payload;
+  }
 }
 
 function firstTextContent(r: CuCallToolResult): string {
@@ -3149,6 +3202,7 @@ export async function handleToolCall(
 }
 
 export const _test = {
+  withTailObservation,
   scaleCoord,
   coordToPercentageForPixelCompare,
   segmentGraphemes,

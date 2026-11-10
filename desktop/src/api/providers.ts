@@ -11,7 +11,10 @@ import type {
   CcSwitchImportResult,
   ProviderModelsInput,
   ProviderModelsResult,
+  ModelContextWindows,
   ModelMapping,
+  MagpieState,
+  OpenMagpieResult,
 } from '../types/provider'
 
 type ProvidersResponse = { providers: SavedProvider[]; activeId: string | null }
@@ -23,7 +26,11 @@ type ProvidersListResponse = ProvidersResponse & {
 type ProvidersReorderResponse = { providers: SavedProvider[]; providerOrder?: string[] }
 type ProviderResponse = { provider: SavedProvider }
 type TestResultResponse = { result: ProviderTestResult }
-type OfficialProviderModelsResponse = { models: ModelMapping }
+type OfficialProviderModelsResponse = {
+  models: ModelMapping
+  /** The user's own per-model windows; absent from a server that predates them. */
+  modelContextWindows?: ModelContextWindows
+}
 type AuthStatusResponse = {
   hasAuth: boolean
   source: 'cc-haha-provider' | 'claude-oauth' | 'openai-oauth' | 'grok-oauth' | 'deepseek-oauth' | 'original-settings' | 'env' | 'none'
@@ -49,8 +56,11 @@ export const providersApi = {
     return api.get<Record<string, unknown>>('/api/providers/settings')
   },
 
-  updateSettings(settings: Record<string, unknown>) {
-    return api.put<{ ok: true }>('/api/providers/settings', settings)
+  updateSettings(settings: Record<string, unknown>, expectedActiveProviderId?: string) {
+    const query = expectedActiveProviderId === undefined
+      ? ''
+      : `?expectedActiveProviderId=${encodeURIComponent(expectedActiveProviderId)}`
+    return api.put<{ ok: true }>(`/api/providers/settings${query}`, settings)
   },
 
   create(input: CreateProviderInput) {
@@ -77,8 +87,12 @@ export const providersApi = {
     return api.get<OfficialProviderModelsResponse>(`/api/providers/${id}/models`)
   },
 
-  updateOfficialModels(id: string, models: ModelMapping) {
-    return api.put<OfficialProviderModelsResponse>(`/api/providers/${id}/models`, { models })
+  /** `modelContextWindows` replaces the saved overrides (`{}` clears them); leave it out to keep them. */
+  updateOfficialModels(id: string, models: ModelMapping, modelContextWindows?: ModelContextWindows) {
+    return api.put<OfficialProviderModelsResponse>(
+      `/api/providers/${id}/models`,
+      modelContextWindows === undefined ? { models } : { models, modelContextWindows },
+    )
   },
 
   reorder(orderedIds: string[]) {
@@ -95,6 +109,15 @@ export const providersApi = {
 
   scanCcSwitch() {
     return api.get<CcSwitchScanResult>('/api/providers/cc-switch/scan')
+  },
+
+  /** The local Magpie gateway and its catalog; `refresh` skips the server's short cache. */
+  magpie(refresh = false) {
+    return api.get<MagpieState>(`/api/providers/magpie${refresh ? '?refresh=1' : ''}`)
+  },
+
+  openMagpie() {
+    return api.post<OpenMagpieResult>('/api/providers/magpie/open')
   },
 
   importCcSwitch(sourceIds: string[]) {

@@ -1,6 +1,7 @@
+import { getProviderRuntimeEnvironment } from '../../services/api/providerRuntimeContext.js'
 import type { PermissionMode } from '../permissions/PermissionMode.js'
 import { capitalize } from '../stringUtils.js'
-import { MODEL_ALIASES, type ModelAlias } from './aliases.js'
+import { isModelAlias, MODEL_ALIASES } from './aliases.js'
 import { applyBedrockRegionPrefix, getBedrockRegionPrefix } from './bedrock.js'
 import {
   getCanonicalName,
@@ -8,6 +9,20 @@ import {
   parseUserSpecifiedModel,
 } from './model.js'
 import { getAPIProvider } from './providers.js'
+import { resolveAgentModelSpec, usesNonClaudeAgentRouting } from './agentModelRouting.js'
+
+/**
+ * The model an Agent contributes when it runs as the main thread (`--agent`).
+ * A pinned provider's model is reachable only through a subagent's provider
+ * route, so sending it to the session's provider would name a model that
+ * provider does not serve; the session model stays instead.
+ */
+export function getMainThreadAgentModelSetting(
+  agent: { model?: string; provider?: string } | undefined,
+): string | undefined {
+  if (!agent?.model || agent.model === 'inherit' || agent.provider) return undefined
+  return agent.model
+}
 
 export const AGENT_MODEL_OPTIONS = [...MODEL_ALIASES, 'inherit'] as const
 export type AgentModelAlias = (typeof AGENT_MODEL_OPTIONS)[number]
@@ -37,16 +52,16 @@ export function getDefaultSubagentModel(): string {
 export function getAgentModel(
   agentModel: string | undefined,
   parentModel: string,
-  toolSpecifiedModel?: ModelAlias,
+  toolSpecifiedModel?: string,
   permissionMode?: PermissionMode,
 ): string {
   const configuredSubagentModel =
-    process.env.CLAUDE_CODE_SUBAGENT_MODEL?.trim()
+    getProviderRuntimeEnvironment().CLAUDE_CODE_SUBAGENT_MODEL?.trim()
   if (
     configuredSubagentModel &&
     configuredSubagentModel.toLowerCase() !== 'inherit'
   ) {
-    return parseUserSpecifiedModel(configuredSubagentModel)
+    return resolveAgentModelSpec(configuredSubagentModel, parentModel)
   }
 
   // Extract Bedrock region prefix from parent model to inherit for subagents.
@@ -71,8 +86,11 @@ export function getAgentModel(
     return resolvedModel
   }
 
-  // Prioritize tool-specified model if provided
-  if (toolSpecifiedModel) {
+  // Ignore generated tier aliases on mapped providers, while preserving the
+  // concrete model already resolved for an in-process teammate.
+  if (toolSpecifiedModel && (
+    !usesNonClaudeAgentRouting(parentModel) || !isModelAlias(toolSpecifiedModel.trim().toLowerCase())
+  )) {
     if (aliasMatchesParentTier(toolSpecifiedModel, parentModel)) {
       return parentModel
     }
@@ -95,7 +113,7 @@ export function getAgentModel(
   if (aliasMatchesParentTier(agentModelWithExp, parentModel)) {
     return parentModel
   }
-  const model = parseUserSpecifiedModel(agentModelWithExp)
+  const model = resolveAgentModelSpec(agentModelWithExp, parentModel)
   return applyParentRegionPrefix(model, agentModelWithExp)
 }
 

@@ -3,6 +3,7 @@ import { sessionsApi } from '../api/sessions'
 import { ApiError } from '../api/client'
 import { useSessionRuntimeStore } from './sessionRuntimeStore'
 import { useSessionStore } from './sessionStore'
+import { useUIStore } from './uiStore'
 import { SETTINGS_TAB_ID, MARKET_TAB_ID, CONNECTORS_TAB_ID, useTabStore } from './tabStore'
 
 vi.mock('../api/sessions', () => ({
@@ -43,7 +44,9 @@ describe('tabStore', () => {
   })
 
   beforeEach(() => {
-    useTabStore.setState({ tabs: [], activeTabId: null, closedSessionTabs: [] })
+    vi.restoreAllMocks()
+    useUIStore.setState({ toasts: [] })
+    useTabStore.setState({ tabs: [], activeTabId: null, lastSessionTabId: null, closedSessionTabs: [] })
     useSessionStore.setState({ ...initialSessionState, sessions: [], historicalSessionIds: new Set() })
     localStorage.clear()
     useSessionRuntimeStore.setState({ selections: {} })
@@ -528,6 +531,51 @@ describe('tabStore', () => {
 
     expect(localStorage.getItem('cc-haha-open-tabs')).toBe(persisted)
     expect(useSessionStore.getState().sessions).toEqual([])
+    expect(useUIStore.getState().toasts[0]).toMatchObject({ type: 'error', action: { onClick: expect.any(Function) } })
+    vi.mocked(sessionsApi.getSummary).mockResolvedValueOnce(historicalSummary('history-offline'))
+    useUIStore.getState().toasts[0]!.action!.onClick()
+    await vi.waitFor(() => expect(useTabStore.getState().activeTabId).toBe('history-offline'))
+  })
+
+  it('retains the snapshot when every saved session is unavailable', async () => {
+    const saved = JSON.stringify({ openTabs: [{ sessionId: 'missing-all', title: 'Saved' }], activeTabId: 'missing-all' })
+    localStorage.setItem('cc-haha-open-tabs', saved)
+    await useTabStore.getState().restoreTabs()
+    expect(useTabStore.getState().tabs).toEqual([])
+    expect(localStorage.getItem('cc-haha-open-tabs')).toBe(saved)
+    expect(useUIStore.getState().toasts[0]).toMatchObject({ type: 'error', action: { onClick: expect.any(Function) } })
+    vi.mocked(sessionsApi.getSummary).mockResolvedValueOnce(historicalSummary('missing-all'))
+    await useTabStore.getState().restoreTabs()
+    expect(useTabStore.getState().activeTabId).toBe('missing-all')
+  })
+
+  it.each(['{broken', '{"openTabs":null}', '{"openTabs":[null]}'])('reports malformed saved data without deleting it: %s', async (saved) => {
+    localStorage.setItem('cc-haha-open-tabs', saved)
+    await useTabStore.getState().restoreTabs()
+    expect(localStorage.getItem('cc-haha-open-tabs')).toBe(saved)
+    expect(useUIStore.getState().toasts[0]?.type).toBe('error')
+  })
+
+  it('keeps saved tabs and offers retry when the recent session list is offline', async () => {
+    const saved = JSON.stringify({ openTabs: [{ sessionId: 'list-offline', title: 'Saved' }], activeTabId: 'list-offline' })
+    localStorage.setItem('cc-haha-open-tabs', saved)
+    vi.mocked(sessionsApi.list).mockRejectedValueOnce(new ApiError(503, 'offline'))
+    await useTabStore.getState().restoreTabs()
+    expect(localStorage.getItem('cc-haha-open-tabs')).toBe(saved)
+    expect(useUIStore.getState().toasts[0]).toMatchObject({ type: 'error', action: { onClick: expect.any(Function) } })
+  })
+
+  it('reports storage write failures and offers to retry saving current tabs', async () => {
+    useTabStore.getState().openTab('save-before', 'Before')
+    const saved = localStorage.getItem('cc-haha-open-tabs')
+    const write = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota exceeded') })
+    useTabStore.getState().openTab('save-after', 'After')
+    expect(localStorage.getItem('cc-haha-open-tabs')).toBe(saved)
+    expect(useTabStore.getState().activeTabId).toBe('save-after')
+    expect(useUIStore.getState().toasts[0]?.type).toBe('error')
+    write.mockRestore()
+    useUIStore.getState().toasts[0]!.action!.onClick()
+    expect(JSON.parse(localStorage.getItem('cc-haha-open-tabs')!).activeTabId).toBe('save-after')
   })
 
   it('does not activate or hydrate restored history after a user opens a tab during its lookup', async () => {
@@ -699,7 +747,7 @@ it('maps both legacy market entry points to one canonical tab', () => {
 })
 
 it('restores duplicate legacy markets as one tab and retains their active selection', async () => {
-  useTabStore.setState({ tabs: [], activeTabId: null })
+  useTabStore.setState({ tabs: [], activeTabId: null, lastSessionTabId: null })
   vi.mocked(sessionsApi.list).mockResolvedValue({ sessions: [] } as never)
   localStorage.setItem('cc-haha-open-tabs', JSON.stringify({ openTabs: [
     { sessionId: SETTINGS_TAB_ID, title: 'Settings', type: 'settings' },
@@ -709,4 +757,47 @@ it('restores duplicate legacy markets as one tab and retains their active select
   await useTabStore.getState().restoreTabs()
   expect(useTabStore.getState().tabs.map(tab => tab.sessionId)).toEqual([SETTINGS_TAB_ID, MARKET_TAB_ID])
   expect(useTabStore.getState().activeTabId).toBe(MARKET_TAB_ID)
+})
+
+it('tracks the last active chat tab across settings tabs', () => {
+  useTabStore.setState({ tabs: [], activeTabId: null, lastSessionTabId: null })
+  useTabStore.getState().openTab('session-a', 'A')
+  expect(useTabStore.getState().lastSessionTabId).toBe('session-a')
+
+  useTabStore.getState().openTab(SETTINGS_TAB_ID, 'Settings', 'settings')
+  expect(useTabStore.getState().lastSessionTabId).toBe('session-a')
+
+  useTabStore.getState().openTab('session-b', 'B')
+  expect(useTabStore.getState().lastSessionTabId).toBe('session-b')
+
+  useTabStore.getState().setActiveTab(SETTINGS_TAB_ID)
+  expect(useTabStore.getState().lastSessionTabId).toBe('session-b')
+
+  useTabStore.getState().setActiveTab('session-a')
+  expect(useTabStore.getState().lastSessionTabId).toBe('session-a')
+})
+
+it('falls back to another chat tab when the last chat tab closes', () => {
+  useTabStore.setState({ tabs: [], activeTabId: null, lastSessionTabId: null })
+  useTabStore.getState().openTab('session-a', 'A')
+  useTabStore.getState().openTab('session-b', 'B')
+  useTabStore.getState().openTab(SETTINGS_TAB_ID, 'Settings', 'settings')
+  expect(useTabStore.getState().lastSessionTabId).toBe('session-b')
+
+  useTabStore.getState().closeTab('session-b')
+  expect(useTabStore.getState().lastSessionTabId).toBe('session-a')
+})
+
+it('restores lastSessionTabId from the persisted active chat tab', async () => {
+  const summary = historicalSummary('restore-last-session-tab')
+  useTabStore.setState({ tabs: [], activeTabId: null, lastSessionTabId: null })
+  localStorage.setItem('cc-haha-open-tabs', JSON.stringify({
+    openTabs: [{ sessionId: summary.id, title: summary.title, type: 'session' }],
+    activeTabId: summary.id,
+  }))
+  vi.mocked(sessionsApi.list).mockResolvedValue({ sessions: [summary], total: 1 } as never)
+
+  await useTabStore.getState().restoreTabs()
+
+  expect(useTabStore.getState().lastSessionTabId).toBe(summary.id)
 })

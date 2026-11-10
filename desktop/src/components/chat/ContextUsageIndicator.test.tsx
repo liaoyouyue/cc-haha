@@ -38,7 +38,13 @@ vi.mock('../../api/sessions', async (importOriginal) => {
 })
 
 import { ContextUsageIndicator } from './ContextUsageIndicator'
+import { useChatStore } from '../../stores/chatStore'
 import { useSettingsStore } from '../../stores/settingsStore'
+import { useContextUsageStore } from '@/stores/contextUsageStore'
+
+beforeEach(() => {
+  useContextUsageStore.setState({ bySession: {} })
+})
 
 const baseInspection = {
   active: true,
@@ -89,6 +95,47 @@ describe('ContextUsageIndicator request behavior', () => {
       configurable: true,
       value: originalVisibility,
     })
+  })
+
+  it('shows an estimated live rate for the current session and clears it on stall or session change', async () => {
+    vi.useFakeTimers()
+    try {
+      sessionsApiMock.getInspection.mockResolvedValue(baseInspection)
+      const props = { sessionId: 'session-1', chatState: 'streaming' as const, messageCount: 1 }
+      const { rerender } = render(<ContextUsageIndicator {...props} streamingTextChars={0} />)
+      await act(async () => { await Promise.resolve() })
+      await act(async () => { vi.advanceTimersByTime(500) })
+      rerender(<ContextUsageIndicator {...props} streamingTextChars={400} />)
+      await act(async () => { vi.advanceTimersByTime(500) })
+      // 400 chars over one second is 100 tokens per second.
+      expect(screen.getByTestId('context-live-speed')).toHaveTextContent('≈100 tok/s')
+      rerender(<ContextUsageIndicator {...props} sessionId="session-2" streamingTextChars={0} />)
+      expect(screen.queryByTestId('context-live-speed')).not.toBeInTheDocument()
+      await act(async () => { vi.advanceTimersByTime(500) })
+      rerender(<ContextUsageIndicator {...props} sessionId="session-2" streamingTextChars={200} />)
+      await act(async () => { vi.advanceTimersByTime(500) })
+      expect(screen.getByTestId('context-live-speed')).toHaveTextContent('≈50 tok/s')
+      await act(async () => { vi.advanceTimersByTime(3000) })
+      expect(screen.queryByTestId('context-live-speed')).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('names the live rate for screen readers', async () => {
+    vi.useFakeTimers()
+    try {
+      sessionsApiMock.getInspection.mockResolvedValue(baseInspection)
+      const props = { sessionId: 'session-1', chatState: 'streaming' as const, messageCount: 1 }
+      const { rerender } = render(<ContextUsageIndicator {...props} streamingTextChars={0} />)
+      await act(async () => { await Promise.resolve() })
+      await act(async () => { vi.advanceTimersByTime(500) })
+      rerender(<ContextUsageIndicator {...props} streamingTextChars={400} />)
+      await act(async () => { vi.advanceTimersByTime(500) })
+      expect(screen.getByTestId('context-usage-indicator').getAttribute('aria-label')).toContain('≈100 tok/s')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('does not auto-fetch context while the document is hidden', async () => {
@@ -161,6 +208,139 @@ describe('ContextUsageIndicator request behavior', () => {
     expect(sessionsApiMock.getInspection).toHaveBeenCalledTimes(1)
   })
 
+  it('keeps an unchanged idle reading when the app becomes visible again', async () => {
+    vi.useFakeTimers()
+    try {
+      sessionsApiMock.getInspection.mockResolvedValue(baseInspection)
+      render(<ContextUsageIndicator sessionId="session-1" chatState="idle" messageCount={1} />)
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      await act(async () => {
+        Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' })
+        document.dispatchEvent(new Event('visibilitychange'))
+        await vi.advanceTimersByTimeAsync(60_000)
+        Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
+        document.dispatchEvent(new Event('visibilitychange'))
+      })
+      expect(screen.getByTestId('context-usage-indicator')).toHaveTextContent('21%')
+      expect(sessionsApiMock.getInspection).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps a pending inspection across tab switches and composer remounts', async () => {
+    const first = deferred<typeof baseInspection>()
+    sessionsApiMock.getInspection.mockReturnValueOnce(first.promise)
+    const props = { sessionId: 'session-1', chatState: 'idle' as const, messageCount: 1 }
+    const { rerender, unmount } = render(<ContextUsageIndicator {...props} />)
+    await waitFor(() => expect(sessionsApiMock.getInspection).toHaveBeenCalledTimes(1))
+
+    rerender(<ContextUsageIndicator sessionId="unused-session" chatState="idle" messageCount={0} />)
+    rerender(<ContextUsageIndicator {...props} />)
+    unmount()
+    render(<ContextUsageIndicator {...props} />)
+    expect(sessionsApiMock.getInspection).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      first.resolve(baseInspection)
+      await first.promise
+    })
+    expect(screen.getByTestId('context-usage-indicator')).toHaveTextContent('21%')
+  })
+
+  it('stores a response for its own session while another tab is visible', async () => {
+    const first = deferred<typeof baseInspection>()
+    sessionsApiMock.getInspection
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValueOnce({ ...baseInspection, context: { ...baseInspection.context, percentage: 7 } })
+    const { rerender } = render(
+      <ContextUsageIndicator sessionId="session-1" chatState="idle" messageCount={1} />,
+    )
+    rerender(<ContextUsageIndicator sessionId="session-2" chatState="idle" messageCount={3} refreshNonce={2} />)
+    await waitFor(() => expect(screen.getByTestId('context-usage-indicator')).toHaveTextContent('7%'))
+
+    await act(async () => {
+      first.resolve(baseInspection)
+      await first.promise
+    })
+    expect(screen.getByTestId('context-usage-indicator')).toHaveTextContent('7%')
+    rerender(<ContextUsageIndicator sessionId="session-1" chatState="idle" messageCount={1} />)
+    expect(screen.getByTestId('context-usage-indicator')).toHaveTextContent('21%')
+    expect(sessionsApiMock.getInspection).toHaveBeenCalledTimes(2)
+  })
+
+  it('replaces a pending reading if the session gained messages while another tab was visible', async () => {
+    const first = deferred<typeof baseInspection>()
+    sessionsApiMock.getInspection.mockReturnValueOnce(first.promise).mockResolvedValueOnce({
+      ...baseInspection, context: { ...baseInspection.context, percentage: 30 },
+    })
+    const { rerender } = render(
+      <ContextUsageIndicator sessionId="session-1" chatState="idle" messageCount={1} />,
+    )
+    rerender(<ContextUsageIndicator sessionId="unused-session" chatState="idle" messageCount={0} />)
+    rerender(<ContextUsageIndicator sessionId="session-1" chatState="idle" messageCount={3} />)
+    await waitFor(() => expect(screen.getByTestId('context-usage-indicator')).toHaveTextContent('30%'))
+    await act(async () => {
+      first.resolve(baseInspection)
+      await first.promise
+    })
+    expect(sessionsApiMock.getInspection).toHaveBeenCalledTimes(2)
+    expect(screen.getByTestId('context-usage-indicator')).toHaveTextContent('30%')
+  })
+
+  it.each(['message', 'compact', 'runtime', 'completed turn'] as const)(
+    'refreshes a cached session changed by a background %s',
+    async (change) => {
+      const next = deferred<typeof baseInspection>()
+      sessionsApiMock.getInspection.mockResolvedValueOnce(baseInspection).mockReturnValueOnce(next.promise)
+      const props = {
+        sessionId: 'session-1',
+        chatState: change === 'completed turn' ? 'thinking' as const : 'idle' as const,
+        messageCount: 1,
+        refreshNonce: 0,
+        runtimeSelectionKey: 'kimi:k2.6',
+      }
+      const { rerender } = render(<ContextUsageIndicator {...props} />)
+      await waitFor(() => expect(screen.getByTestId('context-usage-indicator')).toHaveTextContent('21%'))
+      rerender(<ContextUsageIndicator sessionId="unused-session" chatState="idle" messageCount={0} />)
+      rerender(<ContextUsageIndicator
+        {...props}
+        messageCount={change === 'message' ? 2 : 1}
+        refreshNonce={change === 'compact' ? 1 : 0}
+        runtimeSelectionKey={change === 'runtime' ? 'deepseek:chat' : props.runtimeSelectionKey}
+        chatState="idle"
+      />)
+      expect(screen.getByTestId('context-usage-indicator')).toHaveTextContent('21%')
+      expect(sessionsApiMock.getInspection).toHaveBeenCalledTimes(2)
+      await act(async () => {
+        next.resolve({ ...baseInspection, context: { ...baseInspection.context, percentage: 12 } })
+        await next.promise
+      })
+      expect(screen.getByTestId('context-usage-indicator')).toHaveTextContent('12%')
+    },
+  )
+
+  it('does not let a pre-compaction request overwrite the cached replacement reading', async () => {
+    const first = deferred<typeof baseInspection>()
+    sessionsApiMock.getInspection.mockReturnValueOnce(first.promise).mockResolvedValueOnce({
+      ...baseInspection,
+      context: { ...baseInspection.context, percentage: 5 },
+    })
+    const { rerender } = render(
+      <ContextUsageIndicator sessionId="session-1" chatState="idle" messageCount={1} />,
+    )
+    rerender(<ContextUsageIndicator sessionId="session-1" chatState="idle" messageCount={1} refreshNonce={1} />)
+    await waitFor(() => expect(screen.getByTestId('context-usage-indicator')).toHaveTextContent('5%'))
+    await act(async () => {
+      first.resolve(baseInspection)
+      await first.promise
+    })
+    rerender(<ContextUsageIndicator sessionId="unused-session" chatState="idle" messageCount={0} />)
+    rerender(<ContextUsageIndicator sessionId="session-1" chatState="idle" messageCount={1} refreshNonce={1} />)
+    expect(screen.getByTestId('context-usage-indicator')).toHaveTextContent('5%')
+    expect(sessionsApiMock.getInspection).toHaveBeenCalledTimes(2)
+  })
+
   it('does not inspect context for a new session until its first turn starts', async () => {
     sessionsApiMock.getInspection.mockResolvedValue(baseInspection)
 
@@ -178,6 +358,8 @@ describe('ContextUsageIndicator request behavior', () => {
     expect(sessionsApiMock.getInspection).not.toHaveBeenCalled()
     expect(screen.queryByLabelText('Context usage loading')).not.toBeInTheDocument()
     expect(screen.getByTestId('context-usage-indicator')).toHaveTextContent('--')
+    // No reading yet: a "--" says nothing, so the ring is not drawn at all.
+    expect(screen.getByTestId('context-usage-indicator')).not.toBeVisible()
 
     rerender(
       <ContextUsageIndicator
@@ -245,6 +427,8 @@ describe('ContextUsageIndicator request behavior', () => {
       expect(sessionsApiMock.getInspection).toHaveBeenCalledTimes(1)
     })
     expect(screen.getByTestId('context-usage-indicator')).toHaveTextContent('--')
+    // A session under way shows its ring while the first reading loads.
+    expect(screen.getByTestId('context-usage-indicator')).toBeVisible()
 
     rerender(
       <ContextUsageIndicator
@@ -618,6 +802,80 @@ describe('ContextUsageIndicator request behavior', () => {
       vi.useRealTimers()
     }
   })
+
+  it.each(['history rows', 'streaming state'] as const)(
+    'keeps the boundary retry when %s change before the forced request fails',
+    async (change) => {
+      vi.useFakeTimers()
+      try {
+        const failed = deferred<typeof baseInspection>()
+        sessionsApiMock.getInspection
+          .mockResolvedValueOnce(baseInspection)
+          .mockReturnValueOnce(failed.promise)
+          .mockResolvedValueOnce({ ...baseInspection, context: { ...baseInspection.context, percentage: 5 } })
+        const initialState = change === 'history rows' ? 'idle' as const : 'thinking' as const
+        const { rerender } = render(
+          <ContextUsageIndicator sessionId="session-1" chatState={initialState} messageCount={1} refreshNonce={0} />,
+        )
+        await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+        rerender(<ContextUsageIndicator sessionId="session-1" chatState={initialState} messageCount={1} refreshNonce={1} />)
+        await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+
+        // History hydration and the next streaming frame do not supersede the
+        // compact/runtime boundary that still needs its failed request retried.
+        rerender(<ContextUsageIndicator
+          sessionId="session-1"
+          chatState={change === 'streaming state' ? 'streaming' : initialState}
+          messageCount={change === 'history rows' ? 2 : 1}
+          refreshNonce={1}
+        />)
+        await act(async () => {
+          failed.resolve({ active: true, status: baseInspection.status, errors: { context: 'CLI not ready' } } as never)
+          await failed.promise
+          await vi.advanceTimersByTimeAsync(5_000)
+        })
+        expect(sessionsApiMock.getInspection).toHaveBeenCalledTimes(3)
+        expect(screen.getByTestId('context-usage-indicator')).toHaveTextContent('5%')
+      } finally {
+        vi.useRealTimers()
+      }
+    },
+  )
+
+  it.each(['session', 'model', 'unmount'] as const)(
+    'cancels a boundary retry when its %s changes',
+    async (change) => {
+      vi.useFakeTimers()
+      try {
+        const failed = deferred<typeof baseInspection>()
+        sessionsApiMock.getInspection.mockResolvedValueOnce(baseInspection).mockReturnValueOnce(failed.promise)
+        const { rerender, unmount } = render(
+          <ContextUsageIndicator sessionId="session-1" chatState="idle" messageCount={1} refreshNonce={0} />,
+        )
+        await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+        rerender(<ContextUsageIndicator sessionId="session-1" chatState="idle" messageCount={1} refreshNonce={1} />)
+        await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+        if (change === 'unmount') unmount()
+        else if (change === 'session') rerender(
+          <ContextUsageIndicator sessionId="unused-session" chatState="idle" messageCount={0} />,
+        )
+        else {
+          sessionsApiMock.getInspection.mockResolvedValueOnce(baseInspection)
+          rerender(<ContextUsageIndicator
+            sessionId="session-1" chatState="idle" messageCount={1} refreshNonce={1} runtimeSelectionKey="replacement:model"
+          />)
+        }
+        await act(async () => {
+          failed.resolve({ active: true, status: baseInspection.status, errors: { context: 'CLI not ready' } } as never)
+          await failed.promise
+          await vi.advanceTimersByTimeAsync(5_000)
+        })
+        expect(sessionsApiMock.getInspection).toHaveBeenCalledTimes(change === 'model' ? 3 : 2)
+      } finally {
+        vi.useRealTimers()
+      }
+    },
+  )
 })
 
 describe('ContextUsageIndicator touch target', () => {
@@ -789,6 +1047,26 @@ describe('ContextUsageIndicator presentation', () => {
     expect(fill).not.toHaveAttribute('style', expect.stringContaining('purple_FOR_SUBAGENTS_ONLY'))
   })
 
+  it('says where the session compacts on its own, and says nothing when it does not report it', async () => {
+    sessionsApiMock.getInspection.mockResolvedValue({
+      ...baseInspection,
+      context: { ...baseInspection.context, rawMaxTokens: 1_000_000, autoCompactThreshold: 967_000 },
+    })
+    const { unmount } = render(<ContextUsageIndicator sessionId="session-1" chatState="idle" messageCount={1} />)
+    await waitFor(() => expect(screen.getByTestId('context-usage-indicator')).toHaveTextContent('21%'))
+    fireEvent.click(screen.getByTestId('context-usage-indicator'))
+    expect(await screen.findByTestId('context-auto-compact')).toHaveTextContent('Compacts automatically at about 967,000')
+    unmount()
+
+    useContextUsageStore.setState({ bySession: {} })
+    sessionsApiMock.getInspection.mockResolvedValue(baseInspection)
+    render(<ContextUsageIndicator sessionId="session-1" chatState="idle" messageCount={1} />)
+    await waitFor(() => expect(screen.getByTestId('context-usage-indicator')).toHaveTextContent('21%'))
+    fireEvent.click(screen.getByTestId('context-usage-indicator'))
+    await screen.findByTestId('context-usage-popover')
+    expect(screen.queryByTestId('context-auto-compact')).not.toBeInTheDocument()
+  })
+
   it('uses the bottom sheet when the composer is compact (Workbench / narrow column)', async () => {
     render(
       <ContextUsageIndicator
@@ -897,10 +1175,39 @@ describe('ContextUsageIndicator session usage', () => {
     // Cache reads stay in the hit-rate row; they are not a separate headline.
     expect(await screen.findByTestId('session-cache-hit')).toHaveTextContent('90.0%')
     // 2400 output / 42s API time, including prefill — not the 12s decode span (200 tok/s).
-    expect(screen.getByTestId('session-speed')).toHaveTextContent('57')
-    expect(screen.getByTestId('session-speed')).toHaveTextContent('tok/s')
+    // No completed turn in the store: the measured rate has no reading.
+    expect(screen.getByTestId('session-speed')).toHaveTextContent('--')
     expect(screen.getByTestId('session-cost')).toHaveTextContent('$1.23')
     expect(sessionsApiMock.getSessionUsage).toHaveBeenCalledWith('session-1', expect.anything())
+  })
+
+  it('shows the measured generation rate and real TTFT from the last turn', async () => {
+    sessionsApiMock.getInspection.mockResolvedValue(baseInspection)
+    sessionsApiMock.getSessionUsage.mockResolvedValue(usageInspection(baseUsage))
+    useChatStore.setState({ sessions: {} })
+    const base = useChatStore.getState().getSession('session-1')
+    useChatStore.setState({
+      sessions: {
+        'session-1': {
+          ...base,
+          chatState: 'idle',
+          messages: [],
+          tokenUsage: { input_tokens: 900, output_tokens: 120 },
+          turnTiming: { duration_ms: 10_000, duration_api_ms: 8_000, ttft_ms: 850, decode_ms: 4_000 },
+        },
+      },
+    })
+
+    render(
+      <ContextUsageIndicator sessionId="session-1" chatState="idle" messageCount={1} />,
+    )
+    await waitFor(() => {
+      expect(screen.getByTestId('context-usage-indicator')).toHaveTextContent('21%')
+    })
+    fireEvent.click(screen.getByTestId('context-usage-indicator'))
+    // 120 tokens / 4s decode = 30 tok/s measured.
+    expect(await screen.findByTestId('session-speed')).toHaveTextContent('30')
+    expect(screen.getByTestId('session-ttft')).toHaveTextContent('850ms')
   })
 
   it('never reports a partial cache as a perfect one', async () => {
@@ -923,6 +1230,8 @@ describe('ContextUsageIndicator session usage', () => {
   })
 
   it('withholds the speed reading when the session reported no API duration', async () => {
+    // An earlier test left turnTiming in the store; this session must not inherit it.
+    useChatStore.setState({ sessions: {} })
     // Transcript-sourced usage has no request timing. Showing a number here would mean
     // dividing by session wall clock, which includes tool execution.
     sessionsApiMock.getSessionUsage.mockResolvedValue(usageInspection({
@@ -940,7 +1249,6 @@ describe('ContextUsageIndicator session usage', () => {
     fireEvent.click(screen.getByTestId('context-usage-indicator'))
 
     expect(await screen.findByTestId('session-speed')).toHaveTextContent('--')
-    expect(screen.getByTestId('session-speed')).not.toHaveTextContent('tok/s')
   })
 
   it('hides the block entirely for a session that has produced nothing', async () => {

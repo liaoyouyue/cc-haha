@@ -1,10 +1,10 @@
 import { api } from './client'
-import type { ModelInfo, EffortLevel } from '../types/settings'
+import type { ModelInfo, SelectableEffortLevel } from '../types/settings'
 
 type ModelsResponse = { models: ModelInfo[]; provider: { id: string; name: string } | null }
 type ModelCatalogResponse = { models: ModelInfo[] }
 type CurrentModelResponse = { model: ModelInfo }
-type EffortResponse = { level: EffortLevel; available: EffortLevel[] }
+type EffortResponse = { level: SelectableEffortLevel; available: SelectableEffortLevel[] }
 
 export const modelsApi = {
   list() {
@@ -12,8 +12,9 @@ export const modelsApi = {
   },
 
   /** Models one built-in OAuth provider's account offers, whether or not it is the active provider. */
-  catalog(providerId: string) {
-    return api.get<ModelCatalogResponse>(`/api/models/catalog?provider=${encodeURIComponent(providerId)}`)
+  catalog(providerId: string, options?: { forceRefresh?: boolean }) {
+    const refresh = options?.forceRefresh ? '&refresh=true' : ''
+    return api.get<ModelCatalogResponse>(`/api/models/catalog?provider=${encodeURIComponent(providerId)}${refresh}`)
   },
 
   getCurrent() {
@@ -28,7 +29,7 @@ export const modelsApi = {
     return api.get<EffortResponse>('/api/effort')
   },
 
-  setEffort(level: EffortLevel) {
-    return api.put<{ ok: true; level: EffortLevel }>('/api/effort', { level })
+  setEffort(level: SelectableEffortLevel) {
+    return api.put<{ ok: true; level: SelectableEffortLevel }>('/api/effort', { level })
   },
 }

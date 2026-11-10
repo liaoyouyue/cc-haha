@@ -1,11 +1,32 @@
 import { describe, expect, test } from 'bun:test'
+import { runWithProviderRuntime } from '../../services/api/providerRuntimeContext.js'
 
 import {
+  findModelMaxOutputTokens,
   getConfiguredOrBuiltInModelContextWindow,
   getModelContextWindowFromEnvValue,
 } from './modelContextWindows.js'
 
 describe('model context windows', () => {
+  test('uses each provider snapshot for overlapping models with different declared windows', async () => {
+    const windows = await Promise.all([32_000, 128_000].map(window => runWithProviderRuntime({
+      providerId: String(window), runtimeKind: 'anthropic_compatible',
+      env: { CLAUDE_CODE_MODEL_CONTEXT_WINDOWS: JSON.stringify({ 'shared-model': window }) },
+    }, async () => {
+      await Promise.resolve()
+      return getConfiguredOrBuiltInModelContextWindow('shared-model')
+    })))
+    expect(windows).toEqual([32_000, 128_000])
+  })
+  test('uses the direct Flash context without inventing gateway limits', () => {
+    expect(getConfiguredOrBuiltInModelContextWindow('MiniMax-M3.1-Flash')).toBe(1_000_000)
+    expect(getConfiguredOrBuiltInModelContextWindow('MiniMax-M3.1-Flash[1m]')).toBe(1_000_000)
+    expect(getConfiguredOrBuiltInModelContextWindow('minimax/minimax-m3.1-flash:free')).toBeUndefined()
+    expect(getModelContextWindowFromEnvValue('minimax/minimax-m3.1-flash:free', JSON.stringify({
+      'minimax/minimax-m3.1-flash:free': 1_000_000,
+    }))).toBe(1_000_000)
+  })
+
   test('recognizes updated domestic coding model context windows', () => {
     expect(getConfiguredOrBuiltInModelContextWindow('k3')).toBe(262_144)
     expect(getConfiguredOrBuiltInModelContextWindow('k3[1m]')).toBe(262_144)
@@ -35,5 +56,16 @@ describe('model context windows', () => {
       'glm-5.2[1m]',
       JSON.stringify({ 'glm-5.2': 1_000_000 }),
     )).toBe(1_000_000)
+  })
+
+  test('finds the reply limit saved on a provider the way configured windows are matched', () => {
+    const limits = { 'MiniMax-M3': 8_192, 'glm-5.3-flash': 16_384, tiny: 100 }
+
+    expect(findModelMaxOutputTokens('MiniMax-M3[1m]', limits)).toBe(8_192)
+    expect(findModelMaxOutputTokens('zai-org/glm-5.3-flash', limits)).toBe(16_384)
+    // Below the accepted minimum, or not listed at all: no limit.
+    expect(findModelMaxOutputTokens('tiny', limits)).toBeUndefined()
+    expect(findModelMaxOutputTokens('deepseek-flash', limits)).toBeUndefined()
+    expect(findModelMaxOutputTokens('deepseek-flash', undefined)).toBeUndefined()
   })
 })

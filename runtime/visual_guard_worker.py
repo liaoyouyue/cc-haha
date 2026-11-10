@@ -41,9 +41,19 @@ _win_engine = None
 # the wire. Pin both streams to UTF-8 instead of trusting the environment.
 # A --windowed build reports None for a stream it has no console for, which is
 # why this is guarded rather than unconditional.
+# Reconfiguring a stream that was already read raises, and this module is also
+# imported by hosts that speak their own protocol on the same streams, so only
+# touch streams that have not been touched yet.
 for _stream in (sys.stdin, sys.stdout):
-    if _stream is not None and hasattr(_stream, "reconfigure"):
+    if _stream is None or not hasattr(_stream, "reconfigure"):
+        continue
+    try:
+        if getattr(_stream, "closed", False):
+            continue
         _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (ValueError, OSError):
+        # Already read from (or otherwise locked) — leave it alone.
+        pass
 
 DWMWA_CLOAKED = 14
 # Renders the window's own content into the DC, so it works whether or not the
@@ -331,6 +341,11 @@ CLICKABLE_ROLES = {
     "ComboBoxControl", "SplitButtonControl", "TreeItemControl", "TextControl",
 }
 
+# The subset that behaves like a target a pointer can act on. TextControl is
+# clickable in the tree sense (it carries the label) but a label is not
+# something you click, so ranking prefers the rest.
+ACTION_ROLES = CLICKABLE_ROLES - {"TextControl"}
+
 
 def control_state(control):
     """读 UIA 的 enabled / offscreen / value，失败时安全回退，不打断整棵树遍历。"""
@@ -591,12 +606,47 @@ def see(hwnd, region=None, wait_seconds=0, mark=False, accurate=False):
     return result
 
 
+def action_rank(item, query):
+    """Order candidates so the first one is the one a caller would act on.
+
+    The control tree lists controls in traversal order, so the first name match
+    is often a container ("关闭 设置" for the query 设置), a label rather than a
+    button, or a control that is scrolled out of view. Rank by what makes a
+    target actionable instead: on screen, enabled, an exact name, a real
+    control rather than a text label, then the shortest name.
+
+    Name length breaks the remaining ties on purpose. A long name is a
+    container or a log line ("编辑 1 个文件、思考 3 次 21s"), not the button the
+    caller asked for, so a short exact name wins over a long partial one.
+    """
+    name = (item.get("name") or item.get("text") or "").casefold()
+    needle = query.casefold()
+    if name == needle:
+        exact = 0
+    elif name.startswith(needle):
+        exact = 1
+    elif needle in name:
+        exact = 2
+    else:
+        exact = 3
+    return (
+        bool(item.get("offscreen")),
+        not bool(item.get("enabled", True)),
+        exact,
+        item.get("role") not in ACTION_ROLES,
+        len(name),
+    )
+
+
 def find(hwnd, query, region=None, wait_seconds=0, accurate=False):
     """Locate something on screen and return where to act on it.
 
     Control names are searched first, and when one matches the OCR pass is
     skipped entirely: the control tree already gave an exact rectangle, and
     OCR is the expensive half. Text that no control carries still needs it.
+
+    Matches are ranked by actionability, so `best` is the one to click rather
+    than merely the first one found.
     """
     query = (query or "").strip()
     if not query:
@@ -605,6 +655,7 @@ def find(hwnd, query, region=None, wait_seconds=0, accurate=False):
     controls = read_controls(hwnd)
     matched = [item for item in controls if needle in item["name"].casefold()]
     if matched:
+        matched.sort(key=lambda item: action_rank(item, query))
         return {
             "query": query,
             "window": window_info(hwnd),
@@ -615,6 +666,16 @@ def find(hwnd, query, region=None, wait_seconds=0, accurate=False):
         }
     _, lines = read_text(hwnd, region, wait_seconds, accurate)
     text_hits = [line for line in lines if needle in squash(line["text"])]
+    # An OCR hit is pixels, not a control. The same words can be a plain label
+    # and a button, so let the control tree say which one can be acted on.
+    for hit in text_hits:
+        cover = control_covering(controls, hit.get("center"))
+        if cover:
+            hit["role"] = cover.get("role")
+            hit["enabled"] = cover.get("enabled", True)
+            hit["clickable"] = cover.get("clickable", False)
+            hit["covered_by"] = cover.get("name")
+    text_hits.sort(key=lambda item: action_rank(item, query))
     return {
         "query": query,
         "window": window_info(hwnd),
@@ -623,6 +684,31 @@ def find(hwnd, query, region=None, wait_seconds=0, accurate=False):
         "best": text_hits[0] if text_hits else None,
         "skipped_ocr": False,
     }
+
+
+def control_covering(controls, point):
+    """The smallest clickable control that contains this point."""
+    if not point:
+        return None
+    x, y = int(point[0]), int(point[1])
+    best = None
+    best_area = None
+    for control in controls:
+        if not control.get("clickable"):
+            continue
+        left, top, width, height = control["box"]
+        if not (left <= x <= left + width and top <= y <= top + height):
+            continue
+        area = width * height
+        if best_area is None or area < best_area:
+            best, best_area = control, area
+    return best
+
+
+def is_action_target(item):
+    """True when this item is something a pointer can act on."""
+    role = item.get("role")
+    return bool(role) and role in ACTION_ROLES
 
 
 def squash(text):
@@ -775,6 +861,44 @@ def selftest():
                                           "GetValuePattern": lambda self: None})())
     assert sample["enabled"] is False and sample["offscreen"] is True
     print("PASS: control_state emits enabled/offscreen, omits value when absent")
+
+    # Ranking: the target a caller would act on must come first.
+    candidates = [
+        {"role": "ButtonControl", "name": "关闭 设置", "clickable": True,
+         "enabled": True, "offscreen": False, "box": [534, 125, 20, 20]},
+        {"role": "ButtonControl", "name": "设置", "clickable": True,
+         "enabled": True, "offscreen": False, "box": [112, 950, 268, 30]},
+        {"role": "TextControl", "name": "设置", "clickable": True,
+         "enabled": True, "offscreen": False, "box": [478, 127, 24, 15]},
+        {"role": "ButtonControl", "name": "设置历史", "clickable": True,
+         "enabled": True, "offscreen": True, "box": [0, -100, 268, 30]},
+        {"role": "ButtonControl", "name": "设置", "clickable": True,
+         "enabled": False, "offscreen": False, "box": [112, 900, 268, 30]},
+    ]
+    ordered = sorted(candidates, key=lambda item: action_rank(item, "设置"))
+    assert ordered[0]["name"] == "设置" and ordered[0]["enabled"], ordered
+    assert ordered[0]["role"] == "ButtonControl", ordered  # a label is not a target
+    assert ordered[0]["box"][1] > 0, ordered  # not scrolled off the top
+    only_offscreen = [c for c in candidates if "设置历史" in c["name"]]
+    assert sorted(only_offscreen, key=lambda item: action_rank(item, "设置历史"))[0]["name"] == "设置历史"
+    print("PASS: action_rank puts the visible, enabled, exactly-named button first")
+
+    # An OCR hit inherits the control it sits on, so the same words on a
+    # label and on a button do not look alike.
+    tree = [
+        {"role": "ButtonControl", "name": "", "clickable": True, "enabled": True,
+         "offscreen": False, "box": [100, 200, 80, 25]},
+        {"role": "TextControl", "name": "点我测试", "clickable": True, "enabled": True,
+         "offscreen": False, "box": [100, 100, 80, 20]},
+    ]
+    on_button = control_covering(tree, [140, 210])
+    assert on_button and on_button["role"] == "ButtonControl", on_button
+    on_label = control_covering(tree, [140, 110])
+    assert on_label is None or on_label["role"] != "ButtonControl", on_label
+    assert is_action_target({"role": "ButtonControl"}) is True
+    assert is_action_target({"role": "TextControl"}) is False
+    assert is_action_target({}) is False
+    print("PASS: an OCR hit inherits the control under it")
     # 只读：不提供任何点击/输入动作
     assert "click_at" not in globals() and "scroll_at" not in globals()
     print("PASS: read-only — no click or scroll action exists")

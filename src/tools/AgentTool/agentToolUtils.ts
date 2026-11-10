@@ -45,6 +45,7 @@ import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import {
   extractTextContent,
+  findLastAssistantWithText,
   getLastAssistantMessage,
 } from '../../utils/messages.js'
 import type { PermissionMode } from '../../utils/permissions/PermissionMode.js'
@@ -57,7 +58,8 @@ import { emitTaskProgress as emitTaskProgressEvent } from '../../utils/task/sdkP
 import { emitAgentToolActivity, type AgentToolActivity } from '../../utils/sdkEventQueue.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from '../SyntheticOutputTool/SyntheticOutputTool.js'
 import { isInProcessTeammate } from '../../utils/teammateContext.js'
-import { getTokenCountFromUsage } from '../../utils/tokens.js'
+import { getOutputTokenCountFromUsage, getReasoningTokenCountFromUsage } from '../../utils/tokens.js'
+import { roughTokenCountEstimationForThinking } from '../../services/tokenEstimation.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../ExitPlanModeTool/constants.js'
 import { AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME } from './constants.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
@@ -237,6 +239,9 @@ export const agentToolResultSchema = lazySchema(() =>
     totalToolUseCount: z.number(),
     totalDurationMs: z.number(),
     totalTokens: z.number(),
+    // Optional: an engine that reports no reasoning split omits it, and older
+    // persisted sessions predate the field. Absent means "not measured".
+    reasoningTokens: z.number().optional(),
     usage: z.object({
       input_tokens: z.number(),
       output_tokens: z.number(),
@@ -301,24 +306,44 @@ export function finalizeAgentTool(
     throw new Error('No assistant messages found')
   }
   // Extract text content from the agent's response. If the final assistant
-  // message is a pure tool_use block (loop exited mid-turn), fall back to
-  // the most recent assistant message that has text content.
-  let content = lastAssistantMessage.message.content.filter(
+  // message is blank (a provider heartbeat block, #1468) or a pure tool_use
+  // block (loop exited mid-turn), fall back to the most recent assistant
+  // message that actually carries text.
+  const contentSource =
+    findLastAssistantWithText(agentMessages) ?? lastAssistantMessage
+  const content = contentSource.message.content.filter(
     _ => _.type === 'text',
   )
-  if (content.length === 0) {
-    for (let i = agentMessages.length - 1; i >= 0; i--) {
-      const m = agentMessages[i]!
-      if (m.type !== 'assistant') continue
-      const textBlocks = m.message.content.filter(_ => _.type === 'text')
-      if (textBlocks.length > 0) {
-        content = textBlocks
-        break
-      }
-    }
-  }
 
-  const totalTokens = getTokenCountFromUsage(lastAssistantMessage.message.usage)
+  // Output tokens only, summed over every turn: this number is shown as the
+  // run's "usage", which means work the engine generated (the thinking badge's
+  // basis) rather than context held. The previous count took the last turn's
+  // input+cache+output, which both counted what the agent had read and dropped
+  // the output of every earlier turn — a two-turn agent understated itself by
+  // 62% (measured).
+  const totalTokens = agentMessages.reduce(
+    (sum, m) =>
+      sum + (m.type === 'assistant' ? getOutputTokenCountFromUsage(m.message.usage) : 0),
+    0,
+  )
+  // Thinking share of that output, summed on the same per-turn basis. Stays
+  // undefined when the engine reported no split at all, so a reader can tell
+  // "mostly thinking" from "not measured" — the number alone cannot.
+  let reasoningTokens: number | undefined
+  for (const m of agentMessages) {
+    if (m.type !== 'assistant') continue
+    // The engine's count wins; a turn it did not measure is estimated from the
+    // thinking that turn produced, so the split exists on any endpoint. Per
+    // turn rather than per run: a reported turn already covers its own thinking.
+    // A reported 0 counts as "not measured", not as a measurement: it is what an
+    // engine that fills the field without computing it reports, and treating it
+    // as real would suppress the estimate and hide the split entirely.
+    const reported = getReasoningTokenCountFromUsage(m.message.usage)
+    const part = reported !== undefined && reported > 0
+      ? reported
+      : roughTokenCountEstimationForThinking(m.message.content)
+    if (part > 0) reasoningTokens = (reasoningTokens ?? 0) + part
+  }
   const totalToolUseCount = countToolUses(agentMessages)
 
   logEvent('tengu_agent_tool_completed', {
@@ -354,6 +379,9 @@ export function finalizeAgentTool(
     totalDurationMs: Date.now() - startTime,
     totalTokens,
     totalToolUseCount,
+    // The thinking share of totalTokens, omitted when the engine reported no
+    // split (the schema field is optional for exactly that reason).
+    ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
     usage: lastAssistantMessage.message.usage,
   }
 }

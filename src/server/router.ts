@@ -5,6 +5,7 @@ import { getSessionCollaborationService } from './services/sessionCollaborationH
  */
 
 import { handleSessionsApi } from './api/sessions.js'
+import { handleMobilePushApi } from './api/mobilePush.js'
 import { handleSettingsApi } from './api/settings.js'
 import { handleModelsApi } from './api/models.js'
 import { handleScheduledTasksApi } from './api/scheduled-tasks.js'
@@ -28,6 +29,7 @@ import { handleDiagnosticsApi } from './api/diagnostics.js'
 import { handleDoctorApi } from './api/doctor.js'
 import { handleH5AccessApi } from './api/h5-access.js'
 import { handleActivityStatsApi } from './api/activityStats.js'
+import { handleTaskInboxApi } from './api/taskInbox.js'
 import { handleGatewayActivityApi } from './api/gatewayActivity.js'
 import { handleOpenTargetsApi } from './api/open-targets.js'
 import { handleMemoryApi } from './api/memory.js'
@@ -53,6 +55,8 @@ export async function handleApiRequest(req: Request, url: URL, context: ApiReque
 }
 
 async function handleApiRequestWithoutPerformance(req: Request, url: URL, context: ApiRequestContext = {}): Promise<Response> {
+  const mobileParts = url.pathname.split('/').filter(Boolean)
+  if (mobileParts[1] === 'sessions' && mobileParts[2] === 'mobile-push') return handleMobilePushApi(req, mobileParts, context)
   if (!context.remoteBrowser) return routeApiRequest(req, url)
   const parts = url.pathname.split('/').filter(Boolean)
   const isProvider = parts[1] === 'providers'
@@ -203,6 +207,9 @@ async function routeApiRequest(req: Request, url: URL): Promise<Response> {
 
     case 'activity-stats':
       return handleActivityStatsApi(req, url, segments)
+
+    case 'task-inbox':
+      return handleTaskInboxApi(req, url)
 
     case 'gateway-activity':
       return handleGatewayActivityApi(req, url)

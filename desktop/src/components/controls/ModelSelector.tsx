@@ -7,10 +7,7 @@ import {
   COMPOSER_MENU_ITEM_ACTIVE,
   COMPOSER_MENU_SECTION,
 } from '@/components/chat/composerMenuStyles'
-import {
-  BUNDLED_PROVIDER_PRESETS,
-  getBundledPresetReasoningProviderKind,
-} from '../../config/providerPresets'
+import { getBundledPresetReasoningProviderKind } from '../../config/providerPresets'
 import { OFFICIAL_MODELS } from '../../constants/modelCatalog'
 import {
   OPENAI_OFFICIAL_MODELS,
@@ -19,15 +16,17 @@ import {
 import { useTranslation } from '../../i18n'
 import { useChatStore } from '../../stores/chatStore'
 import { useProviderStore } from '../../stores/providerStore'
+import { formatTokenLimit, isMagpieProvider, useMagpieStore } from '../../stores/magpieStore'
 import { DRAFT_RUNTIME_SELECTION_KEY, useSessionRuntimeStore } from '../../stores/sessionRuntimeStore'
 import { useSettingsStore } from '../../stores/settingsStore'
-import type { ModelMapping, SavedProvider } from '../../types/provider'
+import type { MagpieModel, ModelMapping, SavedProvider } from '../../types/provider'
 import type { RuntimeSelection } from '../../types/runtime'
-import type { ModelInfo, ReasoningEffortLevel } from '../../types/settings'
+import type { ModelInfo, ReasoningEffortLevel, SelectableEffortLevel } from '../../types/settings'
 import { useDismissable } from '@/hooks/useDismissable'
 import { useMobileViewport } from '../../hooks/useMobileViewport'
 import { isDesktopRuntime } from '../../lib/desktopRuntime'
 import {
+  getProviderModelCapabilityOverride,
   normalizeRuntimeSelection,
   reconcileRuntimeSelection,
   resolveDefaultRuntimeSelection,
@@ -52,7 +51,6 @@ import { ReasoningEffortPopover } from './ReasoningEffortPopover'
 import { useUIStore } from '../../stores/uiStore'
 import { SETTINGS_TAB_ID, useTabStore } from '../../stores/tabStore'
 import {
-  getModelReasoningCapabilityOverride,
   isModelReasoningEffort,
   normalizeModelReasoningEffort,
   resolveModelReasoningProfile,
@@ -82,6 +80,20 @@ type Props = {
   onRuntimeSelectionChange?: (selection: RuntimeSelection) => void
   runtimeKey?: string
   lockedProviderId?: string | null
+  /** Lets a controlled runtime picker edit effort too, as the composer does. */
+  effortEditable?: boolean
+  /**
+   * Receives effort changes on their own, for a picker that stands in for
+   * several runtimes and must not copy its provider and model onto them.
+   */
+  onEffortChange?: (level: SelectableEffortLevel) => void
+  /**
+   * Choices listed above the providers that are not provider-backed, e.g. an
+   * Agent following its session. Their selections keep the given providerId.
+   */
+  leadingChoices?: ModelProviderChoice[]
+  /** List only saved API providers, leaving out account sign-ins. */
+  savedProvidersOnly?: boolean
   disabled?: boolean
   compact?: boolean
   fluid?: boolean
@@ -104,26 +116,6 @@ const DROPDOWN_GAP = 8
 const VIEWPORT_MARGIN = 16
 const DROPDOWN_MAX_HEIGHT = 420
 const DROPDOWN_MIN_HEIGHT = 180
-const PROVIDER_PRESET_DEFAULT_ENVS = new Map(
-  BUNDLED_PROVIDER_PRESETS.map(preset => [preset.id, preset.defaultEnv ?? {}]),
-)
-
-function getProviderModelCapabilityOverride(
-  provider: SavedProvider,
-  modelId: string,
-): string | undefined {
-  return getModelReasoningCapabilityOverride(
-    modelId,
-    {
-      ...provider.models,
-      haiku: resolveProviderSlotModelId(provider, 'haiku'),
-      sonnet: resolveProviderSlotModelId(provider, 'sonnet'),
-      opus: resolveProviderSlotModelId(provider, 'opus'),
-    },
-    PROVIDER_PRESET_DEFAULT_ENVS.get(provider.presetId) ?? {},
-  )
-}
-
 function officialChoices(
   providerId: string | null,
   models: ModelInfo[],
@@ -218,6 +210,21 @@ function buildProviderModels(
     buildProviderModelRow(provider, entry.id, entry.id, entry.labels.join(' · ')))
 }
 
+/**
+ * Every model Magpie serves, in its catalog's order, then any mapped slot the
+ * catalog no longer lists (so the provider's own choice never disappears).
+ */
+function buildMagpieProviderModels(
+  provider: SavedProvider,
+  labels: Record<ModelSlot, string>,
+  catalog: readonly MagpieModel[],
+  describe: (model: MagpieModel) => string,
+): ModelInfo[] {
+  const rows = catalog.map((model) => buildProviderModelRow(provider, model.runtimeId, model.id, describe(model)))
+  const listed = new Set(rows.map((row) => row.id))
+  return [...rows, ...buildProviderModels(provider, labels).filter((row) => !listed.has(row.id))]
+}
+
 function buildProviderModelRow(
   provider: SavedProvider,
   id: string,
@@ -256,6 +263,8 @@ function buildProviderChoices(
   openAIOfficialLoggedIn: boolean,
   grokOfficialLoggedIn: boolean,
   deepSeekAccountLoggedIn: boolean,
+  magpieCatalog: readonly MagpieModel[] | null = null,
+  describeMagpieModel: (model: MagpieModel) => string = (model) => model.displayName,
 ): ModelProviderChoice[] {
   const claudeOfficialModels = activeId === null && availableModels.length > 0
     ? mergeOfficialModels(availableModels)
@@ -297,7 +306,9 @@ function buildProviderChoices(
       providerId: provider.id,
       providerName: provider.name,
       isDefault: activeId === provider.id,
-      models: buildProviderModels(provider, labels),
+      models: isMagpieProvider(provider) && magpieCatalog?.length
+        ? buildMagpieProviderModels(provider, labels, magpieCatalog, describeMagpieModel)
+        : buildProviderModels(provider, labels),
     })
   }
 
@@ -320,6 +331,10 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
   onRuntimeSelectionChange,
   runtimeKey,
   lockedProviderId,
+  effortEditable = false,
+  onEffortChange,
+  leadingChoices,
+  savedProvidersOnly = false,
   disabled = false,
   compact = false,
   fluid = false,
@@ -362,14 +377,16 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
   const requestedProvidersRef = useRef(false)
   const requestedOAuthStatusRef = useRef(false)
 
-  const EFFORT_OPTIONS: { value: ReasoningEffortLevel; label: string }[] = [
+  const EFFORT_OPTIONS: { value: ReasoningEffortLevel | 'auto'; label: string }[] = [
+    { value: 'auto', label: t('settings.general.effort.auto') },
     { value: 'low', label: t('settings.general.effort.low') },
     { value: 'medium', label: t('settings.general.effort.medium') },
     { value: 'high', label: t('settings.general.effort.high') },
     { value: 'xhigh', label: t('settings.general.effort.xhigh') },
     { value: 'max', label: t('settings.general.effort.max') },
   ]
-  const effortLabels: Record<ReasoningEffortLevel, string> = {
+  const effortLabels: Record<ReasoningEffortLevel | 'auto', string> = {
+    auto: t('settings.general.effort.auto'),
     low: t('settings.general.effort.low'),
     medium: t('settings.general.effort.medium'),
     high: t('settings.general.effort.high'),
@@ -381,7 +398,7 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
   const isRuntimeScoped =
     !isControlled &&
     (runtimeKey !== undefined || onRuntimeSelectionChange !== undefined)
-  const canEditRuntimeEffort = runtimeKey !== undefined
+  const canEditRuntimeEffort = runtimeKey !== undefined || effortEditable
 
   useEffect(() => {
     if (
@@ -396,7 +413,7 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
   }, [fetchProviders, hasLoadedProviders, isRuntimeScoped, providersLoading, runtimeChoices])
 
   useEffect(() => {
-    if (runtimeChoices !== undefined || !isRuntimeScoped || !open || requestedOAuthStatusRef.current) return
+    if (runtimeChoices !== undefined || savedProvidersOnly || !isRuntimeScoped || !open || requestedOAuthStatusRef.current) return
     requestedOAuthStatusRef.current = true
     void fetchClaudeOAuthStatus()
     void fetchOpenAIOAuthStatus()
@@ -409,6 +426,7 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
     fetchOpenAIOAuthStatus,
     isRuntimeScoped,
     runtimeChoices,
+    savedProvidersOnly,
     open,
   ])
 
@@ -487,9 +505,20 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
     [t],
   )
 
+  const magpieCatalog = useMagpieStore((store) => store.state?.models ?? null)
+  const describeMagpieModel = useCallback((model: MagpieModel) => [
+    model.displayName,
+    model.contextWindow !== undefined
+      ? t('settings.providers.magpie.contextTag', { size: formatTokenLimit(model.contextWindow) })
+      : model.isGroup ? null : t('settings.providers.magpie.unknownContext'),
+    model.reasoningEfforts.length > 0 ? t('settings.providers.magpie.reasoningTag') : null,
+  ].filter(Boolean).join(' · '), [t])
+
   const providerChoices = useMemo(
-    () => runtimeChoices ?? buildProviderChoices(
-      providers,
+    () => [...(leadingChoices ?? []), ...(runtimeChoices ?? buildProviderChoices(
+      savedProvidersOnly
+        ? providers.filter((provider) => (provider.runtimeKind ?? 'anthropic_compatible') === 'anthropic_compatible')
+        : providers,
       activeId,
       availableModels,
       t('settings.providers.officialName'),
@@ -498,12 +527,18 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
       t('settings.providers.deepseekAccountName'),
       deepSeekAccountModels,
       roleLabels,
-      claudeOAuthStatus?.loggedIn === true,
-      openAIOAuthStatus?.loggedIn === true,
-      grokOAuthStatus?.loggedIn === true,
-      deepSeekOAuthStatus?.loggedIn === true,
-    ),
+      claudeOAuthStatus?.loggedIn === true && !savedProvidersOnly,
+      openAIOAuthStatus?.loggedIn === true && !savedProvidersOnly,
+      grokOAuthStatus?.loggedIn === true && !savedProvidersOnly,
+      deepSeekOAuthStatus?.loggedIn === true && !savedProvidersOnly,
+      magpieCatalog,
+      describeMagpieModel,
+    ))],
     [
+      magpieCatalog,
+      describeMagpieModel,
+      leadingChoices,
+      savedProvidersOnly,
       runtimeChoices,
       activeId,
       availableModels,
@@ -550,7 +585,10 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
       storeModel?.id,
     )
     : null
-  const resolvedRuntimeSelection = runtimeChoices !== undefined
+  const isLeadingSelection = !!requestedRuntimeSelection && !!leadingChoices?.some(
+    (choice) => choice.providerId === requestedRuntimeSelection.providerId,
+  )
+  const resolvedRuntimeSelection = runtimeChoices !== undefined || isLeadingSelection
     ? requestedRuntimeSelection
     : requestedRuntimeSelection
     ? reconcileRuntimeSelection(requestedRuntimeSelection, {
@@ -580,13 +618,20 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
     : null
 
   const selectedRuntimeModel = activeRuntimeSelection
-    ? selectedProviderChoice?.models.find((model) => model.id === activeRuntimeSelection.modelId)
-      ?? {
-        id: activeRuntimeSelection.modelId,
-        name: activeRuntimeSelection.modelId,
-        description: '',
-        context: '',
-      }
+    ? {
+      ...(selectedProviderChoice?.models.find((model) => model.id === activeRuntimeSelection.modelId)
+        // Account defaults can change their 1M marker without changing the
+        // catalog identity. Resolve metadata while retaining the session ID.
+        ?? (activeRuntimeSelection.providerId === DEEPSEEK_ACCOUNT_PROVIDER_ID
+          ? selectedProviderChoice?.models.find((model) => baseModelId(model.id) === baseModelId(activeRuntimeSelection.modelId))
+          : undefined)
+        ?? {
+          name: activeRuntimeSelection.modelId,
+          description: '',
+          context: '',
+        }),
+      id: activeRuntimeSelection.modelId,
+    }
     : null
 
   const needsProviderConfiguration = isRuntimeScoped && !activeRuntimeSelection && providerChoices.length === 0
@@ -599,16 +644,28 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
     : null
   const supportedRuntimeEfforts = selectedRuntimeModel?.supportedReasoningEfforts
   const requestedRuntimeEffort = activeRuntimeSelection?.effortLevel ?? effortLevel
+  // 'auto' is a settings-layer synthetic value — accepted regardless of the
+  // provider's concrete supported list (resolved to a wire level at request
+  // time by resolveAppliedEffort in the server process).
+  const isRequestedAuto = requestedRuntimeEffort === 'auto'
   const selectedRuntimeEffort = selectedRuntimeModel
-    ? supportedRuntimeEfforts?.length === 0
+    ? supportedRuntimeEfforts?.length === 0 && !isRequestedAuto
       ? undefined
-      : supportedRuntimeEfforts === undefined || supportedRuntimeEfforts.includes(requestedRuntimeEffort)
+      : isRequestedAuto || supportedRuntimeEfforts === undefined || supportedRuntimeEfforts.includes(requestedRuntimeEffort)
         ? requestedRuntimeEffort
         : selectedRuntimeModel.defaultReasoningEffort ?? supportedRuntimeEfforts[0]
     : undefined
+  // A controlled runtime without an effort launches on the model's own
+  // default, which the global composer default must not pose as.
+  const runtimeEffortUnset = runtimeKey === undefined &&
+    controlledRuntimeSelection !== undefined &&
+    controlledRuntimeSelection.effortLevel === undefined
+  const runtimeEffortLabel = selectedRuntimeEffort
+    ? runtimeEffortUnset ? t('model.effortUnset') : effortLabels[selectedRuntimeEffort]
+    : undefined
   const runtimeEffortOptions = supportedRuntimeEfforts === undefined
-    ? EFFORT_OPTIONS.filter((option) => option.value !== 'xhigh')
-    : EFFORT_OPTIONS.filter((option) => supportedRuntimeEfforts.includes(option.value))
+    ? EFFORT_OPTIONS
+    : EFFORT_OPTIONS.filter((option) => option.value === 'auto' || supportedRuntimeEfforts.includes(option.value))
   const showEffortPill = canEditRuntimeEffort && !!selectedRuntimeEffort && runtimeEffortOptions.length > 0
   const showOpenAIFastMode = activeRuntimeSelection?.providerId === OPENAI_OFFICIAL_PROVIDER_ID && lockedProviderId === undefined
 
@@ -621,6 +678,10 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
   const openSelector = useCallback(() => {
     if (disabled) return
     setEffortOpen(false)
+    // Magpie's catalog changes in Magpie; read it again (the server caches it briefly).
+    if (useProviderStore.getState().providers.some(isMagpieProvider)) {
+      void useMagpieStore.getState().refresh()
+    }
 
     if (runtimeChoices !== undefined || !isRuntimeScoped || providerChoices.length > 0) {
       setOpen(true)
@@ -694,7 +755,8 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
   const handleRuntimeSelect = (selection: RuntimeSelection) => {
     if (lockedProviderId !== undefined && selection.providerId !== lockedProviderId) return
     const provider = providers.find((entry) => entry.id === selection.providerId)
-    const normalizedSelection = runtimeChoices !== undefined ? selection : normalizeRuntimeSelection(
+    const isLeadingChoice = !!leadingChoices?.some((choice) => choice.providerId === selection.providerId)
+    const normalizedSelection = runtimeChoices !== undefined || isLeadingChoice ? selection : normalizeRuntimeSelection(
       selection,
       provider?.apiFormat,
       provider ? getBundledPresetReasoningProviderKind(provider.presetId) : undefined,
@@ -710,8 +772,12 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
     setOpen(false)
   }
 
-  const handleRuntimeEffortSelect = (level: ReasoningEffortLevel) => {
+  const handleRuntimeEffortSelect = (level: SelectableEffortLevel) => {
     if (!activeRuntimeSelection || lockedProviderId !== undefined) return
+    if (onEffortChange) {
+      onEffortChange(level)
+      return
+    }
     handleRuntimeSelect({
       ...activeRuntimeSelection,
       effortLevel: level,
@@ -812,13 +878,21 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
                           )
                             ? normalizedProviderEffort
                             : undefined
-                          const nextEffort = supportedEfforts === undefined
+                          // Wire-level membership checks exclude 'auto' — it is a
+                          // harness synthetic value, never a provider wire level.
+                          const isWireEffort = (value: SelectableEffortLevel): value is Exclude<SelectableEffortLevel, 'auto'> =>
+                            value !== 'auto' && (
+                              supportedEfforts === undefined || supportedEfforts.includes(value)
+                            )
+                          const nextEffort = effortLevel === 'auto'
+                            ? 'auto'
+                            : supportedEfforts === undefined
                             ? explicitEffort ?? effortLevel
                             : supportedEfforts.length
                               ? supportedProviderEffort
-                                ?? (explicitEffort && supportedEfforts.includes(explicitEffort)
+                                ?? (explicitEffort && isWireEffort(explicitEffort)
                                 ? explicitEffort
-                                : supportedEfforts.includes(effortLevel)
+                                : isWireEffort(effortLevel)
                                   ? effortLevel
                                   : model.defaultReasoningEffort ?? supportedEfforts[0])
                               : undefined
@@ -972,14 +1046,14 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
           // rounded down one side and square down the other.
           className={`flex min-w-0 items-center gap-1.5 text-xs text-[var(--color-text-secondary)] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] disabled:cursor-not-allowed ${
             appearance === 'field'
-              ? 'h-full w-full rounded-[var(--radius-md)] px-3 text-left'
+              ? `h-full min-w-0 flex-1 px-3 text-left ${showEffortPill ? 'rounded-l-[var(--radius-md)] focus-visible:rounded-[var(--radius-md)]' : 'rounded-[var(--radius-md)]'}`
               : `rounded-l-[var(--radius-sm)] focus-visible:rounded-[var(--radius-sm)] pl-2 ${fluid ? 'flex-1' : ''} ${compact ? 'max-w-[112px]' : 'max-w-[220px]'} ${showEffortPill ? 'pr-1' : 'rounded-r-[var(--radius-sm)] pr-1.5'}`
           }`}
         >
           <span className={`${appearance === 'field' ? 'text-[13px]' : 'text-xs'} min-w-0 flex-1 truncate text-[var(--color-text-primary)]`}>
             {buttonModelLabel}
           </span>
-          {!canEditRuntimeEffort && !compact && buttonProviderLabel && (
+          {(appearance === 'field' || !canEditRuntimeEffort) && !compact && buttonProviderLabel && (
             <span className="max-w-[108px] flex-shrink-0 truncate text-[11px] text-[var(--color-text-tertiary)]">
               {buttonProviderLabel}
             </span>
@@ -994,7 +1068,7 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
             ref={effortButtonRef}
             type="button"
             disabled={disabled || lockedProviderId !== undefined}
-            aria-label={`${t('model.effort')}: ${effortLabels[selectedRuntimeEffort]}${showOpenAIFastMode && activeRuntimeSelection?.openAIFastMode ? ` · ${t('model.openAIFastMode')}` : ''}`}
+            aria-label={`${t('model.effort')}: ${runtimeEffortLabel}${showOpenAIFastMode && activeRuntimeSelection?.openAIFastMode ? ` · ${t('model.openAIFastMode')}` : ''}`}
             aria-expanded={effortOpen}
             onClick={() => {
               if (disabled) return
@@ -1003,10 +1077,14 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
             }}
             // The effort rides on the model name as a small sunken pill; the
             // chevron moves here so the pair reads "model · effort ⌄".
-            className={`flex shrink-0 items-center gap-1 rounded-r-[var(--radius-sm)] pl-0.5 pr-1.5 text-[var(--color-text-tertiary)] outline-none transition-colors hover:text-[var(--color-text-primary)] focus-visible:rounded-[var(--radius-sm)] focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] disabled:cursor-not-allowed`}
+            className={`flex shrink-0 items-center gap-1 pl-0.5 text-[var(--color-text-tertiary)] outline-none transition-colors hover:text-[var(--color-text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] disabled:cursor-not-allowed ${
+              appearance === 'field'
+                ? 'rounded-r-[var(--radius-md)] pr-2.5 focus-visible:rounded-[var(--radius-md)]'
+                : 'rounded-r-[var(--radius-sm)] pr-1.5 focus-visible:rounded-[var(--radius-sm)]'
+            }`}
           >
             <span className="inline-flex h-[18px] items-center rounded-full bg-[var(--color-surface-container)] px-1.5 text-[11px]">
-              {effortLabels[selectedRuntimeEffort]}
+              {runtimeEffortLabel}
             </span>
             {showOpenAIFastMode && activeRuntimeSelection?.openAIFastMode && (
               <span className="text-[11px] text-[var(--color-text-secondary)]">{t('model.openAIFastMode')}</span>
@@ -1021,7 +1099,7 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
           open={effortOpen}
           anchorRef={effortButtonRef}
           options={runtimeEffortOptions.map((option) => option.value)}
-          value={selectedRuntimeEffort}
+          value={runtimeEffortUnset ? null : selectedRuntimeEffort}
           labels={effortLabels}
           ariaLabel={t('model.effort')}
           onChange={handleRuntimeEffortSelect}

@@ -44,7 +44,8 @@ import { getFsImplementation } from '../../utils/fsOperations.js'
 import {
   compressImageBufferWithTokenLimit,
   createImageMetadataText,
-  detectImageFormatFromBuffer,
+  describeNonImageBytes,
+  detectImageFormatFromBufferOrNull,
   downsampleImageBufferToVisionTokenBudget,
   type ImageDimensions,
   ImageResizeError,
@@ -74,7 +75,9 @@ import type { PermissionDecision } from '../../utils/permissions/PermissionResul
 import { matchWildcardPattern } from '../../utils/permissions/shellRuleMatching.js'
 import { readFileInRange } from '../../utils/readFileInRange.js'
 import { semanticNumber } from '../../utils/semanticNumber.js'
+import { decodeShellOutput } from '../../utils/shell/outputEncoding.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
+import { getToolResultsDir } from '../../utils/toolResultStorage.js'
 import { BASH_TOOL_NAME } from '../BashTool/toolName.js'
 import { getDefaultFileReadingLimits } from './limits.js'
 import { getImageProcessor } from './imageProcessor.js'
@@ -840,6 +843,7 @@ async function callInner(
 }> {
   // --- Notebook ---
   if (ext === 'ipynb') {
+    const beforeRead = await getFsImplementation().stat(resolvedFilePath)
     const cells = await readNotebook(resolvedFilePath)
     const cellsJson = jsonStringify(cells)
 
@@ -857,8 +861,13 @@ async function callInner(
 
     await validateContentTokens(cellsJson, ext, maxTokens)
 
-    // Get mtime via async stat (single call, no prior existence check)
     const stats = await getFsImplementation().stat(resolvedFilePath)
+    // The edit guard must describe the bytes returned to the model. A stat
+    // acquired only after Read could authorize unseen concurrent changes.
+    if (stats.mtimeMs !== beforeRead.mtimeMs || stats.size !== beforeRead.size || stats.ino !== beforeRead.ino) {
+      readFileState.delete(fullFilePath)
+      throw new Error('Notebook changed while reading. Read it again before editing.')
+    }
     readFileState.set(fullFilePath, {
       content: cellsJson,
       timestamp: Math.floor(stats.mtimeMs),
@@ -1050,6 +1059,11 @@ async function callInner(
 
   // --- Text file (single async read via readFileInRange) ---
   const lineOffset = offset === 0 ? 0 : offset - 1
+  // Large shell outputs are persisted as raw files. A subsequent Read should
+  // decode them the same way as the inline preview without changing how
+  // ordinary project files are interpreted.
+  const isWindowsToolOutput = process.platform === 'win32' && ext === 'txt' &&
+    path.relative(getToolResultsDir(), path.dirname(fullFilePath)) === ''
   const { content, lineCount, totalLines, totalBytes, readBytes, mtimeMs } =
     await readFileInRange(
       resolvedFilePath,
@@ -1057,6 +1071,7 @@ async function callInner(
       limit,
       limit === undefined ? maxSizeBytes : undefined,
       context.abortController.signal,
+      isWindowsToolOutput ? { decode: (bytes, partial) => decodeShellOutput(bytes, false, partial) } : undefined,
     )
 
   await validateContentTokens(content, ext, maxTokens)
@@ -1118,6 +1133,31 @@ async function callInner(
 }
 
 /**
+ * A file with an image extension whose bytes carry no known image signature is
+ * accepted only if the image processor can still decode it (a BMP named .png,
+ * say). Everything else is refused with a readable preview instead of being
+ * sent to the model as image data.
+ */
+async function assertDecodableImage(
+  imageBuffer: Buffer,
+  filePath: string,
+): Promise<void> {
+  try {
+    const sharp = await getImageProcessor()
+    const metadata = await sharp(imageBuffer).metadata()
+    if (metadata.format && metadata.width && metadata.height) return
+  } catch {
+    // Undecodable bytes are reported below.
+  }
+  throw new ImageResizeError(
+    `${filePath} is not a valid image: the data has no PNG, JPEG, GIF or WebP signature and could not be decoded ` +
+      `(it starts with ${JSON.stringify(describeNonImageBytes(imageBuffer))}). ` +
+      'It may be an HTML or redirect page saved under an image name, or a truncated download. ' +
+      'Read it as text or download it again instead of sending it as an image.',
+  )
+}
+
+/**
  * Reads an image file and applies token-based compression if needed.
  * Reads the file ONCE, then applies standard resize. If the result exceeds
  * the token limit, applies aggressive compression from the same buffer.
@@ -1142,7 +1182,15 @@ export async function readImageWithTokenBudget(
     throw new Error(`Image file is empty: ${filePath}`)
   }
 
-  const detectedMediaType = detectImageFormatFromBuffer(imageBuffer)
+  // Validate by signature, then by decoding, before anything reaches the API
+  // as an image block. An HTML error page saved under an image name used to be
+  // sent as image/png, fail every later request with the same decode error,
+  // and surface as "this model does not support images".
+  const signatureMediaType = detectImageFormatFromBufferOrNull(imageBuffer)
+  if (signatureMediaType === null) {
+    await assertDecodableImage(imageBuffer, filePath)
+  }
+  const detectedMediaType = signatureMediaType ?? 'image/png'
   const detectedFormat = detectedMediaType.split('/')[1] || 'png'
 
   // Try standard resize

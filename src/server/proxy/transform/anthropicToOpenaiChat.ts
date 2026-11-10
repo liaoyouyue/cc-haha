@@ -135,7 +135,12 @@ export function anthropicToOpenaiChat(
       result.reasoning_effort = 'high'
     }
     if (options.passThinkingToggle) {
-      result.thinking = { type: body.thinking.type }
+      result.thinking = {
+        type: body.thinking.type === 'adaptive' ? 'enabled' : body.thinking.type,
+        // The envelope budget is an explicit value: carry it through so the
+        // effort-derived budget below does not override it.
+        ...(budget !== undefined && { budget_tokens: budget }),
+      }
     }
   }
   const outputConfigEffort = normalizeOpenAIReasoningEffort(body.output_config?.effort)
@@ -143,6 +148,21 @@ export function anthropicToOpenaiChat(
     result.reasoning_effort = outputConfigEffort
   }
   if (options.passReasoningEffort === false) delete result.reasoning_effort
+
+  // High effort levels on backends that take thinking budgets (DeepSeek,
+  // Qwen-style gateways): the effort knob also drives a concrete budget so
+  // "xhigh/max" means real sustained thinking, not a label the backend maps
+  // to its own default. Only set when the caller hasn't supplied a budget —
+  // an explicit budget from the envelope always wins.
+  if (outputConfigEffort === 'xhigh' || outputConfigEffort === 'max') {
+    const effortBudget = outputConfigEffort === 'max' ? 65_536 : 32_768
+    if (result.thinking === undefined || result.thinking.budget_tokens === undefined) {
+      result.thinking = {
+        ...(result.thinking ?? { type: 'enabled' }),
+        budget_tokens: effortBudget,
+      }
+    }
+  }
 
   if (compatibility.parallelToolCalls !== undefined && result.tools?.length) {
     result.parallel_tool_calls = compatibility.parallelToolCalls

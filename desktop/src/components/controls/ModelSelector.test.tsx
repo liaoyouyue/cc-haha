@@ -26,6 +26,8 @@ import { useSessionRuntimeStore } from '../../stores/sessionRuntimeStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useTabStore, SETTINGS_TAB_ID } from '../../stores/tabStore'
 import { useUIStore } from '../../stores/uiStore'
+import { useMagpieStore } from '../../stores/magpieStore'
+import { providersApi } from '../../api/providers'
 import { useSessionStore } from '@/stores/sessionStore'
 import { OPENAI_OFFICIAL_PROVIDER_ID } from '../../constants/openaiOfficialProvider'
 import type { ModelInfo } from '../../types/settings'
@@ -56,6 +58,8 @@ afterEach(() => {
   useHahaDeepSeekOAuthStore.setState(useHahaDeepSeekOAuthStore.getInitialState(), true)
   useTabStore.setState(useTabStore.getInitialState(), true)
   useUIStore.setState(useUIStore.getInitialState(), true)
+  useMagpieStore.setState(useMagpieStore.getInitialState(), true)
+  vi.restoreAllMocks()
 })
 
 beforeEach(() => {
@@ -66,6 +70,41 @@ beforeEach(() => {
 })
 
 describe('ModelSelector', () => {
+  it('lists every model Magpie serves on the Magpie provider, not only its mapped slots', async () => {
+    useSettingsStore.setState({ locale: 'en' })
+    const magpieState = {
+      status: { installed: true, running: true, baseUrl: 'http://127.0.0.1:3425' },
+      models: [
+        { id: 'kimi/kimi-k3', runtimeId: 'kimi/kimi-k3', displayName: 'Kimi K3', provider: 'kimi', isGroup: false, contextWindow: 262_144, reasoningEfforts: ['high'] },
+        { id: 'deepseek/deepseek-v4-pro', runtimeId: 'deepseek/deepseek-v4-pro', displayName: 'DeepSeek V4 Pro', provider: 'deepseek', isGroup: false, contextWindow: 1_000_000, reasoningEfforts: [] },
+        { id: 'ollama/qwen3.6:27b', runtimeId: 'ollama/qwen3.6:27b', displayName: 'Qwen3.6 27B', provider: 'ollama', isGroup: false, reasoningEfforts: [] },
+      ],
+    }
+    // Opening the picker reads the catalog again.
+    const refresh = vi.spyOn(providersApi, 'magpie').mockResolvedValue(magpieState)
+    useMagpieStore.setState({ state: magpieState })
+    useProviderStore.setState({
+      activeId: 'magpie-1', hasLoadedProviders: true, isLoading: false,
+      providers: [{
+        id: 'magpie-1', presetId: 'magpie', name: 'Magpie',
+        apiFormat: 'anthropic', apiKey: '', baseUrl: 'http://127.0.0.1:3425',
+        models: { main: 'kimi/kimi-k3', haiku: 'kimi/kimi-k3', sonnet: 'kimi/kimi-k3', opus: 'kimi/kimi-k3' },
+      }],
+    })
+    const runtimeChange = vi.fn()
+    render(<ModelSelector runtimeKey="__draft__" onRuntimeSelectionChange={runtimeChange} />)
+    await clickByRole(/, Magpie$/)
+
+    expect(refresh).toHaveBeenCalled()
+    const dropdown = within(screen.getByTestId('model-selector-dropdown'))
+    expect(dropdown.getByRole('button', { name: /deepseek\/deepseek-v4-pro/ })).toHaveTextContent('DeepSeek V4 Pro · Context 1M')
+    expect(dropdown.getByRole('button', { name: /ollama\/qwen3.6:27b/ })).toHaveTextContent('Qwen3.6 27B · Context unknown')
+    fireEvent.click(dropdown.getByRole('button', { name: /deepseek\/deepseek-v4-pro/ }))
+    expect(runtimeChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      providerId: 'magpie-1', modelId: 'deepseek/deepseek-v4-pro',
+    }))
+  })
+
   it('shows the configured default for an opened session whose saved provider was removed', () => {
     useSettingsStore.setState({ locale: 'en', effortLevel: 'high' })
     useProviderStore.setState({
@@ -911,7 +950,7 @@ describe('ModelSelector', () => {
 
     expect(screen.getByRole('button', { name: 'Effort: High' })).toBeInTheDocument()
     await clickByRole('Effort: High')
-    expect(screen.getAllByTestId('reasoning-effort-stop')).toHaveLength(5)
+    expect(screen.getAllByTestId('reasoning-effort-stop')).toHaveLength(6)
     fireEvent.keyDown(screen.getByRole('slider', { name: 'Effort' }), { key: 'ArrowRight' })
 
     const expectedSelection = {
@@ -972,7 +1011,7 @@ describe('ModelSelector', () => {
 
     expect(screen.getByRole('button', { name: 'Effort: High' })).toBeInTheDocument()
     await clickByRole('Effort: High')
-    expect(screen.getAllByTestId('reasoning-effort-stop')).toHaveLength(5)
+    expect(screen.getAllByTestId('reasoning-effort-stop')).toHaveLength(6)
   })
 
   it('keeps effort editable for a GPT relay even when beta headers are disabled', async () => {
@@ -1014,7 +1053,7 @@ describe('ModelSelector', () => {
     expect(screen.getByRole('button', { name: 'gpt-5.6-sol, Direct GPT Gateway' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Effort: X-High' })).toBeInTheDocument()
     await clickByRole('Effort: X-High')
-    expect(screen.getAllByTestId('reasoning-effort-stop')).toHaveLength(5)
+    expect(screen.getAllByTestId('reasoning-effort-stop')).toHaveLength(6)
   })
 
   it('still offers an effort control when a non-GPT direct provider disabled experimental betas', () => {
@@ -1169,8 +1208,8 @@ describe('ModelSelector', () => {
     expect(screen.queryByTestId('model-provider-badge')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Effort: Max' })).toBeInTheDocument()
     await clickByRole('Effort: Max')
-    expect(screen.getByRole('slider', { name: 'Effort' })).toHaveAttribute('aria-valuemax', '4')
-    expect(screen.getAllByTestId('reasoning-effort-stop')).toHaveLength(5)
+    expect(screen.getByRole('slider', { name: 'Effort' })).toHaveAttribute('aria-valuemax', '5')
+    expect(screen.getAllByTestId('reasoning-effort-stop')).toHaveLength(6)
     fireEvent.keyDown(screen.getByRole('slider', { name: 'Effort' }), { key: 'Escape' })
 
     await clickByRole(/GPT-5\.6-Sol/i)
@@ -1184,7 +1223,7 @@ describe('ModelSelector', () => {
 
     expect(screen.getByRole('button', { name: 'Effort: Medium' })).toBeInTheDocument()
     await clickByRole('Effort: Medium')
-    expect(screen.getByRole('slider', { name: 'Effort' })).toHaveAttribute('aria-valuemax', '3')
+    expect(screen.getByRole('slider', { name: 'Effort' })).toHaveAttribute('aria-valuemax', '4')
     fireEvent.keyDown(screen.getByRole('slider', { name: 'Effort' }), { key: 'End' })
     expect(screen.getByRole('slider', { name: 'Effort' })).toHaveAttribute('aria-valuetext', 'X-High')
 
@@ -1341,8 +1380,8 @@ describe('ModelSelector', () => {
 
     expect(screen.getByRole('button', { name: 'Effort: Max' })).toBeInTheDocument()
     await clickByRole('Effort: Max')
-    expect(screen.getByRole('slider', { name: 'Effort' })).toHaveAttribute('aria-valuemax', '2')
-    expect(screen.getAllByTestId('reasoning-effort-stop')).toHaveLength(3)
+    expect(screen.getByRole('slider', { name: 'Effort' })).toHaveAttribute('aria-valuemax', '3')
+    expect(screen.getAllByTestId('reasoning-effort-stop')).toHaveLength(4)
   })
 
   it('selects Grok Official models for a logged-in runtime', async () => {
@@ -1438,10 +1477,10 @@ describe('ModelSelector', () => {
 
       const dropdown = screen.getByTestId('model-selector-dropdown')
       expect(dropdown.textContent).toContain('DeepSeek Account')
-      // The account listing names V4.1 Flash `deepseek-flash`, not the
-      // API-key route's `deepseek-v4-flash`, and the `[1m]` alias row stands
-      // for the listed `deepseek-v4-pro` instead of repeating it.
+      // The `[1m]` alias row stands for the listed Flash model instead of
+      // repeating it; Pro remains available as an explicit alternative.
       expect(dropdown.textContent).not.toContain('deepseek-v4-flash')
+      expect(within(dropdown).getAllByRole('button', { name: /DeepSeek-V4\.1-Flash/ })).toHaveLength(1)
       expect(within(dropdown).getAllByRole('button', { name: /DeepSeek-V4-Pro/ })).toHaveLength(1)
       await act(async () => {
         fireEvent.click(within(dropdown).getByRole('button', { name: /DeepSeek-V4\.1-Flash/ }))
@@ -1450,7 +1489,7 @@ describe('ModelSelector', () => {
 
       expect(useSessionRuntimeStore.getState().selections['session-ds-in']).toMatchObject({
         providerId: 'deepseek-account',
-        modelId: 'deepseek-flash',
+        modelId: 'deepseek-flash[1m]',
       })
     })
 
@@ -1526,17 +1565,24 @@ describe('ModelSelector', () => {
       })
     })
 
-    it('keeps a restored DeepSeek Account selection instead of falling back to the saved provider', () => {
+    it.each([
+      ['deepseek-v4-pro[1m]', 'DeepSeek-V4-Pro'],
+      ['deepseek-flash', 'DeepSeek-V4.1-Flash'],
+    ])('keeps restored DeepSeek selection %s and its catalog display name', (modelId, modelName) => {
       useSavedProviderActive()
       useHahaDeepSeekOAuthStore.setState({ status: null, fetchStatus: async () => {} })
       useSessionRuntimeStore.getState().setSelection('session-ds-restored', {
         providerId: 'deepseek-account',
-        modelId: 'deepseek-v4-pro[1m]',
+        modelId,
       })
 
       render(<ModelSelector runtimeKey="session-ds-restored" />)
 
-      expect(screen.getByRole('button', { name: /DeepSeek-V4-Pro, DeepSeek Account/ })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: `${modelName}, DeepSeek Account` })).toBeInTheDocument()
+      expect(useSessionRuntimeStore.getState().selections['session-ds-restored']).toMatchObject({
+        providerId: 'deepseek-account',
+        modelId,
+      })
     })
 
     it('fetches the DeepSeek sign-in status when the selector opens', async () => {
@@ -1760,5 +1806,88 @@ describe('delegation catalog', () => {
     fireEvent.click(matches[1]!)
     expect(onRuntimeSelectionChange).toHaveBeenCalledWith(expect.objectContaining({ providerId: 'server-two', modelId: 'same' }))
     expect(fetchProviders).not.toHaveBeenCalled()
+  })
+})
+
+describe('controlled runtime pickers outside the composer', () => {
+  const zhipu = {
+    id: 'zhipu', presetId: 'zhipuglm', name: 'Zhipu', apiFormat: 'anthropic' as const,
+    apiKey: 'fixture', baseUrl: 'http://127.0.0.1:1',
+    models: { main: 'glm-5.3', haiku: 'glm-5.3', sonnet: 'glm-5.3', opus: 'glm-5.3' },
+  }
+
+  it('edits a member effort in place, limited to what its provider model accepts', async () => {
+    useSettingsStore.setState({ locale: 'en', effortLevel: 'high' })
+    useProviderStore.setState({ hasLoadedProviders: true, providers: [zhipu], activeId: null })
+    const onRuntimeSelectionChange = vi.fn()
+    render(<ModelSelector appearance="field" effortEditable ariaLabel="Member model" runtimeSelection={{ providerId: 'zhipu', modelId: 'glm-5.3', effortLevel: 'high' }} onRuntimeSelectionChange={onRuntimeSelectionChange} />)
+
+    // A field shows its provider even while the effort pill is present.
+    expect(screen.getByRole('button', { name: 'Member model' })).toHaveTextContent('Zhipu')
+    await clickByRole(/^Effort: High/)
+    const stops = within(screen.getByTestId('reasoning-effort-popover')).getAllByTestId('reasoning-effort-stop')
+    expect(stops.map(stop => stop.getAttribute('title'))).toEqual(['Auto', 'Low', 'High', 'Max'])
+    fireEvent.keyDown(screen.getByRole('slider', { name: 'Effort' }), { key: 'ArrowRight' })
+
+    expect(onRuntimeSelectionChange).toHaveBeenCalledWith({ providerId: 'zhipu', modelId: 'glm-5.3', effortLevel: 'max' })
+    // Controlled pickers own no session: nothing is written to the session store.
+    expect(useSessionRuntimeStore.getState().selections).toEqual({})
+  })
+
+  it('says Default for a member without an effort instead of borrowing the composer level', async () => {
+    // A member launched without an effort runs on its model's default, so the
+    // global composer default ("Low" here) must not be shown as its effort.
+    useSettingsStore.setState({ locale: 'en', effortLevel: 'low' })
+    useProviderStore.setState({ hasLoadedProviders: true, providers: [zhipu], activeId: null })
+    const onRuntimeSelectionChange = vi.fn()
+    render(<ModelSelector appearance="field" effortEditable ariaLabel="Member model" runtimeSelection={{ providerId: 'zhipu', modelId: 'glm-5.3' }} onRuntimeSelectionChange={onRuntimeSelectionChange} />)
+
+    await clickByRole('Effort: Default')
+    const stops = within(screen.getByTestId('reasoning-effort-popover')).getAllByTestId('reasoning-effort-stop')
+    expect(stops.filter(stop => stop.hasAttribute('data-selected'))).toHaveLength(0)
+    fireEvent.keyDown(screen.getByRole('slider', { name: 'Effort' }), { key: 'End' })
+    expect(onRuntimeSelectionChange).toHaveBeenCalledWith({ providerId: 'zhipu', modelId: 'glm-5.3', effortLevel: 'max' })
+  })
+
+  it('hands an effort change alone to onEffortChange when the picker stands in for several runtimes', async () => {
+    useSettingsStore.setState({ locale: 'en', effortLevel: 'high' })
+    useProviderStore.setState({ hasLoadedProviders: true, providers: [zhipu], activeId: null })
+    const onRuntimeSelectionChange = vi.fn()
+    const onEffortChange = vi.fn()
+    render(<ModelSelector appearance="field" effortEditable ariaLabel="Batch model" runtimeSelection={{ providerId: 'zhipu', modelId: 'glm-5.3', effortLevel: 'high' }} onRuntimeSelectionChange={onRuntimeSelectionChange} onEffortChange={onEffortChange} />)
+
+    await clickByRole(/^Effort: High/)
+    fireEvent.keyDown(screen.getByRole('slider', { name: 'Effort' }), { key: 'ArrowLeft' })
+
+    expect(onEffortChange).toHaveBeenCalledWith('low')
+    expect(onRuntimeSelectionChange).not.toHaveBeenCalled()
+  })
+
+  it('keeps leading non-provider choices intact and lists only saved API providers', async () => {
+    useSettingsStore.setState({ locale: 'en' })
+    useProviderStore.setState({ hasLoadedProviders: true, providers: [zhipu], activeId: 'zhipu' })
+    useHahaOAuthStore.setState({ status: { loggedIn: true } as never })
+    const onRuntimeSelectionChange = vi.fn()
+    render(<ModelSelector
+      appearance="field"
+      ariaLabel="Agent model"
+      savedProvidersOnly
+      leadingChoices={[{ providerId: '__session__', providerName: 'Session provider', isDefault: false, models: [
+        { id: 'inherit', name: 'Inherit from parent', description: '', context: '' },
+        { id: 'opus', name: 'opus', description: '', context: '' },
+      ] }]}
+      runtimeSelection={{ providerId: '__session__', modelId: 'inherit' }}
+      onRuntimeSelectionChange={onRuntimeSelectionChange}
+    />)
+
+    // The unknown leading provider id is not "repaired" into the active provider.
+    expect(screen.getByRole('button', { name: 'Agent model' })).toHaveTextContent('Inherit from parent')
+    await clickByRole('Agent model')
+    const picker = screen.getByTestId('model-selector-dropdown')
+    expect(within(picker).getByText('Session provider')).toBeInTheDocument()
+    expect(within(picker).getByText('Zhipu')).toBeInTheDocument()
+    expect(within(picker).queryByText('Claude Official')).not.toBeInTheDocument()
+    fireEvent.click(within(picker).getByRole('button', { name: /^opus/ }))
+    expect(onRuntimeSelectionChange).toHaveBeenCalledWith(expect.objectContaining({ providerId: '__session__', modelId: 'opus' }))
   })
 })

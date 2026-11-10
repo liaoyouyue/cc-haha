@@ -34,6 +34,14 @@ export type ModelContextWindows = Record<string, number>
 
 export type ImageGenerationProtocol = 'openai_images' | 'gemini_native' | 'xai_images'
 
+/** Per-provider network proxy override. Absent means follow the global setting. */
+export type ProviderProxyMode = 'follow_global' | 'direct' | 'manual'
+
+export type ProviderProxyConfig = {
+  mode: ProviderProxyMode
+  url?: string
+}
+
 export type ImageGenerationConfig = {
   model: string
   protocol?: ImageGenerationProtocol
@@ -65,11 +73,15 @@ export type SavedProvider = {
   model1mSupport?: Model1mSupport
   autoCompactWindow?: number
   modelContextWindows?: ModelContextWindows
+  modelMaxOutputTokens?: Record<string, number>
   toolSearchEnabled?: boolean
   disableExperimentalBetas?: boolean
   supportsNestedToolResultMedia?: boolean
   requestCompatibility?: RequestCompatibility
+  /** User-configured upstream headers, merged over the preset's with user values winning. */
+  upstreamHeaders?: Record<string, string>
   imageGeneration?: ImageGenerationConfig
+  proxy?: ProviderProxyConfig
   notes?: string
 }
 
@@ -85,11 +97,14 @@ export type CreateProviderInput = {
   model1mSupport?: Model1mSupport
   autoCompactWindow?: number
   modelContextWindows?: ModelContextWindows
+  modelMaxOutputTokens?: Record<string, number>
   toolSearchEnabled?: boolean
   disableExperimentalBetas?: boolean
   supportsNestedToolResultMedia?: boolean
   requestCompatibility?: RequestCompatibility
+  upstreamHeaders?: Record<string, string>
   imageGeneration?: ImageGenerationConfig
+  proxy?: ProviderProxyConfig
   notes?: string
 }
 
@@ -104,11 +119,14 @@ export type UpdateProviderInput = {
   model1mSupport?: Model1mSupport | null
   autoCompactWindow?: number | null
   modelContextWindows?: ModelContextWindows | null
+  modelMaxOutputTokens?: Record<string, number> | null
   toolSearchEnabled?: boolean
   disableExperimentalBetas?: boolean
   supportsNestedToolResultMedia?: boolean
   requestCompatibility?: RequestCompatibility | null
+  upstreamHeaders?: Record<string, string> | null
   imageGeneration?: ImageGenerationConfig | null
+  proxy?: ProviderProxyConfig | null
   notes?: string
 }
 
@@ -120,6 +138,12 @@ export type TestProviderConfigInput = {
   apiFormat?: ApiFormat
   supportsNestedToolResultMedia?: boolean
   requestCompatibility?: RequestCompatibility
+  upstreamHeaders?: Record<string, string>
+  /**
+   * Per-provider proxy override typed on the test payload so an unsaved form
+   * probes with the same routing the saved provider would use.
+   */
+  proxy?: ProviderProxyConfig | null
   /**
    * Preset the form is based on, so the server can resolve per-model protocol
    * rules and upstream headers for an unsaved config. Only the id is sent.
@@ -205,6 +229,8 @@ export type ProviderModelsInput = {
   apiKey: string
   isFullUrl?: boolean
   modelsUrl?: string
+  /** The form's proxy override, so the probe takes the route chat will take. */
+  proxy?: ProviderProxyConfig
 }
 
 export type ProviderModelsErrorCode =
@@ -229,3 +255,33 @@ export type ProviderModelsResult =
     httpStatus?: number
     endpointsTried: string[]
   }
+
+/** The local Magpie gateway as the server found it (GET /api/providers/magpie). */
+export type MagpieStatus = {
+  installed: boolean
+  running: boolean
+  baseUrl: string
+  version?: string
+}
+
+export type MagpieModel = {
+  id: string
+  /** The id a session runs: a 1M Claude model carries `[1m]`. */
+  runtimeId: string
+  displayName: string
+  provider: string
+  providerName?: string
+  isGroup: boolean
+  contextWindow?: number
+  maxOutputTokens?: number
+  reasoningEfforts: string[]
+  images?: boolean
+}
+
+export type MagpieState = {
+  status: MagpieStatus
+  /** Null while Magpie is not running or did not answer. */
+  models: MagpieModel[] | null
+}
+
+export type OpenMagpieResult = { ok: boolean; unsupported?: boolean }

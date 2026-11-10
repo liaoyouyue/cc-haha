@@ -317,10 +317,27 @@ describe('providerStore runtime refresh', () => {
     })
 
     const { useProviderStore } = await import('./providerStore')
+    useProviderStore.setState({ providers: [makeProvider()], activeId: provider.id })
     await useProviderStore.getState().updateProvider(provider.id, { models: provider.models })
 
     expect(settingsSetModelMock).toHaveBeenCalledWith('model-flash')
     expect(settingsFetchAllMock).toHaveBeenCalled()
+  })
+
+  it.each(['name', 'other slot'])('keeps the picker model when saving %s with an unchanged main mapping', async (change) => {
+    const previous = makeProvider()
+    const provider = change === 'name'
+      ? { ...previous, name: 'Renamed provider' }
+      : { ...previous, models: { ...previous.models, haiku: 'new-small' } }
+    providersApiMock.update.mockResolvedValue({ provider })
+    providersApiMock.list.mockResolvedValue({ providers: [provider], activeId: provider.id })
+    const { useProviderStore } = await import('./providerStore')
+    useProviderStore.setState({ providers: [previous], activeId: previous.id })
+
+    await useProviderStore.getState().updateProvider(provider.id, { name: provider.name, models: provider.models })
+
+    expect(settingsSetModelMock).not.toHaveBeenCalled()
+    expect(settingsFetchAllMock).not.toHaveBeenCalled()
   })
 })
 
@@ -380,6 +397,52 @@ describe('providerStore reorderProviders', () => {
     expect(providersApiMock.reorder).toHaveBeenCalledWith(reordered)
     expect(useProviderStore.getState().providerOrder).toEqual(reordered)
     expect(useProviderStore.getState().providers.map((p) => p.id)).toEqual(['b', 'a'])
+  })
+
+  it('keeps the dragged order and active provider after settings refetches the list', async () => {
+    const a = makeProvider({ id: 'a', name: 'A' })
+    const b = makeProvider({ id: 'b', name: 'B' })
+    const draggedOrder = ['openai-official', 'b', 'claude-official', 'a', 'grok-official', 'deepseek-account']
+    providersApiMock.reorder.mockResolvedValue({ providers: [b, a], providerOrder: draggedOrder })
+    providersApiMock.list.mockResolvedValue({ providers: [b, a], activeId: a.id, providerOrder: draggedOrder })
+
+    const { useProviderStore } = await import('./providerStore')
+    useProviderStore.setState({
+      providers: [a, b],
+      providerOrder: ['a', 'b', 'claude-official', 'openai-official', 'grok-official', 'deepseek-account'],
+      activeId: a.id,
+    })
+
+    await useProviderStore.getState().reorderProviders(draggedOrder)
+    expect(providersApiMock.reorder).toHaveBeenCalledWith(draggedOrder)
+    expect(useProviderStore.getState().activeId).toBe(a.id)
+    // Closing and reopening Settings mounts the page and calls fetchProviders again.
+    await useProviderStore.getState().fetchProviders()
+
+    expect(useProviderStore.getState().providerOrder).toEqual(draggedOrder)
+    expect(useProviderStore.getState().providers.map((p) => p.id)).toEqual(['b', 'a'])
+    expect(useProviderStore.getState().activeId).toBe(a.id)
+  })
+
+  it('falls back to saved providers plus built-ins when an older server omits providerOrder', async () => {
+    const a = makeProvider({ id: 'a', name: 'A' })
+    const b = makeProvider({ id: 'b', name: 'B' })
+    providersApiMock.list.mockResolvedValue({ providers: [b, a], activeId: a.id })
+
+    const { useProviderStore } = await import('./providerStore')
+    useProviderStore.setState({
+      providers: [],
+      providerOrder: ['openai-official', 'claude-official', 'grok-official', 'deepseek-account'],
+      activeId: null,
+    })
+
+    await useProviderStore.getState().fetchProviders()
+
+    expect(useProviderStore.getState().providerOrder).toEqual([
+      'b', 'a', 'claude-official', 'openai-official', 'grok-official', 'deepseek-account',
+    ])
+    expect(useProviderStore.getState().providers.map((p) => p.id)).toEqual(['b', 'a'])
+    expect(useProviderStore.getState().activeId).toBe(a.id)
   })
 
   it('rolls back to the previous order when the request fails', async () => {

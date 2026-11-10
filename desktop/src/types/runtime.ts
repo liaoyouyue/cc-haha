@@ -1,8 +1,8 @@
-import type { ReasoningEffortLevel } from './settings'
+import type { SelectableEffortLevel } from './settings'
 
 export type RuntimeSelection = {
   providerId: string | null
   modelId: string
-  effortLevel?: ReasoningEffortLevel
+  effortLevel?: SelectableEffortLevel
   openAIFastMode?: boolean
 }

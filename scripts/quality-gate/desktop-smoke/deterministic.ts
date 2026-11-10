@@ -3,6 +3,8 @@ import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { runDesktopUiTeamPlanSmoke, TEAM_SMOKE_MODEL, TEAM_SMOKE_PROVIDER } from './team-plan'
+import { runDesktopUiAgentProviderSmoke } from './agent-provider'
+import { runDesktopUiSessionIsolationSmoke, seedDesktopUiDuplicateHistory } from './session-isolation'
 import { buildMockToolPrompt } from '../agent-flow/scenarios'
 import { applyUserStateGuard, createQualityGateSandbox } from '../sandbox'
 import type { LaneResult } from '../types'
@@ -201,6 +203,7 @@ export async function executeDeterministicDesktopSmoke(
     },
   })
   seedDesktopUiSmokeProvider(sandbox.configDir)
+  const duplicateHistory = seedDesktopUiDuplicateHistory(sandbox.configDir, projectDir)
 
   const server = Bun.spawn(['bun', 'run', 'src/server/index.ts', '--host', '127.0.0.1', '--port', String(serverPort)], {
     cwd: rootDir,
@@ -253,6 +256,11 @@ export async function executeDeterministicDesktopSmoke(
     await browserStep(['open', appUrl])
     await browserStep(['eval', buildDesktopUiSmokeBootstrap(session.sessionId)], { timeoutMs: 15_000 })
     await browserStep(['reload'])
+    await browserStep(['wait', DESKTOP_SMOKE_COMPOSER_SELECTOR])
+    await runDesktopUiAgentProviderSmoke({ baseUrl, projectDir, artifactDir, browserStep })
+    // Restore the isolated session tab after exercising Settings with real clicks.
+    await browserStep(['eval', buildDesktopUiSmokeBootstrap(session.sessionId)])
+    await browserStep(['reload'])
     // The composer is a ProseMirror contenteditable (MentionComposer), not a
     // <textarea> — `[data-composer-editor]` is the attribute the editor sets on
     // its editable node and the same hook composerTestUtils drives.
@@ -301,6 +309,7 @@ export async function executeDeterministicDesktopSmoke(
     await browserStep(['screenshot', join(artifactDir, 'final.png')], { allowFailure: true })
 
     await runDesktopUiTeamPlanSmoke({ configDir: sandbox.configDir, sessionId: session.sessionId, projectDir, baseUrl, artifactDir, auditPath: join(workRoot, 'team-worker-audit.jsonl'), browserStep })
+    await runDesktopUiSessionIsolationSmoke({ fixture: duplicateHistory, artifactDir, browserStep })
 
     return applyUserStateGuard({
       id: resultId,

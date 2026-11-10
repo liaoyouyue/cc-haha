@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { seedDesktopUiTeamPlan } from './team-plan'
+import { AGENT_PROVIDER_SMOKE_OVERRIDE_SELECTOR, AGENT_PROVIDER_SMOKE_PROVIDER_SELECTOR } from './agent-provider'
+import { seedDesktopUiDuplicateHistory, SESSION_ISOLATION_ERROR, SESSION_ISOLATION_TITLE } from './session-isolation'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -15,6 +17,21 @@ import {
 } from './deterministic'
 
 describe('deterministic desktop UI smoke setup', () => {
+  test('runs agent provider changes through the actual settings controls and verifies their saved result', () => {
+    const lane = readFileSync('scripts/quality-gate/desktop-smoke/deterministic.ts', 'utf8')
+    const scenario = readFileSync('scripts/quality-gate/desktop-smoke/agent-provider.ts', 'utf8')
+    const manager = readFileSync('desktop/src/components/settings/AgentManager.tsx', 'utf8')
+    const english = readFileSync('desktop/src/i18n/locales/en.ts', 'utf8')
+    expect(lane).toContain('runDesktopUiAgentProviderSmoke({ baseUrl, projectDir, artifactDir, browserStep })')
+    expect(english).toContain("'settings.agents.rowOverride': 'Adjust the model and effort for {name}'")
+    expect(manager).toContain("label={t('settings.agents.form.provider')}")
+    expect(AGENT_PROVIDER_SMOKE_OVERRIDE_SELECTOR).toBe('button[aria-label="Adjust the model and effort for Explore"]')
+    expect(AGENT_PROVIDER_SMOKE_PROVIDER_SELECTOR).toBe('select[aria-label="Provider"]')
+    expect(scenario).toContain("['select', AGENT_PROVIDER_SMOKE_PROVIDER_SELECTOR, TEAM_SMOKE_PROVIDER]")
+    expect(scenario).toContain('globalProviderUnchanged: true')
+    expect(scenario).not.toContain("method: 'PUT'")
+    expect(scenario).not.toContain('/activate')
+  })
   test('pins the locale so the approval button label is stable for every contributor', () => {
     const bootstrap = buildDesktopUiSmokeBootstrap('session-1')
 
@@ -95,6 +112,23 @@ describe('deterministic desktop UI smoke setup', () => {
       expect(JSON.parse(readFileSync(join(configDir, 'teams', plan.teamName, 'plan.json'), 'utf8'))).toEqual(plan)
     } finally {
       rmSync(configDir, { recursive: true, force: true })
+    }
+  })
+
+  test('seeds repeated transcript UUIDs without merging distinct equal error messages', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'desktop-history-isolation-'))
+    try {
+      const fixture = seedDesktopUiDuplicateHistory(join(directory, 'config'), join(directory, 'project'))
+      const bytes = readFileSync(fixture.path, 'utf8')
+      const entries = bytes.trim().split('\n').map(line => JSON.parse(line))
+      const errors = entries.filter(entry => entry.type === 'assistant')
+      expect(bytes).toBe(fixture.bytes)
+      expect(errors.map(entry => entry.uuid)).toEqual(['error-a', 'error-b', 'error-a', 'error-b'])
+      expect(errors.every(entry => entry.message.content[0].text === SESSION_ISOLATION_ERROR)).toBe(true)
+      expect(errors.every(entry => entry.sessionId === fixture.sessionId)).toBe(true)
+      expect(entries.at(-1).customTitle).toBe(SESSION_ISOLATION_TITLE)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
     }
   })
 

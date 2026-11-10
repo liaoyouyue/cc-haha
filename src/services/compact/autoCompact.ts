@@ -1,4 +1,5 @@
 import { feature } from 'bun:bundle'
+import { getProviderRuntimeEnvironment } from '../api/providerRuntimeContext.js'
 import { markPostCompaction } from 'src/bootstrap/state.js'
 import { getSdkBetas } from '../../bootstrap/state.js'
 import type { QuerySource } from '../../constants/querySource.js'
@@ -13,9 +14,10 @@ import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import { logError } from '../../utils/log.js'
 import { findLastCompactBoundaryIndex } from '../../utils/messages.js'
 import { getOpenAICodexContextWindowForModel } from '../../services/openaiAuth/models.js'
-import { roughTokenCountEstimation } from '../../services/tokenEstimation.js'
+import { roughContextTokenCountEstimation } from '../../services/tokenEstimation.js'
 import { getConfiguredOrBuiltInModelContextWindow } from '../../utils/model/modelContextWindows.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
+import { getToolSchemaCache } from '../../utils/toolSchemaCache.js'
 import {
   getTokenUsage,
   hasUsableContextUsage,
@@ -47,7 +49,7 @@ const MAX_SUMMARY_RESERVE_CONTEXT_FRACTION = 0.25
 export function getEffectiveContextWindowSize(model: string): number {
   let contextWindow = getContextWindowForModel(model, getSdkBetas())
 
-  const autoCompactWindow = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
+  const autoCompactWindow = getProviderRuntimeEnvironment().CLAUDE_CODE_AUTO_COMPACT_WINDOW
   if (autoCompactWindow) {
     const parsed = parseInt(autoCompactWindow, 10)
     if (!isNaN(parsed) && parsed > 0) {
@@ -269,11 +271,21 @@ export function isAutoCompactEnabled(): boolean {
 export function estimateFallbackFixedContextTokens(
   cacheSafeParams: CacheSafeParams,
 ): number {
-  const tools = cacheSafeParams.toolUseContext.options.tools.map(tool => ({
-    name: tool.name,
-    input_schema: tool.inputJSONSchema ?? zodToJsonSchema(tool.inputSchema),
-  }))
-  return roughTokenCountEstimation(jsonStringify({
+  // Tool descriptions come from async tool.prompt() and are usually the
+  // largest part of the prefix. Once a request has been sent they sit in the
+  // session tool schema cache (same keys as toolToAPISchema); tools not yet
+  // rendered fall back to name + input_schema.
+  const schemaCache = getToolSchemaCache()
+  const tools = cacheSafeParams.toolUseContext.options.tools.map(tool => {
+    const cacheKey = tool.inputJSONSchema
+      ? `${tool.name}:${jsonStringify(tool.inputJSONSchema)}`
+      : tool.name
+    return schemaCache.get(cacheKey) ?? {
+      name: tool.name,
+      input_schema: tool.inputJSONSchema ?? zodToJsonSchema(tool.inputSchema),
+    }
+  })
+  return roughContextTokenCountEstimation(jsonStringify({
     systemPrompt: cacheSafeParams.systemPrompt,
     systemContext: cacheSafeParams.systemContext,
     userContext: cacheSafeParams.userContext,

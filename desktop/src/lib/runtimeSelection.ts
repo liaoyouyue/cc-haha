@@ -16,13 +16,15 @@ import {
   DEEPSEEK_ACCOUNT_PROVIDER_ID,
 } from '../constants/deepseekAccountProvider'
 import {
+  getModelReasoningCapabilityOverride,
   isModelReasoningEffort,
   normalizeModelReasoningEffort,
   resolveModelReasoningProfile,
   type ModelReasoningApiFormat,
   type ModelReasoningProviderKind,
 } from '../../../src/shared/modelReasoning'
-import { getBundledPresetReasoningProviderKind } from '../config/providerPresets'
+import { BUNDLED_PROVIDER_PRESETS, getBundledPresetReasoningProviderKind } from '../config/providerPresets'
+import type { ReasoningEffortLevel } from '../types/settings'
 
 const PROVIDER_MODEL_SLOTS = ['main', 'haiku', 'sonnet', 'opus', 'fable'] as const
 
@@ -40,6 +42,40 @@ export function resolveProviderSlotModelId(
   if (!modelId || enabled === undefined) return modelId
   const baseModelId = baseProviderModelId(modelId)
   return enabled ? `${baseModelId}[1m]` : baseModelId
+}
+
+const PROVIDER_PRESET_DEFAULT_ENVS = new Map(
+  BUNDLED_PROVIDER_PRESETS.map(preset => [preset.id, preset.defaultEnv ?? {}]),
+)
+
+export function getProviderModelCapabilityOverride(
+  provider: SavedProvider,
+  modelId: string,
+): string | undefined {
+  return getModelReasoningCapabilityOverride(
+    modelId,
+    {
+      ...provider.models,
+      haiku: resolveProviderSlotModelId(provider, 'haiku'),
+      sonnet: resolveProviderSlotModelId(provider, 'sonnet'),
+      opus: resolveProviderSlotModelId(provider, 'opus'),
+    },
+    PROVIDER_PRESET_DEFAULT_ENVS.get(provider.presetId) ?? {},
+  )
+}
+
+/** Effort levels a saved provider's model accepts; undefined when unknown. */
+export function getProviderModelReasoningEfforts(
+  provider: SavedProvider,
+  modelId: string,
+): ReasoningEffortLevel[] | undefined {
+  const efforts = resolveModelReasoningProfile(
+    modelId,
+    provider.apiFormat,
+    getProviderModelCapabilityOverride(provider, modelId),
+    getBundledPresetReasoningProviderKind(provider.presetId),
+  )?.supportedReasoningEfforts
+  return efforts ? [...efforts] : undefined
 }
 
 export function resolveProviderRuntimeModelId(provider: SavedProvider, modelId: string): string {
@@ -166,6 +202,9 @@ export function normalizeRuntimeSelection(
     // the bundled desktop list. Keep their effort untouched and let the server
     // validate it against the live catalog instead of silently dropping it.
     if (!model) return selection
+    // 'auto' is a harness-level synthetic value — pass it through untouched;
+    // the server resolves it to a wire level per request.
+    if (selection.effortLevel === 'auto') return selection
     const effortLevel = model.supportedReasoningEfforts?.includes(selection.effortLevel)
       ? selection.effortLevel
       : model.defaultReasoningEffort ?? model.supportedReasoningEfforts?.[0]
@@ -173,6 +212,9 @@ export function normalizeRuntimeSelection(
     const { effortLevel: _unsupportedEffort, ...runtime } = selection
     return effortLevel ? { ...runtime, effortLevel } : runtime
   }
+
+  // 'auto' passes through for every provider: the server expands it per request.
+  if (selection.effortLevel === 'auto') return selection
 
   const requestedEffort = isModelReasoningEffort(selection.effortLevel)
     ? selection.effortLevel

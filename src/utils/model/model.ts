@@ -1,3 +1,4 @@
+import { getProviderRuntimeContext, getProviderRuntimeEnvironment } from '../../services/api/providerRuntimeContext.js'
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 /**
  * Ensure that any model codenames introduced here are also added to
@@ -41,13 +42,14 @@ import {
   resolveOpenAICodexModel,
 } from '../../services/openaiAuth/models.js'
 import { capitalize } from '../stringUtils.js'
+import { getProviderRouteForModel } from './providerEnvScope.js'
 
 export type ModelShortName = string
 export type ModelName = string
 export type ModelSetting = ModelName | ModelAlias | null
 
 export function getSmallFastModel(): ModelName {
-  return process.env.ANTHROPIC_SMALL_FAST_MODEL || getDefaultHaikuModel()
+  return getProviderRuntimeEnvironment().ANTHROPIC_SMALL_FAST_MODEL || getDefaultHaikuModel()
 }
 
 export function isNonCustomOpusModel(model: ModelName): boolean {
@@ -82,7 +84,7 @@ export function getUserSpecifiedModelSetting(): ModelSetting | undefined {
     specifiedModel = modelOverride
   } else {
     const settings = getSettings_DEPRECATED() || {}
-    specifiedModel = process.env.ANTHROPIC_MODEL || settings.model || undefined
+    specifiedModel = getProviderRuntimeEnvironment().ANTHROPIC_MODEL || settings.model || undefined
   }
 
   // Ignore the user-specified model if it's not in the availableModels allowlist.
@@ -122,25 +124,29 @@ function shouldUseThirdPartyAnthropicModelDefaults(): boolean {
 }
 
 export function getDefaultFableModel(): ModelName {
+  const scoped = getProviderRuntimeContext()?.env.ANTHROPIC_DEFAULT_FABLE_MODEL
+  if (scoped) return scoped
   if (isOpenAIAuthActive()) {
     return resolveOpenAICodexModel('fable')
   }
-  if (process.env.ANTHROPIC_DEFAULT_FABLE_MODEL) {
-    return process.env.ANTHROPIC_DEFAULT_FABLE_MODEL
+  if (getProviderRuntimeEnvironment().ANTHROPIC_DEFAULT_FABLE_MODEL) {
+    return getProviderRuntimeEnvironment().ANTHROPIC_DEFAULT_FABLE_MODEL
   }
   if (shouldUseThirdPartyAnthropicModelDefaults()) {
     return getDefaultOpusModel()
   }
-  return getModelStrings().fable5
+  return getModelStrings().fable52
 }
 
 // @[MODEL LAUNCH]: Update the default Opus model (3P providers may lag so keep defaults unchanged).
 export function getDefaultOpusModel(): ModelName {
+  const scoped = getProviderRuntimeContext()?.env.ANTHROPIC_DEFAULT_OPUS_MODEL
+  if (scoped) return scoped
   if (isOpenAIAuthActive()) {
     return resolveOpenAICodexModel('opus')
   }
-  if (process.env.ANTHROPIC_DEFAULT_OPUS_MODEL) {
-    return process.env.ANTHROPIC_DEFAULT_OPUS_MODEL
+  if (getProviderRuntimeEnvironment().ANTHROPIC_DEFAULT_OPUS_MODEL) {
+    return getProviderRuntimeEnvironment().ANTHROPIC_DEFAULT_OPUS_MODEL
   }
   // 3P providers (Bedrock, Vertex, Foundry) — kept as a separate branch
   // even when values match, since 3P availability lags firstParty and
@@ -153,11 +159,13 @@ export function getDefaultOpusModel(): ModelName {
 
 // @[MODEL LAUNCH]: Update the default Sonnet model (3P providers may lag so keep defaults unchanged).
 export function getDefaultSonnetModel(): ModelName {
+  const scoped = getProviderRuntimeContext()?.env.ANTHROPIC_DEFAULT_SONNET_MODEL
+  if (scoped) return scoped
   if (isOpenAIAuthActive()) {
     return resolveOpenAICodexModel('sonnet')
   }
-  if (process.env.ANTHROPIC_DEFAULT_SONNET_MODEL) {
-    return process.env.ANTHROPIC_DEFAULT_SONNET_MODEL
+  if (getProviderRuntimeEnvironment().ANTHROPIC_DEFAULT_SONNET_MODEL) {
+    return getProviderRuntimeEnvironment().ANTHROPIC_DEFAULT_SONNET_MODEL
   }
   // Default to Sonnet 4.5 for 3P since they may not have 4.6 yet
   if (shouldUseThirdPartyAnthropicModelDefaults()) {
@@ -168,11 +176,13 @@ export function getDefaultSonnetModel(): ModelName {
 
 // @[MODEL LAUNCH]: Update the default Haiku model (3P providers may lag so keep defaults unchanged).
 export function getDefaultHaikuModel(): ModelName {
+  const scoped = getProviderRuntimeContext()?.env.ANTHROPIC_DEFAULT_HAIKU_MODEL
+  if (scoped) return scoped
   if (isOpenAIAuthActive()) {
     return resolveOpenAICodexModel('haiku')
   }
-  if (process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL) {
-    return process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL
+  if (getProviderRuntimeEnvironment().ANTHROPIC_DEFAULT_HAIKU_MODEL) {
+    return getProviderRuntimeEnvironment().ANTHROPIC_DEFAULT_HAIKU_MODEL
   }
 
   // Default to Haiku 4.5 for 3P since they may not have 5.5 yet
@@ -193,6 +203,10 @@ export function getRuntimeMainLoopModel(params: {
   exceeds200kTokens?: boolean
 }): ModelName {
   const { permissionMode, mainLoopModel, exceeds200kTokens = false } = params
+
+  // An Agent pinned to a saved provider keeps its model in plan mode too: the
+  // plan-mode swaps below name the session provider's slots.
+  if (getProviderRouteForModel(mainLoopModel)) return mainLoopModel
 
   // opusplan uses Opus in plan mode without [1m] suffix.
   if (
@@ -275,14 +289,19 @@ export function getDefaultMainLoopModel(): ModelName {
 export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
   name = name.toLowerCase()
   // Special cases for Claude 4+ models to differentiate versions
-  // Order matters: check more specific versions first (4-5 before 4)
+  // Order matters: check more specific versions first (4-5 before 4).
+  // OpenRouter uses dotted 5.5 IDs; canonicalize only the internal identity,
+  // leaving the namespaced outbound model ID untouched.
+  if (name.includes('claude-fable-5-2')) {
+    return 'claude-fable-5-2'
+  }
   if (name.includes('claude-fable-5-1')) {
     return 'claude-fable-5-1'
   }
   if (name.includes('claude-fable-5')) {
     return 'claude-fable-5'
   }
-  if (name.includes('claude-opus-5-5')) {
+  if (name.includes('claude-opus-5-5') || name.includes('anthropic/claude-opus-5.5')) {
     return 'claude-opus-5-5'
   }
   if (name.includes('claude-opus-5')) {
@@ -303,7 +322,7 @@ export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
   if (name.includes('claude-opus-4')) {
     return 'claude-opus-4'
   }
-  if (name.includes('claude-sonnet-5-5')) {
+  if (name.includes('claude-sonnet-5-5') || name.includes('anthropic/claude-sonnet-5.5')) {
     return 'claude-sonnet-5-5'
   }
   if (name.includes('claude-sonnet-5')) {
@@ -318,7 +337,7 @@ export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
   if (name.includes('claude-sonnet-4')) {
     return 'claude-sonnet-4'
   }
-  if (name.includes('claude-haiku-5-5')) {
+  if (name.includes('claude-haiku-5-5') || name.includes('anthropic/claude-haiku-5.5')) {
     return 'claude-haiku-5-5'
   }
   if (name.includes('claude-haiku-4-5')) {
@@ -445,6 +464,10 @@ export function getPublicModelDisplayName(model: ModelName): string | null {
     return openAIModelName
   }
   switch (model) {
+    case getModelStrings().fable52:
+      return 'Fable 5.2'
+    case getModelStrings().fable52 + '[1m]':
+      return 'Fable 5.2 (1M context)'
     case getModelStrings().fable51:
       return 'Fable 5.1'
     case getModelStrings().fable51 + '[1m]':
@@ -681,7 +704,7 @@ function isLegacyOpusFirstParty(model: string): boolean {
  * Opt-out for the legacy Opus 4.0/4.1 → current Opus remap.
  */
 export function isLegacyModelRemapEnabled(): boolean {
-  return !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP)
+  return !isEnvTruthy(getProviderRuntimeEnvironment().CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP)
 }
 
 export function modelDisplayString(model: ModelSetting): string {
@@ -711,6 +734,9 @@ export function getMarketingNameForModel(modelId: string): string | undefined {
   const has1m = modelId.toLowerCase().includes('[1m]')
   const canonical = getCanonicalName(modelId)
 
+  if (canonical.includes('claude-fable-5-2')) {
+    return has1m ? 'Fable 5.2 (with 1M context)' : 'Fable 5.2'
+  }
   if (canonical.includes('claude-fable-5-1')) {
     return has1m ? 'Fable 5.1 (with 1M context)' : 'Fable 5.1'
   }

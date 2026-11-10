@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test'
+import { isolateModelDefaultsEnv } from '../../testUtils/modelEnv.js'
 import { sanitizeModelName } from '../commitAttribution.js'
+
+isolateModelDefaultsEnv()
 import { getContextWindowForModel, getModelMaxOutputTokens } from '../context.js'
 import {
   getDefaultEffortForModel,

@@ -8,7 +8,10 @@ import { mcpApi } from '../api/mcp'
 import { useUIStore } from '../stores/uiStore'
 import { useMcpStore } from '../stores/mcpStore'
 import { useSessionStore } from '../stores/sessionStore'
+import { SETTINGS_TAB_ID, useTabStore } from '../stores/tabStore'
 import { useSettingsStore } from '../stores/settingsStore'
+import { invalidateRecentProjectsCache } from '../lib/recentProjectsCache'
+import type { McpReconnectResult, McpSessionSync } from '../types/mcp'
 
 vi.mock('../api/sessions', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/sessions')>()
@@ -28,6 +31,10 @@ vi.mock('../api/mcp', async (importOriginal) => {
     mcpApi: {
       ...actual.mcpApi,
       projectPaths: vi.fn(),
+      projectSharing: vi.fn(),
+      create: vi.fn(),
+      update: vi.fn(),
+      remove: vi.fn(),
     },
   }
 })
@@ -42,9 +49,30 @@ async function renderLoadedMcpSettings() {
   return result
 }
 
+function makeSharedServer(projectPath: string) {
+  return {
+    name: 'shared-tools',
+    scope: 'project',
+    transport: 'stdio',
+    enabled: true,
+    status: 'connected' as const,
+    statusLabel: 'Connected',
+    configLocation: `${projectPath}/.mcp.json`,
+    summary: 'npx shared-tools',
+    canEdit: true,
+    canRemove: true,
+    canReconnect: true,
+    canToggle: true,
+    projectPath,
+    config: { type: 'stdio' as const, command: 'npx', args: ['shared-tools'], env: {} },
+  }
+}
+
 describe('McpSettings', () => {
   beforeEach(() => {
     useUIStore.setState({ addToast: originalAddToast, toasts: [] })
+    invalidateRecentProjectsCache()
+    useTabStore.setState({ tabs: [], activeTabId: null, lastSessionTabId: null })
     vi.mocked(sessionsApi.getRecentProjects).mockResolvedValue({
       projects: [{
         projectPath: '/workspace/selected-project',
@@ -60,6 +88,13 @@ describe('McpSettings', () => {
     vi.mocked(mcpApi.projectPaths).mockResolvedValue({
       projectPaths: ['/workspace/config-project'],
     })
+    vi.mocked(mcpApi.projectSharing).mockImplementation(async (_name, paths, sourceCwd) => ({
+      projects: paths.map(projectPath => ({ projectPath, revision: null, selected: projectPath === sourceCwd })),
+    }))
+    vi.mocked(mcpApi.create).mockReset()
+    vi.mocked(mcpApi.update).mockReset()
+    vi.mocked(mcpApi.remove).mockReset()
+    vi.mocked(mcpApi.remove).mockResolvedValue({ ok: true })
     useSettingsStore.setState({ locale: 'en' })
     useSessionStore.setState({
       sessions: [
@@ -502,18 +537,56 @@ describe('McpSettings', () => {
 
     await renderLoadedMcpSettings()
 
+    expect(screen.getByText('maya')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Show projects' })).not.toBeInTheDocument()
+    expect(screen.queryByText('1 projects')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Open maya' })).toBeInTheDocument()
     expect(screen.getByText('Configured')).toBeInTheDocument()
     expect(screen.getByText('Not loaded in the current chat. Open a chat in this project to use it.')).toBeInTheDocument()
     expect(screen.queryByText('Connected')).not.toBeInTheDocument()
     expect(screen.getByText('Connection checks for current project').parentElement?.parentElement).toHaveTextContent('0')
     expect(refreshServerStatus).not.toHaveBeenCalled()
+  })
 
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Open maya' }))
+  it('renders a single project copy without expansion controls', async () => {
+    useMcpStore.setState({ servers: [makeSharedServer('/workspace/project-a')] })
+
+    await renderLoadedMcpSettings()
+
+    expect(screen.queryByRole('button', { name: 'Show projects' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Hide projects' })).not.toBeInTheDocument()
+    expect(screen.queryByText('1 projects')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Open shared-tools' })).toBeInTheDocument()
+    expect(screen.getByRole('switch')).toBeInTheDocument()
+    expect(screen.getByText('/workspace/project-a')).toBeInTheDocument()
+  })
+
+  it('shows a disabled project copy as disabled rather than configured', async () => {
+    useMcpStore.setState({
+      servers: [{ ...makeSharedServer('/workspace/project-a'), enabled: false }],
     })
 
-    expect(screen.getByText('Not loaded in the current chat. Open a chat in this project to use it.')).toBeInTheDocument()
-    expect(screen.queryByText('Connected')).not.toBeInTheDocument()
+    await renderLoadedMcpSettings()
+
+    expect(screen.getByText('Disabled')).toBeInTheDocument()
+    expect(screen.queryByText('Configured')).not.toBeInTheDocument()
+    expect(screen.queryByText(
+      'Not loaded in the current chat. Open a chat in this project to use it.',
+    )).not.toBeInTheDocument()
+    expect(screen.getByRole('switch')).not.toBeChecked()
+  })
+
+  it('shows the disabled count on a multi-project service group', async () => {
+    useMcpStore.setState({
+      servers: [
+        makeSharedServer('/workspace/project-a'),
+        { ...makeSharedServer('/workspace/project-b'), enabled: false },
+      ],
+    })
+
+    await renderLoadedMcpSettings()
+
+    expect(screen.getByText('1 disabled')).toBeInTheDocument()
   })
 
   it('opens the delete confirmation modal from the edit view and deletes with the active cwd', async () => {
@@ -638,20 +711,20 @@ describe('McpSettings', () => {
   ] as const)('reports the runtime receipt after a saved toggle: %j', async (sessionSync, type, message) => {
     const server = {
       name: 'echo', scope: 'project', transport: 'stdio', enabled: true,
-      status: 'connected', statusLabel: 'Connected', configLocation: '/tmp/config', summary: 'echo',
+      status: 'connected', statusLabel: 'Connected', configLocation: '/workspace/project/.mcp.json', summary: 'echo',
       canEdit: true, canRemove: true, canReconnect: true, canToggle: true,
+      projectPath: '/workspace/project',
       config: { type: 'stdio', command: 'echo', args: [], env: {} },
     } as const
     const addToast = vi.fn()
-    useUIStore.setState({ addToast })
-    useMcpStore.setState({
-      servers: [server],
-      toggleServer: vi.fn().mockResolvedValue({
-        server: { ...server, enabled: false, status: 'disabled' }, sessionSync,
-      }),
+    const toggleServer = vi.fn().mockResolvedValue({
+      server: { ...server, enabled: false, status: 'disabled' }, sessionSync,
     })
+    useUIStore.setState({ addToast })
+    useMcpStore.setState({ servers: [server], toggleServer })
     await renderLoadedMcpSettings()
     await act(async () => { fireEvent.click(screen.getByRole('switch')) })
+    expect(toggleServer).toHaveBeenCalledWith(server, '/workspace/project', 'session-1')
     expect(addToast).toHaveBeenCalledWith({ type, message: expect.stringContaining(message) })
     if (type === 'warning') {
       expect(addToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }))
@@ -661,8 +734,9 @@ describe('McpSettings', () => {
   it('warns when enabling saved settings could not connect the server', async () => {
     const server = {
       name: 'echo', scope: 'project', transport: 'stdio', enabled: false,
-      status: 'disabled', statusLabel: 'Disabled', configLocation: '/tmp/config', summary: 'echo',
+      status: 'disabled', statusLabel: 'Disabled', configLocation: '/workspace/project/.mcp.json', summary: 'echo',
       canEdit: true, canRemove: true, canReconnect: true, canToggle: true,
+      projectPath: '/workspace/project',
       config: { type: 'stdio', command: 'echo', args: [], env: {} },
     } as const
     const addToast = vi.fn()
@@ -677,6 +751,50 @@ describe('McpSettings', () => {
     await renderLoadedMcpSettings()
     await act(async () => { fireEvent.click(screen.getByRole('switch')) })
     expect(addToast).toHaveBeenCalledWith({ type: 'warning', message: 'Command is unavailable' })
+  })
+
+  it('sends toggle synchronization to the last active chat tab', async () => {
+    const server = makeSharedServer('/workspace/project-b')
+    const toggleServer = vi.fn().mockResolvedValue({
+      server: { ...server, enabled: false },
+      sessionSync: { applied: true },
+    })
+    const makeSession = (id: string, projectPath: string) => ({
+      id,
+      title: id,
+      createdAt: '',
+      modifiedAt: '',
+      messageCount: 0,
+      projectPath,
+      workDir: projectPath,
+      workDirExists: true,
+    })
+    useSessionStore.setState({
+      sessions: [
+        makeSession('session-a', '/workspace/project-a'),
+        makeSession('session-b', '/workspace/project-b'),
+      ],
+      activeSessionId: 'session-a',
+    })
+    useTabStore.setState({
+      tabs: [
+        { sessionId: 'session-a', title: 'A', type: 'session', status: 'idle' },
+        { sessionId: 'session-b', title: 'B', type: 'session', status: 'idle' },
+        { sessionId: SETTINGS_TAB_ID, title: 'Settings', type: 'settings', status: 'idle' },
+      ],
+      activeTabId: SETTINGS_TAB_ID,
+      lastSessionTabId: 'session-b',
+    })
+    useMcpStore.setState({ servers: [server], toggleServer })
+
+    await renderLoadedMcpSettings()
+    await act(async () => { fireEvent.click(screen.getByRole('switch')) })
+
+    expect(toggleServer).toHaveBeenCalledWith(
+      server,
+      '/workspace/project-b',
+      'session-b',
+    )
   })
 
   it('clears the selected MCP server when returning to the list', async () => {
@@ -779,7 +897,7 @@ describe('McpSettings', () => {
     )
   })
 
-  it('updates project MCP servers using the explicitly selected target project', async () => {
+  it('moves local MCP servers to the explicitly selected shared project', async () => {
     vi.mocked(sessionsApi.getRecentProjects).mockResolvedValue({
       projects: [{
         projectPath: '/workspace/moved-project',
@@ -810,7 +928,7 @@ describe('McpSettings', () => {
     })
     const server = {
       name: 'shared-tools',
-      scope: 'project',
+      scope: 'local',
       transport: 'stdio',
       enabled: true,
       status: 'connected',
@@ -835,6 +953,8 @@ describe('McpSettings', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Open shared-tools' }))
     })
+
+    fireEvent.click(screen.getByRole('button', { name: /^Project Shared/ }))
 
     expect(screen.getByText('project')).toBeInTheDocument()
 
@@ -865,8 +985,267 @@ describe('McpSettings', () => {
     )
   })
 
+  it('keeps local scope single-select', async () => {
+    const createServer = vi.fn()
+    useMcpStore.setState({ createServer })
+
+    await renderLoadedMcpSettings()
+    fireEvent.click(screen.getByRole('button', { name: /add server/i }))
+    fireEvent.change(screen.getByLabelText(/Name/), { target: { value: 'local-tools' } })
+    fireEvent.change(screen.getByLabelText(/Command to launch/), { target: { value: 'npx' } })
+    fireEvent.change(screen.getByPlaceholderText('chrome-devtools-mcp@latest'), {
+      target: { value: 'local-tools' },
+    })
+
+    expect(screen.getByText('Select a project...')).toBeInTheDocument()
+    expect(screen.queryByText('Select projects...')).not.toBeInTheDocument()
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Select a project/ }))
+    })
+    const listbox = await screen.findByRole('listbox')
+    expect(listbox).not.toHaveAttribute('aria-multiselectable')
+
+    fireEvent.click(await screen.findByRole('option', { name: /org\/selected-project/ }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    })
+
+    expect(createServer).toHaveBeenCalledWith(
+      'local-tools',
+      {
+        scope: 'local',
+        config: { type: 'stdio', command: 'npx', args: ['local-tools'], env: {} },
+      },
+      '/workspace/selected-project',
+    )
+  })
+
+  it('does not require a project for user scope', async () => {
+    await renderLoadedMcpSettings()
+    fireEvent.click(screen.getByRole('button', { name: /add server/i }))
+    fireEvent.change(screen.getByLabelText(/Name/), { target: { value: 'global-tools' } })
+    fireEvent.click(screen.getByRole('button', { name: /^User/ }))
+    fireEvent.change(screen.getByLabelText(/Command to launch/), { target: { value: 'npx' } })
+    fireEvent.change(screen.getByPlaceholderText('chrome-devtools-mcp@latest'), {
+      target: { value: 'global-tools' },
+    })
+
+    expect(screen.queryByText('Select a project...')).not.toBeInTheDocument()
+    expect(screen.queryByText('Select projects...')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
+  })
+
+  it('removes one project copy of a shared MCP server', async () => {
+    const projectA = makeSharedServer('/workspace/project-a')
+    const deleteServer = vi.fn().mockResolvedValue(undefined)
+    useMcpStore.setState({
+      servers: [projectA, makeSharedServer('/workspace/project-b')],
+      deleteServer,
+    })
+
+    await renderLoadedMcpSettings()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show projects' }))
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', {
+        name: 'Remove shared-tools from /workspace/project-a',
+      }))
+    })
+
+    expect(screen.getByText(
+      'Remove MCP server "shared-tools" from /workspace/project-a? This action cannot be undone.',
+    )).toBeInTheDocument()
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    })
+
+    expect(deleteServer).toHaveBeenCalledWith(projectA, '/workspace/project-a')
+  })
+
+  it('marks config-diverged project copies and disables group edit', async () => {
+    const projectA = makeSharedServer('/workspace/project-a')
+    const projectB = {
+      ...makeSharedServer('/workspace/project-b'),
+      config: { type: 'stdio' as const, command: 'npx', args: ['other-tools'], env: {} },
+    }
+    useMcpStore.setState({
+      servers: [projectA, projectB],
+      selectServer: (server) => useMcpStore.setState({ selectedServer: server }),
+    })
+
+    await renderLoadedMcpSettings()
+
+    expect(screen.getByText('Config mismatch')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Edit shared service shared-tools' }))
+      .not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show projects' }))
+
+    expect(screen.getByRole('button', {
+      name: 'Edit shared-tools in /workspace/project-a',
+    })).toBeInTheDocument()
+    expect(screen.getByRole('button', {
+      name: 'Edit shared-tools in /workspace/project-b',
+    })).toBeInTheDocument()
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', {
+        name: 'Edit shared-tools in /workspace/project-a',
+      }))
+    })
+
+    expect(screen.queryByRole('heading', { name: 'Configure shared-tools MCP' }))
+      .not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/Name/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Project/ })).not.toBeInTheDocument()
+    expect(screen.queryByText('Target project')).not.toBeInTheDocument()
+    expect(screen.getByLabelText(/Command to launch/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save' })).toBeInTheDocument()
+  })
+
+  it('puts the active project first and marks it in the expanded group', async () => {
+    useMcpStore.setState({
+      servers: [
+        makeSharedServer('/workspace/other'),
+        makeSharedServer('/workspace/project'),
+      ],
+    })
+
+    await renderLoadedMcpSettings()
+    fireEvent.click(screen.getByRole('button', { name: 'Show projects' }))
+
+    expect(screen.getByText('Current project')).toBeInTheDocument()
+    expect(screen.getByRole('button', {
+      name: 'Edit shared-tools in /workspace/project',
+    })).toBeInTheDocument()
+    const paths = screen.getAllByText(/^\/workspace\//).map((element) => element.textContent)
+    expect(paths[0]).toBe('/workspace/project')
+  })
+
+  it('rebinds the current project when the active session changes', async () => {
+    useSessionStore.setState({
+      sessions: [
+        {
+          id: 'session-a',
+          title: 'Project A',
+          createdAt: '',
+          modifiedAt: '',
+          messageCount: 0,
+          projectPath: '/workspace/project-a',
+          workDir: '/workspace/project-a',
+          workDirExists: true,
+        },
+        {
+          id: 'session-b',
+          title: 'Project B',
+          createdAt: '',
+          modifiedAt: '',
+          messageCount: 0,
+          projectPath: '/workspace/project-b',
+          workDir: '/workspace/project-b',
+          workDirExists: true,
+        },
+      ],
+      activeSessionId: 'session-a',
+    })
+    useMcpStore.setState({
+      servers: [
+        makeSharedServer('/workspace/project-a'),
+        makeSharedServer('/workspace/project-b'),
+      ],
+    })
+
+    await renderLoadedMcpSettings()
+    fireEvent.click(screen.getByRole('button', { name: 'Show projects' }))
+
+    let paths = screen.getAllByText(/^\/workspace\//).map((element) => element.textContent)
+    expect(paths[0]).toBe('/workspace/project-a')
+
+    act(() => {
+      useSessionStore.setState({ activeSessionId: 'session-b' })
+    })
+
+    await waitFor(() => {
+      paths = screen.getAllByText(/^\/workspace\//).map((element) => element.textContent)
+      expect(paths[0]).toBe('/workspace/project-b')
+    })
+  })
+
+  it('prefers the last active chat tab over a stale active session', async () => {
+    const makeSession = (id: string, projectPath: string) => ({
+      id,
+      title: id,
+      createdAt: '',
+      modifiedAt: '',
+      messageCount: 0,
+      projectPath,
+      workDir: projectPath,
+      workDirExists: true,
+    })
+    useSessionStore.setState({
+      sessions: [
+        makeSession('session-a', '/workspace/project-a'),
+        makeSession('session-b', '/workspace/project-b'),
+      ],
+      activeSessionId: 'session-a',
+    })
+    useTabStore.setState({
+      tabs: [
+        { sessionId: 'session-a', title: 'A', type: 'session', status: 'idle' },
+        { sessionId: 'session-b', title: 'B', type: 'session', status: 'idle' },
+        { sessionId: SETTINGS_TAB_ID, title: 'Settings', type: 'settings', status: 'idle' },
+      ],
+      activeTabId: SETTINGS_TAB_ID,
+      lastSessionTabId: 'session-b',
+    })
+    useMcpStore.setState({
+      servers: [
+        makeSharedServer('/workspace/project-a'),
+        makeSharedServer('/workspace/project-b'),
+      ],
+    })
+
+    await renderLoadedMcpSettings()
+    fireEvent.click(screen.getByRole('button', { name: 'Show projects' }))
+
+    const paths = screen.getAllByText(/^\/workspace\//).map((element) => element.textContent)
+    expect(paths[0]).toBe('/workspace/project-b')
+  })
+
+  it('keeps the expanded service group open when returning from a project edit', async () => {
+    useMcpStore.setState({
+      servers: [
+        makeSharedServer('/workspace/project-a'),
+        makeSharedServer('/workspace/project-b'),
+      ],
+    })
+
+    await renderLoadedMcpSettings()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show projects' }))
+    expect(screen.getByText('/workspace/project-a')).toBeInTheDocument()
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', {
+        name: 'Edit shared-tools in /workspace/project-a',
+      }))
+    })
+    expect(screen.getByLabelText(/Command to launch/)).toBeInTheDocument()
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Back to servers' }))
+    })
+
+    expect(screen.getByText('/workspace/project-a')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Hide projects' })).toBeInTheDocument()
+  })
+
+
   it('shows reconnecting status immediately in the detail view', async () => {
-    let resolveReconnect: ((value: typeof server) => void) | null = null
+    let resolveReconnect: ((value: McpReconnectResult) => void) | null = null
     const server = {
       name: 'plugin:telegram:telegram',
       scope: 'dynamic',
@@ -883,7 +1262,7 @@ describe('McpSettings', () => {
       canToggle: true,
       config: { type: 'stdio' as const, command: 'bun', args: ['run', 'start'], env: {} },
     }
-    const reconnectServer = vi.fn().mockImplementation(() => new Promise<typeof server>((resolve) => {
+    const reconnectServer = vi.fn().mockImplementation(() => new Promise<McpReconnectResult>((resolve) => {
       resolveReconnect = resolve
     }))
 
@@ -903,15 +1282,40 @@ describe('McpSettings', () => {
     })
 
     expect(screen.getAllByText('Reconnecting...').length).toBeGreaterThan(0)
-    expect(reconnectServer).toHaveBeenCalledWith(server, '/workspace/project')
+    expect(reconnectServer).toHaveBeenCalledWith(server, '/workspace/project', 'session-1')
 
     await act(async () => {
       resolveReconnect?.({
-        ...server,
-        status: 'connected',
-        statusLabel: 'Connected',
-        statusDetail: undefined,
+        server: { ...server, status: 'connected', statusLabel: 'Connected', statusDetail: undefined },
+        sessionSync: { applied: true },
       })
     })
   })
+  it.each([
+    [{ applied: true }, 'success', 'Reconnected MCP server "late-server"'],
+    [{ applied: false, reason: 'failed', error: 'CLI reconnect failed' }, 'warning', 'Chat synchronization failed: CLI reconnect failed'],
+    [{ applied: false, reason: 'different_project' }, 'warning', 'The current chat uses a different project'],
+    [{ applied: false, reason: 'not_running' }, 'warning', 'The current chat is not running'],
+    [{ applied: false, reason: 'no_session' }, 'warning', 'No chat was selected'],
+    [{ applied: false, reason: 'lean_profile' }, 'warning', 'The current chat uses Lean mode'],
+    [undefined, 'warning', 'The current chat update was not confirmed'],
+  ] as Array<[McpSessionSync | undefined, string, string]>)('reports reconnect receipt %j without mistaking the settings probe for chat success', async (sessionSync, type, message) => {
+    const addToast = vi.fn()
+    useUIStore.setState({ addToast })
+    const server = {
+      name: 'late-server', scope: 'local', transport: 'http', enabled: true,
+      status: 'connected' as const, statusLabel: 'Connected', configLocation: '/tmp/config',
+      summary: 'http://127.0.0.1/mcp', canEdit: true, canRemove: true, canReconnect: true, canToggle: true,
+      projectPath: '/workspace/project', config: { type: 'http' as const, url: 'http://127.0.0.1/mcp', headers: {} },
+    }
+    const reconnectServer = vi.fn().mockResolvedValue({ server, sessionSync })
+    useMcpStore.setState({ servers: [server], reconnectServer })
+    await renderLoadedMcpSettings()
+    fireEvent.click(screen.getByRole('button', { name: 'Open late-server' }))
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /reconnect/i })) })
+    expect(reconnectServer).toHaveBeenCalledWith(server, '/workspace/project', 'session-1')
+    expect(addToast).toHaveBeenCalledWith({ type, message: expect.stringContaining(message) })
+    expect(screen.queryByText('Reconnecting...')).not.toBeInTheDocument()
+  })
+
 })

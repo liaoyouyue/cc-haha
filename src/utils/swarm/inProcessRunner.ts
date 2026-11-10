@@ -72,6 +72,7 @@ import {
   filterOrphanedThinkingOnlyMessages,
   filterUnresolvedToolUses,
   filterWhitespaceOnlyAssistantMessages,
+  findLastAssistantWithText,
   getAssistantMessageText,
   SYNTHETIC_MESSAGES,
 } from '../../utils/messages.js'
@@ -92,7 +93,6 @@ import {
   SUBAGENT_REJECT_MESSAGE,
   SUBAGENT_REJECT_MESSAGE_WITH_REASON_PREFIX,
 } from '../messages.js'
-import type { ModelAlias } from '../model/aliases.js'
 import {
   PERMISSION_MODES,
   type PermissionMode,
@@ -730,14 +730,16 @@ export type TeammateTurnFailure = {
 }
 
 /**
- * Classifies a finished turn from its messages. A turn failed when its last
- * assistant message is an API error that is not a cancellation marker (an
- * interrupted request is the user's choice, not a failure).
+ * Classifies a finished turn from its messages. A turn failed when its newest
+ * assistant message that carries text — or an API error, which wins the walk
+ * past blank trailing provider heartbeat blocks (#1468) — is an API error that
+ * is not a cancellation marker (an interrupted request is the user's choice,
+ * not a failure).
  */
 export function classifyTeammateTurnFailure(
   turnMessages: readonly Message[],
 ): TeammateTurnFailure | undefined {
-  const last = turnMessages.findLast(message => message.type === 'assistant')
+  const last = findLastAssistantWithText(turnMessages)
   if (!last?.isApiErrorMessage) return undefined
   const text = getAssistantMessageText(last) ?? ''
   if (SYNTHETIC_MESSAGES.has(text) || text === ERROR_MESSAGE_USER_ABORT) {
@@ -1639,7 +1641,7 @@ export async function runInProcessTeammate(
               ...transcriptMetadata,
               permissionMode: currentPermissionMode,
             },
-            model: model as ModelAlias | undefined,
+            model,
             preserveToolUseResults: true,
             availableTools: toolUseContext.options.tools,
             allowedTools,

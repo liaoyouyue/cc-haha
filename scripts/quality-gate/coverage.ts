@@ -2,7 +2,7 @@
 
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, relative, sep, win32 } from 'node:path'
+import { dirname, join, relative, resolve, sep, win32 } from 'node:path'
 import { rootBunTestFilter } from '../pr/bun-test-filter'
 import { createSandboxedTestEnvironment, removeTestSandbox } from '../pr/test-environment'
 import { loadQuarantineManifest, quarantinedPathSet } from './quarantine'
@@ -141,6 +141,7 @@ const ADAPTERS_SCOPE: CoverageScope = {
   title: 'IM adapters',
   includePrefixes: ['adapters/'],
   excludePrefixes: ['adapters/node_modules/'],
+  excludePathFragments: ['/__tests__/', '/fixtures/', '/__fixtures__/'],
   excludeSuffixes: ['.test.ts', '.test.tsx', '.d.ts'],
 }
 
@@ -361,15 +362,28 @@ function isUsableLcovRecord(record: LcovRecord) {
 
 export function parseBunTestFileCount(output: string) {
   const match = output.match(/Ran \d+ tests? across (\d+) files?\./)
-  return match ? Number(match[1]) : null
+  if (match) return Number(match[1])
+
+  const groupedTestFiles = new Set<string>()
+  for (const group of output.matchAll(/^::group::(.+):\r?$/gm)) {
+    const file = group[1]?.trim()
+    if (file && TEST_FILE_PATTERN.test(file)) {
+      groupedTestFiles.add(file.replace(/\\/g, '/'))
+    }
+  }
+  return groupedTestFiles.size > 0 ? groupedTestFiles.size : null
 }
 
-export function buildRootCoverageCommand(outputDir: string, serverFiles: string[]) {
+export function buildRootCoverageCommand(outputDir: string, serverFiles: string[], rootDir = ROOT_DIR) {
   return [
     'bun',
     '--no-env-file',
     '--feature=TRANSCRIPT_CLASSIFIER',
     'test',
+    // Preserve one LCOV universe without sharing globals/module caches across files.
+    '--isolate',
+    '--preload',
+    resolve(rootDir, 'preload.ts'),
     '--timeout=20000',
     '--coverage',
     '--coverage-reporter=lcov',
@@ -377,6 +391,20 @@ export function buildRootCoverageCommand(outputDir: string, serverFiles: string[
     '--coverage-dir',
     join(outputDir, 'root-server'),
     ...serverFiles.map(rootBunTestFilter),
+  ]
+}
+
+export function buildAdaptersCoverageCommand(outputDir: string) {
+  return [
+    'bun',
+    '--no-env-file',
+    'test',
+    '--isolate',
+    '--coverage',
+    '--coverage-reporter=lcov',
+    '--coverage-reporter=text',
+    '--coverage-dir',
+    join(outputDir, 'adapters'),
   ]
 }
 
@@ -885,7 +913,7 @@ export async function runCoverageGate(options: {
   const coverageByFile = new Map<string, FileLineCoverage>()
 
   mkdirSync(join(outputDir, 'root-server'), { recursive: true })
-  const rootCommand = buildRootCoverageCommand(outputDir, serverFiles)
+  const rootCommand = buildRootCoverageCommand(outputDir, serverFiles, rootDir)
   const rootLogPath = join(outputDir, 'root-server', 'coverage.log')
   const rootResult = await runCommand(rootCommand, rootDir, rootLogPath)
   const rootLcovPath = join(outputDir, 'root-server', 'lcov.info')
@@ -949,7 +977,7 @@ export async function runCoverageGate(options: {
   const adapters = await runSuite(
     'adapters',
     'IM adapters',
-    ['bun', '--no-env-file', 'test', '--coverage', '--coverage-reporter=lcov', '--coverage-reporter=text', '--coverage-dir', join(outputDir, 'adapters')],
+    buildAdaptersCoverageCommand(outputDir),
     join(rootDir, 'adapters'),
     join(outputDir, 'adapters'),
     () => parseLcov(readFileSync(join(outputDir, 'adapters', 'lcov.info'), 'utf8')),

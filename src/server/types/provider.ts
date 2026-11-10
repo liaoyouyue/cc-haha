@@ -16,6 +16,7 @@ export const PROVIDER_REQUEST_COMPATIBILITY_SCHEMA_VERSION = 5
 export const PROVIDER_OFFICIAL_MODEL_SETTINGS_SCHEMA_VERSION = 6
 export const PROVIDER_IMAGE_PROTOCOL_SCHEMA_VERSION = 7
 export const PROVIDER_DEEPSEEK_ACCOUNT_MODEL_IDS_SCHEMA_VERSION = 8
+export const PROVIDER_PROXY_CONFIG_SCHEMA_VERSION = 9
 export const BUILT_IN_PROVIDER_IDS = [
   CLAUDE_OFFICIAL_PROVIDER_ID,
   OPENAI_OFFICIAL_PROVIDER_ID,
@@ -89,6 +90,21 @@ export const ModelContextWindowsSchema = z.record(
   z.string().min(1),
   z.number().int().min(16000).max(10000000),
 )
+
+/**
+ * A built-in OAuth provider has no saved record, so a user's per-model window
+ * override lives beside its model mapping, keyed by provider id then model id.
+ * Absent on older indexes, which read as "no overrides".
+ */
+export const OfficialProviderContextWindowsSchema = z.record(
+  z.string(),
+  ModelContextWindowsSchema,
+)
+/** Per-model reply limits, keyed like `modelContextWindows` (a gateway's catalog). */
+export const ModelMaxOutputTokensSchema = z.record(
+  z.string().min(1),
+  z.number().int().min(1024).max(10000000),
+)
 export const ToolSearchEnabledSchema = z.boolean()
 export const DisableExperimentalBetasSchema = z.boolean()
 export const SupportsNestedToolResultMediaSchema = z.boolean()
@@ -111,11 +127,52 @@ export const RequestCompatibilitySchema = z.object({
 export type RequestCompatibility = z.infer<typeof RequestCompatibilitySchema>
 
 export const ImageGenerationConfigSchema = z.object({
-  protocol: z.enum(['openai_images', 'gemini_native', 'xai_images']).optional(),
+  protocol: z.enum(['openai_images', 'gemini_native', 'xai_images', 'minimax_image']).optional(),
   model: z.string().trim().min(1),
   baseUrl: z.string().trim().optional(),
   apiKey: z.string().trim().optional(),
 }).passthrough()
+
+export const ProviderProxyModeSchema = z.enum(['follow_global', 'direct', 'manual'])
+export type ProviderProxyMode = z.infer<typeof ProviderProxyModeSchema>
+
+/**
+ * Per-provider network proxy override. Absent (or mode 'follow_global') means
+ * the provider keeps using the global NetworkSettings proxy — built-in
+ * official providers never grow this field, so they always follow the global
+ * setting by construction.
+ */
+export const ProviderProxyConfigSchema = z.object({
+  mode: ProviderProxyModeSchema,
+  url: z.string().trim().optional(),
+}).superRefine((config, ctx) => {
+  if (config.mode === 'manual' && !config.url) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['url'],
+      message: 'proxy.url is required when proxy.mode is manual',
+    })
+  }
+})
+export type ProviderProxyConfig = z.infer<typeof ProviderProxyConfigSchema>
+
+/**
+ * RFC 9110 field-name token. A header name with a stray space or an embedded
+ * newline would otherwise only surface as a `fetch` TypeError on every request
+ * at runtime, so it is rejected when the record is created or updated instead.
+ */
+export const UPSTREAM_HEADER_NAME_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/
+
+/**
+ * User-configured upstream headers for a provider (issue #1509). Merged over the
+ * preset's own headers with user values winning; credentials, framing headers,
+ * and newline-injected values are dropped later by `resolveUpstreamHeaders`, so
+ * the schema only enforces the name shape.
+ */
+export const UpstreamHeadersSchema = z.record(
+  z.string().regex(UPSTREAM_HEADER_NAME_RE, 'must be a valid HTTP header name'),
+  z.string(),
+)
 
 export const SavedProviderSchema = z.object({
   id: z.string(),
@@ -130,11 +187,15 @@ export const SavedProviderSchema = z.object({
   model1mSupport: Model1mSupportSchema.optional(),
   autoCompactWindow: AutoCompactWindowSchema.optional(),
   modelContextWindows: ModelContextWindowsSchema.optional(),
+  modelMaxOutputTokens: ModelMaxOutputTokensSchema.optional(),
   toolSearchEnabled: ToolSearchEnabledSchema.optional(),
   disableExperimentalBetas: DisableExperimentalBetasSchema.optional(),
   supportsNestedToolResultMedia: SupportsNestedToolResultMediaSchema.optional(),
   requestCompatibility: RequestCompatibilitySchema.optional(),
+  /** User-configured upstream headers (issue #1509); see UpstreamHeadersSchema. */
+  upstreamHeaders: UpstreamHeadersSchema.optional(),
   imageGeneration: ImageGenerationConfigSchema.optional(),
+  proxy: ProviderProxyConfigSchema.optional(),
   notes: z.string().optional(),
 })
 
@@ -144,6 +205,7 @@ export const ProvidersIndexSchema = z.object({
   providers: z.array(SavedProviderSchema),
   providerOrder: z.array(z.string()).default([]),
   officialProviderModels: OfficialProviderModelsSchema.default({}),
+  officialProviderContextWindows: OfficialProviderContextWindowsSchema.default({}),
 })
 
 export const CreateProviderSchema = z.object({
@@ -158,11 +220,14 @@ export const CreateProviderSchema = z.object({
   model1mSupport: Model1mSupportSchema.optional(),
   autoCompactWindow: AutoCompactWindowSchema.optional(),
   modelContextWindows: ModelContextWindowsSchema.optional(),
+  modelMaxOutputTokens: ModelMaxOutputTokensSchema.optional(),
   toolSearchEnabled: ToolSearchEnabledSchema.optional(),
   disableExperimentalBetas: DisableExperimentalBetasSchema.optional(),
   supportsNestedToolResultMedia: SupportsNestedToolResultMediaSchema.optional(),
   requestCompatibility: RequestCompatibilitySchema.optional(),
+  upstreamHeaders: UpstreamHeadersSchema.optional(),
   imageGeneration: ImageGenerationConfigSchema.optional(),
+  proxy: ProviderProxyConfigSchema.optional(),
   notes: z.string().optional(),
 })
 
@@ -177,11 +242,14 @@ export const UpdateProviderSchema = z.object({
   model1mSupport: Model1mSupportSchema.nullable().optional(),
   autoCompactWindow: AutoCompactWindowSchema.nullable().optional(),
   modelContextWindows: ModelContextWindowsSchema.nullable().optional(),
+  modelMaxOutputTokens: ModelMaxOutputTokensSchema.nullable().optional(),
   toolSearchEnabled: ToolSearchEnabledSchema.optional(),
   disableExperimentalBetas: DisableExperimentalBetasSchema.optional(),
   supportsNestedToolResultMedia: SupportsNestedToolResultMediaSchema.optional(),
   requestCompatibility: RequestCompatibilitySchema.nullable().optional(),
+  upstreamHeaders: UpstreamHeadersSchema.nullable().optional(),
   imageGeneration: ImageGenerationConfigSchema.nullable().optional(),
+  proxy: ProviderProxyConfigSchema.nullable().optional(),
   notes: z.string().optional(),
 })
 
@@ -199,6 +267,12 @@ export const TestProviderSchema = z.object({
    * wire — the rules themselves stay server-side.
    */
   presetId: z.string().optional(),
+  proxy: ProviderProxyConfigSchema.optional(),
+  /**
+   * User-configured upstream headers for the unsaved config, merged over the
+   * preset's headers exactly as the proxy would for a saved provider.
+   */
+  upstreamHeaders: UpstreamHeadersSchema.optional(),
 })
 
 export const ReorderProvidersSchema = z.object({

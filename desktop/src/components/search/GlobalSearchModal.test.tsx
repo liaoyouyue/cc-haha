@@ -5,6 +5,7 @@ import '@testing-library/jest-dom'
 import { GlobalSearchModal } from './GlobalSearchModal'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useTabStore } from '../../stores/tabStore'
+import { useProviderStore } from '../../stores/providerStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { searchApi } from '../../api/search'
 import { sessionsApi } from '../../api/sessions'
@@ -68,6 +69,40 @@ afterEach(() => {
 })
 
 describe('GlobalSearchModal', () => {
+  it('keeps matching commands visible while search is pending', () => {
+    render(<GlobalSearchModal open onClose={() => {}} />)
+    fireEvent.change(screen.getByPlaceholderText(/search all chats/i), { target: { value: 'settings' } })
+    expect(screen.getByRole('option', { name: /settings/i })).toBeVisible()
+  })
+
+  it('uses the current session model picker without changing global defaults', async () => {
+    const previousProvider = useProviderStore.getState()
+    const previousTabs = useTabStore.getState()
+    const globalSetModel = vi.spyOn(useSettingsStore.getState(), 'setModel')
+    try {
+      useTabStore.setState({ activeTabId: 'session-a' })
+      useProviderStore.setState({ hasLoadedProviders: true, activeId: 'fixture', providers: [{
+        id: 'fixture', presetId: 'custom', name: 'Fixture', apiFormat: 'anthropic', apiKey: '', baseUrl: 'http://127.0.0.1:1',
+        models: { main: 'alpha', haiku: 'beta', sonnet: 'alpha', opus: 'alpha' },
+      }] })
+      useSessionRuntimeStore.getState().setSelection('session-a', { providerId: 'fixture', modelId: 'alpha', effortLevel: 'high' })
+      render(<GlobalSearchModal open onClose={() => {}} />)
+      fireEvent.click(screen.getByRole('option', { name: /select model/i }))
+      const picker = await screen.findByTestId('model-selector-dropdown')
+      expect(picker).toBeVisible()
+      const model = Array.from(picker.querySelectorAll('button')).find(button => button.textContent?.includes('beta'))!
+      expect(model).toBeDefined()
+      fireEvent.click(model)
+      expect(useSessionRuntimeStore.getState().selections['session-a']).toMatchObject({ providerId: 'fixture', modelId: 'beta' })
+      expect(globalSetModel).not.toHaveBeenCalled()
+    } finally {
+      cleanup()
+      useProviderStore.setState(previousProvider, true)
+      useTabStore.setState(previousTabs, true)
+      globalSetModel.mockRestore()
+    }
+  })
+
   it('renders nothing when closed', () => {
     render(<GlobalSearchModal open={false} onClose={() => {}} />)
     expect(screen.queryByPlaceholderText(/search all chats/i)).toBeNull()
@@ -83,6 +118,7 @@ describe('GlobalSearchModal', () => {
     useSessionStore.setState({ sessions: [makeSession('s1', 'Recent One'), makeSession('s2', 'Recent Two')] })
     render(<GlobalSearchModal open onClose={() => {}} />)
 
+    expect(screen.getByText('Commands')).toBeInTheDocument()
     expect(screen.getByText('Recent chats')).toBeInTheDocument()
     expect(screen.getByText('Recent One')).toBeInTheDocument()
     expect(screen.getByText('Recent Two')).toBeInTheDocument()

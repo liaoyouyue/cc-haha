@@ -112,6 +112,12 @@ export class SettingsService {
     return user.autoUpdateEnabled !== false
   }
 
+  /** Read-time opt-in; do not rewrite user settings. */
+  async getNextPromptSuggestionsEnabled(settings?: Record<string, unknown>): Promise<boolean> {
+    const user = settings ?? await this.getUserSettings()
+    return user.nextPromptSuggestionsEnabled === true
+  }
+
   /** Forward read migration: the desktop experiment is opt-in for legacy files. */
   async getLeanModeEnabled(settings?: Record<string, unknown>): Promise<boolean> {
     const user = settings ?? await this.getUserSettings()
@@ -305,9 +311,9 @@ export class SettingsService {
   }
 
   /**
-   * 合并单个内置 Agent 的 model/effort 覆盖。
+   * 合并单个内置 Agent 的 providerId/model/effort 覆盖。
    *
-   * `patch` 为 null 时删除 model/effort；字段值为 null 时只删该字段。
+   * `patch` 为 null 时删除 providerId/model/effort；字段值为 null 时只删该字段。
    * 条目清空后连同条目一起删除，`builtInAgentOverrides` 变空时删掉这个 key，
    * 不在用户的 settings.json 里留下空壳。
    *
@@ -318,6 +324,7 @@ export class SettingsService {
   async updateBuiltInAgentOverride(
     agentType: string,
     patch: {
+      providerId?: string | null
       model?: string | null
       effort?: string | number | null
     } | null,
@@ -334,8 +341,9 @@ export class SettingsService {
         // newer client or another settings editor.
         delete entry.model
         delete entry.effort
+        delete entry.providerId
       } else {
-        for (const field of ['model', 'effort'] as const) {
+        for (const field of ['providerId', 'model', 'effort'] as const) {
           if (!Object.hasOwn(patch, field)) continue
           if (patch[field] === null) {
             delete entry[field]

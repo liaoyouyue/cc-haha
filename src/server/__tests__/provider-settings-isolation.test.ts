@@ -3,6 +3,10 @@ import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { ProviderService } from '../services/providerService.js'
+import { getContextWindowForModel } from '../../utils/context.js'
+import { getAutoCompactThreshold } from '../../services/compact/autoCompact.js'
+import { ManagedSettingsService } from '../services/managedSettingsService.js'
+import { handleProvidersApi } from '../api/providers.js'
 
 const MODEL_MAPPING = {
   main: 'MiniMax-M3',
@@ -14,12 +18,15 @@ const MODEL_MAPPING = {
 describe('provider settings isolation', () => {
   let tmpDir: string
   let originalConfigDir: string | undefined
+  let originalHome: string | undefined
   let service: ProviderService
 
   beforeEach(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'provider-settings-isolation-'))
     originalConfigDir = process.env.CLAUDE_CONFIG_DIR
+    originalHome = process.env.HOME
     process.env.CLAUDE_CONFIG_DIR = tmpDir
+    process.env.HOME = tmpDir
     service = new ProviderService()
   })
 
@@ -29,6 +36,8 @@ describe('provider settings isolation', () => {
     } else {
       process.env.CLAUDE_CONFIG_DIR = originalConfigDir
     }
+    if (originalHome === undefined) delete process.env.HOME
+    else process.env.HOME = originalHome
     await fs.rm(tmpDir, { recursive: true, force: true })
   })
 
@@ -45,6 +54,160 @@ describe('provider settings isolation', () => {
       return false
     }
   }
+
+  test('official runtime and regenerated settings honor global model windows across provider switches', async () => {
+    const userSettings = {
+      unknownField: { preserved: true },
+      env: {
+        CLAUDE_CODE_MODEL_CONTEXT_WINDOWS: JSON.stringify({
+          'gpt-6.1-sol': 1000000,
+          'grok-4.7': 1000000,
+        }),
+      },
+    }
+    await fs.writeFile(path.join(tmpDir, 'settings.json'), JSON.stringify(userSettings))
+    for (const id of ['openai-official', 'grok-official', 'openai-official']) {
+      await service.activateProvider(id)
+      const runtime = await service.getProviderRuntimeEnv(id)
+      const managed = (await readCcHahaSettings()).env as Record<string, string>
+      expect(JSON.parse(runtime.CLAUDE_CODE_MODEL_CONTEXT_WINDOWS)).toMatchObject({
+        'gpt-6.1-sol': 1000000, 'grok-4.7': 1000000,
+      })
+      expect(managed.CLAUDE_CODE_MODEL_CONTEXT_WINDOWS).toBe(runtime.CLAUDE_CODE_MODEL_CONTEXT_WINDOWS)
+      expect(runtime.DISABLE_COMPACT).toBeUndefined()
+      expect(runtime.DISABLE_AUTO_COMPACT).toBeUndefined()
+    }
+    expect(JSON.parse(await fs.readFile(path.join(tmpDir, 'settings.json'), 'utf-8'))).toEqual(userSettings)
+  })
+
+  test.each([
+    ['vendor/small-model', 'small-model'],
+    ['small-model', 'vendor/small-model'],
+  ])('keeps provider precedence across namespaces and switches: global %s, provider %s', async (globalModel, providerModel) => {
+    await fs.writeFile(path.join(tmpDir, 'settings.json'), JSON.stringify({
+      env: { CLAUDE_CODE_MODEL_CONTEXT_WINDOWS: JSON.stringify({ [globalModel]: 1000000 }) },
+    }))
+    const models = { main: 'vendor/small-model', haiku: 'vendor/small-model', sonnet: 'vendor/small-model', opus: 'vendor/small-model' }
+    const small = await service.addProvider({
+      presetId: 'custom', name: 'Small', baseUrl: 'https://small.example.test', apiKey: 'fixture-small',
+      apiFormat: 'openai_chat', models, modelContextWindows: { [providerModel]: 128000 },
+    })
+    const large = await service.addProvider({
+      presetId: 'custom', name: 'Large', baseUrl: 'https://large.example.test', apiKey: 'fixture-large',
+      apiFormat: 'openai_chat', models, modelContextWindows: { [providerModel]: 1000000 },
+    })
+    const keys = ['CLAUDE_CODE_MODEL_CONTEXT_WINDOWS', 'CLAUDE_CODE_MAX_OUTPUT_TOKENS',
+      'CLAUDE_CODE_AUTO_COMPACT_WINDOW', 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE',
+      'CLAUDE_CODE_DISABLE_1M_CONTEXT', 'CLAUDE_CODE_PROVIDER_MAX_OUTPUT_TOKENS', 'USER_TYPE']
+    const saved = keys.map(key => process.env[key])
+    try {
+      for (const key of keys) delete process.env[key]
+      process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = '32000'
+      for (const [provider, expected] of [[small, 128000], [large, 1000000], [small, 128000]] as const) {
+        await service.activateProvider(provider.id)
+        const env = await service.getProviderRuntimeEnv(provider.id)
+        process.env.CLAUDE_CODE_MODEL_CONTEXT_WINDOWS = env.CLAUDE_CODE_MODEL_CONTEXT_WINDOWS
+        expect(getContextWindowForModel(models.main)).toBe(expected)
+        expect(getAutoCompactThreshold(models.main)).toBe(expected - 33000)
+      }
+    } finally {
+      keys.forEach((key, index) => {
+        if (saved[index] === undefined) delete process.env[key]
+        else process.env[key] = saved[index]
+      })
+    }
+  })
+
+  async function saveSettings(settings: Record<string, unknown>, expectedActiveProviderId: string) {
+    const url = new URL('http://localhost/api/providers/settings')
+    url.searchParams.set('expectedActiveProviderId', expectedActiveProviderId)
+    return handleProvidersApi(new Request(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings),
+    }), url, ['api', 'providers', 'settings'])
+  }
+
+  async function addProxyProvider(name: string) {
+    return service.addProvider({
+      presetId: 'custom', name, baseUrl: `https://${name}.example.invalid/v1`,
+      apiKey: 'fake-test-key', apiFormat: 'openai_chat', models: MODEL_MAPPING,
+    })
+  }
+
+  test.each(['official', 'other provider'])('rejects a stale editor after another client activates %s without changing either file', async (destination) => {
+    const provider = await addProxyProvider('provider-a')
+    const other = await addProxyProvider('provider-b')
+    await service.activateProvider(provider.id)
+    const draft = { ...await service.getManagedSettings(), skipWebFetchPreflight: false }
+    if (destination === 'official') await service.activateOfficial()
+    else await service.activateProvider(other.id)
+    const settingsBefore = await fs.readFile(path.join(tmpDir, 'cc-haha', 'settings.json'), 'utf-8')
+    const providersBefore = await fs.readFile(path.join(tmpDir, 'cc-haha', 'providers.json'), 'utf-8')
+    const originalBefore = await fs.readFile(path.join(tmpDir, 'settings.json'), 'utf-8').catch(() => null)
+
+    const response = await saveSettings(draft, provider.id)
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toMatchObject({ error: 'PROVIDER_SETTINGS_OWNER_CHANGED' })
+    expect(await fs.readFile(path.join(tmpDir, 'cc-haha', 'settings.json'), 'utf-8')).toBe(settingsBefore)
+    expect(await fs.readFile(path.join(tmpDir, 'cc-haha', 'providers.json'), 'utf-8')).toBe(providersBefore)
+    expect(await fs.readFile(path.join(tmpDir, 'settings.json'), 'utf-8').catch(() => null)).toBe(originalBefore)
+  })
+
+  test('checks ownership when a queued settings write runs, after the default changed', async () => {
+    const provider = await addProxyProvider('provider-a')
+    await service.activateProvider(provider.id)
+    const draft = await service.getManagedSettings()
+    let release!: () => void
+    let entered!: () => void
+    const blocked = new Promise<void>((resolve) => { release = resolve })
+    const locked = new Promise<void>((resolve) => { entered = resolve })
+    const blockingWrite = new ManagedSettingsService().updateSettings(async (settings) => {
+      entered()
+      await blocked
+      return { settings, result: undefined }
+    })
+    await locked
+    const saving = service.updateManagedSettings(draft, provider.id)
+    const switching = service.activateOfficial()
+    try {
+      for (let attempt = 0; (await service.listProviders()).activeId !== null && attempt < 100; attempt += 1) {
+        await new Promise<void>((resolve) => setImmediate(resolve))
+      }
+      expect((await service.listProviders()).activeId).toBeNull()
+    } finally {
+      release()
+    }
+    const [saveResult, switchResult, blockingResult] = await Promise.allSettled([saving, switching, blockingWrite])
+    expect(saveResult).toMatchObject({ status: 'rejected', reason: { statusCode: 409 } })
+    expect(switchResult.status).toBe('fulfilled')
+    expect(blockingResult.status).toBe('fulfilled')
+    expect((await service.getManagedSettings()).env).not.toHaveProperty('ANTHROPIC_BASE_URL')
+  })
+
+  test('accepts the current owner without persisting the query or dropping unknown settings', async () => {
+    const provider = await addProxyProvider('provider-a')
+    await service.activateProvider(provider.id)
+    await service.updateManagedSettings({ futureSetting: { keep: true }, env: { CUSTOM_ENV: 'keep' } })
+
+    const response = await saveSettings({ skipWebFetchPreflight: false }, provider.id)
+
+    expect(response.status).toBe(200)
+    expect(await readCcHahaSettings()).toEqual({
+      futureSetting: { keep: true }, env: { CUSTOM_ENV: 'keep' }, skipWebFetchPreflight: false,
+    })
+    const index = JSON.parse(await fs.readFile(path.join(tmpDir, 'cc-haha', 'providers.json'), 'utf-8'))
+    expect(index).not.toHaveProperty('expectedActiveProviderId')
+    expect(index.providers[0]).not.toHaveProperty('expectedActiveProviderId')
+  })
+
+  test('rejects an explicitly empty owner instead of making the settings write unconditional', async () => {
+    await service.updateManagedSettings({ futureSetting: true })
+    const response = await saveSettings({ futureSetting: false }, ' ')
+    expect(response.status).toBe(400)
+    expect(await readCcHahaSettings()).toEqual({ futureSetting: true })
+  })
 
   test('activating a provider writes only cc-haha/settings.json', async () => {
     const minimax = await service.addProvider({

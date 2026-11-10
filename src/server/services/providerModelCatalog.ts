@@ -11,7 +11,9 @@
 import {
   getNetworkProxyFetchOptions,
   loadNetworkSettings,
+  resolveProviderNetworkSettings,
 } from './networkSettings.js'
+import type { ProviderProxyConfig } from '../types/provider.js'
 
 export type FetchedModel = {
   id: string
@@ -42,6 +44,8 @@ export type FetchProviderModelsInput = {
   apiKey: string
   isFullUrl?: boolean
   modelsUrl?: string
+  /** The provider's own proxy override, so the probe reaches it the way chat will. */
+  proxy?: ProviderProxyConfig
 }
 
 // cc-switch's FETCH_TIMEOUT_SECS. Deliberately not networkSettings'
@@ -198,7 +202,7 @@ export async function fetchProviderModels(
     }
   }
 
-  const networkSettings = await loadNetworkSettings()
+  const networkSettings = resolveProviderNetworkSettings(await loadNetworkSettings(), input.proxy)
   const endpointsTried: string[] = []
   let lastStatus: number | undefined
   let lastFailure = ''
@@ -286,7 +290,7 @@ export async function fetchProviderModels(
       }
     }
 
-    return { ok: true, models: toFetchedModels(rawList), endpoint }
+    return { ok: true, models: selectCurrentMiniMaxModels(toFetchedModels(rawList), baseUrl), endpoint }
   }
 
   return {
@@ -299,6 +303,25 @@ export async function fetchProviderModels(
 }
 
 // ─── Internals ────────────────────────────────────────────────────────────────
+
+/** Curate fetched choices only; saved mappings and custom gateways stay untouched. */
+function selectCurrentMiniMaxModels(models: FetchedModel[], baseUrl: string): FetchedModel[] {
+  const url = new URL(baseUrl)
+  const direct = ['api.minimax.io', 'api.minimaxi.com'].includes(url.hostname)
+  const openRouter = url.hostname === 'openrouter.ai'
+  const zen = url.hostname === 'opencode.ai' && url.pathname.startsWith('/zen')
+  if (!direct && !openRouter && !zen) return models
+
+  const currentIds = direct
+    ? ['MiniMax-M3.1-Flash', 'MiniMax-M3']
+    : openRouter
+      ? ['minimax/minimax-m3.1-flash', 'minimax/minimax-m3.1-flash:free', 'minimax/minimax-m3']
+      : ['minimax-m3.1-flash', 'minimax-m3.1-flash-free', 'minimax-m3']
+  // Retain exact advertised IDs, including gateway-specific free variants.
+  const isMiniMaxText = (id: string) => /^(?:minimax\/)?minimax-(?:m\d|01(?:$|:))/i.test(id)
+  const current = currentIds.flatMap(id => models.filter(model => model.id === id))
+  return [...current, ...models.filter(model => !isMiniMaxText(model.id))]
+}
 
 function stripTrailingSlashes(value: string): string {
   return value.replace(/\/+$/, '')

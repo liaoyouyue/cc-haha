@@ -1,5 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Plus, RefreshCw, Server, Settings, Trash2 } from 'lucide-react'
+import {
+  ArrowLeft,
+  ChevronDown,
+  ChevronRight,
+  Plus,
+  RefreshCw,
+  Server,
+  Settings,
+  Trash2,
+} from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Badge, StatusDot, type Tone } from '@/components/ui/Badge'
 import { SegmentedControl } from '@/components/ui/SegmentedControl'
@@ -9,8 +18,15 @@ import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorState } from '@/components/ui/ErrorState'
 import { IconButton } from '@/components/ui/IconButton'
 import { mcpStatusTone } from '@/lib/mcpStatus'
-import { getMcpServerIdentityKey } from '@/lib/mcpIdentity'
+import { getMcpServerIdentityKey, mcpProjectPathKey } from '@/lib/mcpIdentity'
+import {
+  groupProjectServices,
+  isActiveProjectCopy,
+  type ProjectServiceGroup,
+} from '@/lib/mcpServiceGroups'
 import { DirectoryPicker } from '@/components/composite/DirectoryPicker'
+import { McpProjectTargets } from './mcp/McpProjectTargets'
+import { useMcpProjectSharing } from './mcp/useMcpProjectSharing'
 import {
   SettingsBlock,
   SettingsGroup,
@@ -26,12 +42,13 @@ import { useTranslation } from '../i18n'
 import { useUIStore } from '../stores/uiStore'
 import { useMcpStore } from '../stores/mcpStore'
 import { useSessionStore } from '../stores/sessionStore'
-import type { McpServerRecord, McpUpsertPayload, McpWritableScope } from '../types/mcp'
+import { useTabStore } from '../stores/tabStore'
+import type { McpServerRecord, McpSessionSync, McpUpsertPayload, McpWritableScope } from '../types/mcp'
 
 type EditorMode =
   | { type: 'list' }
   | { type: 'create' }
-  | { type: 'edit'; server: McpServerRecord }
+  | { type: 'edit'; server: McpServerRecord; projectLocked?: boolean }
   | { type: 'details'; server: McpServerRecord }
 
 type TransportKind = 'stdio' | 'http' | 'sse'
@@ -190,10 +207,10 @@ function isRemoteConfig(config: McpServerRecord['config']): config is Extract<Mc
   return config.type === 'http' || config.type === 'sse'
 }
 
-function draftFromServer(server: McpServerRecord): McpDraft {
+function draftFromServer(server: McpServerRecord, projectLocked = false): McpDraft {
   const base = createEmptyDraft()
   base.name = server.name
-  base.scope = asWritableScope(server.scope)
+  base.scope = projectLocked ? 'project' : asWritableScope(server.scope)
   base.projectPath = scopeRequiresProject(base.scope) ? server.projectPath ?? '' : ''
 
   if (isStdioConfig(server.config)) {
@@ -275,9 +292,9 @@ function buildPayload(draft: McpDraft): McpUpsertPayload {
   }
 }
 
-function isDraftValid(draft: McpDraft) {
+function isDraftValid(draft: McpDraft, sharesProjects = false) {
   if (!isMcpServerNameValid(draft.name)) return false
-  if (scopeRequiresProject(draft.scope) && !draft.projectPath.trim()) return false
+  if (scopeRequiresProject(draft.scope) && !sharesProjects && !draft.projectPath.trim()) return false
   if (draft.transport === 'stdio') return draft.command.trim().length > 0
   return draft.url.trim().length > 0
 }
@@ -322,6 +339,7 @@ function isActiveInCurrentContext(server: McpServerRecord) {
 }
 
 function statusLabel(server: McpServerRecord, t: ReturnType<typeof useTranslation>) {
+  if (!server.enabled) return t('settings.mcp.status.disabled')
   return isActiveInCurrentContext(server)
     ? server.statusLabel
     : t('settings.mcp.status.configured')
@@ -354,7 +372,7 @@ function StatusLine({ server, t }: { server: McpServerRecord; t: ReturnType<type
       {active && server.statusDetail && (
         <span className="text-xs text-[var(--color-text-tertiary)]">{server.statusDetail}</span>
       )}
-      {!active && (
+      {!active && server.enabled && (
         <span className="text-xs text-[var(--color-text-tertiary)]">
           {t('settings.mcp.status.configuredElsewhere')}
         </span>
@@ -471,7 +489,7 @@ function ServerRow({
         className="mt-[7px]"
       />
       <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <span className="truncate text-sm font-semibold text-[var(--color-text-primary)]">{server.name}</span>
           <StatusBadge server={server} t={t} />
         </div>
@@ -491,7 +509,7 @@ function ServerRow({
         <div className="mt-1 truncate font-mono text-[11px] text-[var(--color-text-tertiary)]">
           {redactSensitiveText(server.summary)}
         </div>
-        {!active && (
+        {!active && server.enabled && (
           <div className="mt-1.5 text-xs leading-[1.5] text-[var(--color-text-tertiary)]">
             {t('settings.mcp.status.configuredElsewhere')}
           </div>
@@ -529,8 +547,241 @@ function ServerRow({
   )
 }
 
+function ProjectCopyRow({
+  copy,
+  currentWorkDir,
+  isBusy,
+  onEdit,
+  onToggle,
+  onDelete,
+  t,
+}: {
+  copy: McpServerRecord
+  currentWorkDir?: string
+  isBusy: boolean
+  onEdit: () => void
+  onToggle: () => void
+  onDelete: () => void
+  t: ReturnType<typeof useTranslation>
+}) {
+  const active = isActiveInCurrentContext(copy)
+  const activeProject = isActiveProjectCopy(copy, currentWorkDir)
+
+  return (
+    <div
+      className={cx(
+        'flex items-start gap-3 border-t border-[var(--color-border)] px-4 py-3 pl-10',
+        activeProject ? 'bg-[var(--color-surface-hover)]' : '',
+      )}
+    >
+      <StatusDot
+        tone={statusDotTone(copy)}
+        size="sm"
+        pulse={active && copy.status === 'checking'}
+        className="mt-1.5"
+      />
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <span
+            className="min-w-0 truncate font-mono text-[11px] text-[var(--color-text-secondary)]"
+            title={copy.projectPath}
+          >
+            {copy.projectPath}
+          </span>
+          {activeProject && (
+            <Badge tone="neutral" size="xs">{t('settings.mcp.group.activeProject')}</Badge>
+          )}
+          <StatusBadge server={copy} t={t} />
+        </div>
+        {!active && copy.enabled && (
+          <div className="mt-1 text-xs leading-[1.5] text-[var(--color-text-tertiary)]">
+            {t('settings.mcp.status.configuredElsewhere')}
+          </div>
+        )}
+        {active && copy.statusDetail && (
+          <div
+            className={cx(
+              'mt-1 truncate text-xs',
+              copy.status === 'failed' ? 'text-[var(--color-error)]' : 'text-[var(--color-text-tertiary)]',
+            )}
+          >
+            {copy.statusDetail}
+          </div>
+        )}
+      </div>
+
+      <div className="flex shrink-0 items-center gap-1 self-center">
+        <IconButton
+          icon={<Settings {...ICON_PROPS} />}
+          label={t('settings.mcp.group.editProject', {
+            name: copy.name,
+            path: copy.projectPath ?? '',
+          })}
+          showTooltip={false}
+          size="sm"
+          tone="muted"
+          disabled={!copy.canEdit}
+          onClick={onEdit}
+        />
+        <Switch
+          label={copy.projectPath ? `${copy.name} (${copy.projectPath})` : copy.name}
+          labelHidden
+          checked={copy.enabled}
+          disabled={isBusy || !copy.canToggle}
+          onChange={onToggle}
+        />
+        <IconButton
+          icon={<Trash2 {...ICON_PROPS} />}
+          label={t('settings.mcp.group.deleteProject', {
+            name: copy.name,
+            path: copy.projectPath ?? '',
+          })}
+          showTooltip={false}
+          size="sm"
+          tone="muted"
+          hoverTone="danger"
+          disabled={!copy.canRemove}
+          onClick={onDelete}
+        />
+      </div>
+    </div>
+  )
+}
+
+function ProjectServiceGroupRow({
+  group,
+  currentWorkDir,
+  busyServerKey,
+  expanded,
+  onToggleExpanded,
+  onOpenGroup,
+  onEditCopy,
+  onToggleCopy,
+  onDeleteCopy,
+  t,
+}: {
+  group: ProjectServiceGroup
+  currentWorkDir?: string
+  busyServerKey: string | null
+  expanded: boolean
+  onToggleExpanded: () => void
+  onOpenGroup: () => void
+  onEditCopy: (copy: McpServerRecord) => void
+  onToggleCopy: (copy: McpServerRecord) => void
+  onDeleteCopy: (copy: McpServerRecord) => void
+  t: ReturnType<typeof useTranslation>
+}) {
+  const primary = group.primary
+  const checking = group.copies.some(
+    (copy) => isActiveInCurrentContext(copy) && copy.status === 'checking',
+  )
+  const tone: Tone = checking
+    ? 'info'
+    : group.hasFailure
+      ? 'danger'
+      : group.hasAttention
+        ? 'warning'
+        : group.connectedCount > 0
+          ? 'success'
+          : 'neutral'
+  const canGroupEdit = group.configConsistent && primary.canEdit
+
+  return (
+    <div>
+      <div className="flex items-start gap-3 px-4 py-3.5">
+        <StatusDot
+          tone={tone}
+          size="md"
+          pulse={checking}
+          className="mt-[7px]"
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="truncate text-sm font-semibold text-[var(--color-text-primary)]">
+              {group.name}
+            </span>
+            {!group.configConsistent && (
+              <Badge tone="warning" size="xs">{t('settings.mcp.group.configConflict')}</Badge>
+            )}
+            <Badge tone={tone} size="xs">
+              {t('settings.mcp.group.connectedCount', {
+                connected: group.connectedCount,
+                total: group.copies.length,
+              })}
+            </Badge>
+            {group.enabledCount < group.copies.length && (
+              <Badge tone="neutral" size="xs">
+                {t('settings.mcp.group.disabledCount', {
+                  count: group.copies.length - group.enabledCount,
+                })}
+              </Badge>
+            )}
+          </div>
+          <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-[var(--color-text-tertiary)]">
+            <span className="shrink-0">{transportLabel(primary.transport, t)}</span>
+            <span aria-hidden="true" className="shrink-0">·</span>
+            <span className="shrink-0">{t('settings.mcp.scope.project')}</span>
+            <span aria-hidden="true" className="shrink-0">·</span>
+            <span className="shrink-0">
+              {t('settings.mcp.group.projectCount', { count: group.copies.length })}
+            </span>
+          </div>
+          <div className="mt-1 truncate font-mono text-[11px] text-[var(--color-text-tertiary)]">
+            {redactSensitiveText(primary.summary)}
+          </div>
+          {!group.configConsistent && (
+            <div className="mt-1 text-xs leading-[1.5] text-[var(--color-text-tertiary)]">
+              {t('settings.mcp.group.configConflictHint')}
+            </div>
+          )}
+        </div>
+
+        <div className="flex shrink-0 items-center gap-1 self-center">
+          {canGroupEdit && (
+            <IconButton
+              icon={<Settings {...ICON_PROPS} />}
+              label={t('settings.mcp.group.editGroup', { name: group.name })}
+              showTooltip={false}
+              size="sm"
+              tone="muted"
+              onClick={onOpenGroup}
+            />
+          )}
+          <IconButton
+            icon={expanded ? <ChevronDown {...ICON_PROPS} /> : <ChevronRight {...ICON_PROPS} />}
+            label={expanded
+              ? t('settings.mcp.group.collapse')
+              : t('settings.mcp.group.expand')}
+            showTooltip={false}
+            size="sm"
+            tone="muted"
+            onClick={onToggleExpanded}
+          />
+        </div>
+      </div>
+
+      {expanded && (
+        <div>
+          {group.copies.map((copy) => (
+            <ProjectCopyRow
+              key={getMcpServerIdentityKey(copy)}
+              copy={copy}
+              currentWorkDir={currentWorkDir}
+              isBusy={busyServerKey === getMcpServerIdentityKey(copy)}
+              onEdit={() => onEditCopy(copy)}
+              onToggle={() => onToggleCopy(copy)}
+              onDelete={() => onDeleteCopy(copy)}
+              t={t}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function McpSettings() {
-  const { servers, selectedServer, isLoading, error, fetchServersForKnownProjects, createServer, updateServer, deleteServer, toggleServer, reconnectServer, refreshServerStatus, selectServer } = useMcpStore()
+  const { servers, selectedServer, isLoading, error, fetchServersForKnownProjects, createServer, updateServer, saveProjectSharing, deleteServer, toggleServer, reconnectServer, refreshServerStatus, selectServer } = useMcpStore()
   const addToast = useUIStore((s) => s.addToast)
   const sessions = useSessionStore((s) => s.sessions)
   const activeSessionId = useSessionStore((s) => s.activeSessionId)
@@ -541,12 +792,33 @@ export function McpSettings() {
   const [isDeleting, setIsDeleting] = useState(false)
   const [busyServerKey, setBusyServerKey] = useState<string | null>(null)
   const [pendingDeleteServer, setPendingDeleteServer] = useState<McpServerRecord | null>(null)
+  const [expandedServiceGroups, setExpandedServiceGroups] = useState<Set<string>>(() => new Set())
   const [isInitialLoading, setIsInitialLoading] = useState(true)
   const refreshInFlightRef = useRef(new Set<string>())
 
-  const activeSession = sessions.find((session) => session.id === activeSessionId)
+  const tabs = useTabStore((s) => s.tabs)
+  const activeTabId = useTabStore((s) => s.activeTabId)
+  const lastSessionTabId = useTabStore((s) => s.lastSessionTabId)
+  const activeTab = tabs.find((tab) => tab.sessionId === activeTabId)
+  const contextSessionId = activeTab?.type === 'session' ? activeTab.sessionId : lastSessionTabId
+  const activeSession = sessions.find((session) => session.id === contextSessionId) ??
+    sessions.find((session) => session.id === activeSessionId)
   const currentWorkDir = activeSession?.workDir || undefined
+  const syncSessionId = contextSessionId ?? activeSessionId
   const resolveOperationCwd = (server?: McpServerRecord) => server?.projectPath ?? currentWorkDir
+  const sharedSource = view.type === 'edit' && view.server.scope === 'project' ? view.server : undefined
+  const usesProjectSharing = draft.scope === 'project' &&
+    (view.type === 'create' || (!!sharedSource && view.type === 'edit' && view.projectLocked !== true))
+  const projectSharing = useMcpProjectSharing({
+    enabled: usesProjectSharing && isMcpServerNameValid(draft.name),
+    name: draft.name.trim(),
+    sourceCwd: sharedSource?.projectPath,
+    currentWorkDir,
+    onSourceConfig: config => {
+      if (!sharedSource) return
+      setDraft(current => ({ ...draftFromServer({ ...sharedSource, config }), scope: current.scope }))
+    },
+  })
 
   useEffect(() => {
     let cancelled = false
@@ -567,23 +839,37 @@ export function McpSettings() {
     }
   }, [fetchServersForKnownProjects, currentWorkDir])
 
+  const projectServiceGroups = useMemo(
+    () => groupProjectServices(servers, currentWorkDir),
+    [servers, currentWorkDir],
+  )
+  const nonProjectServers = useMemo(
+    () => servers.filter((server) => getServerGroupKey(server) !== 'project'),
+    [servers],
+  )
   const groupedServers = useMemo(() => {
     const groups: Partial<Record<McpGroupKey, McpServerRecord[]>> = {}
-    for (const server of servers) {
+    for (const server of nonProjectServers) {
       const key = getServerGroupKey(server)
       ;(groups[key] ??= []).push(server)
     }
     return groups
-  }, [servers])
+  }, [nonProjectServers])
 
-  const stats = useMemo(() => ({
-    total: servers.length,
-    connected: servers.filter((server) => isActiveInCurrentContext(server) && server.status === 'connected').length,
-    attention: servers.filter((server) => (
-      isActiveInCurrentContext(server) &&
-      (server.status === 'failed' || server.status === 'needs-auth')
-    )).length,
-  }), [servers])
+  const stats = useMemo(() => {
+    const activeNonProject = nonProjectServers.filter(isActiveInCurrentContext)
+    return {
+      total: projectServiceGroups.length + nonProjectServers.length,
+      connected:
+        projectServiceGroups.filter((group) => group.connectedCount > 0).length +
+        activeNonProject.filter((server) => server.status === 'connected').length,
+      attention:
+        projectServiceGroups.filter((group) => group.hasAttention).length +
+        activeNonProject.filter((server) => (
+          server.status === 'failed' || server.status === 'needs-auth'
+        )).length,
+    }
+  }, [projectServiceGroups, nonProjectServers])
   const showListLoading = (isInitialLoading || isLoading) && servers.length === 0
 
   const beginCreate = () => {
@@ -591,14 +877,28 @@ export function McpSettings() {
     setView({ type: 'create' })
   }
 
-  const beginEdit = (server: McpServerRecord) => {
-    selectServer(server)
+  const beginEdit = (
+    server: McpServerRecord,
+    options?: { projectLocked?: boolean },
+  ) => {
+    const projectLocked = options?.projectLocked === true
     if (!server.canEdit) {
+      selectServer(server)
       setView({ type: 'details', server })
       return
     }
-    setDraft(draftFromServer(server))
-    setView({ type: 'edit', server })
+
+    // The selectedServer effect opens the editor. A locked per-project edit
+    // must not let that effect replace the locked view.
+    if (projectLocked) selectServer(null)
+    else selectServer(server)
+
+    setDraft(draftFromServer(server, projectLocked))
+    setView({
+      type: 'edit',
+      server,
+      ...(projectLocked ? { projectLocked: true } : {}),
+    })
   }
 
   useEffect(() => {
@@ -657,22 +957,30 @@ export function McpSettings() {
     }
   }, [servers, refreshServerStatus, currentWorkDir])
 
+  const describeSessionSync = (sessionSync: McpSessionSync | undefined, fallbackError: string) => {
+    return sessionSync?.reason === 'failed'
+      ? t('settings.mcp.toast.syncFailed', { error: sessionSync.error || fallbackError })
+      : sessionSync?.reason === 'not_running'
+        ? t('settings.mcp.toast.syncNotRunning')
+        : sessionSync?.reason === 'different_project'
+          ? t('settings.mcp.toast.syncDifferentProject')
+          : sessionSync?.reason === 'lean_profile'
+            ? t('settings.mcp.toast.syncLeanProfile')
+            : sessionSync?.reason === 'no_session' || !syncSessionId
+              ? t('settings.mcp.toast.syncNoSession')
+              : t('settings.mcp.toast.syncUnconfirmed')
+  }
+
   const handleToggle = async (server: McpServerRecord) => {
     setBusyServerKey(getMcpServerIdentityKey(server))
     try {
-      const { server: updated, sessionSync } = await toggleServer(server, resolveOperationCwd(server), activeSessionId ?? undefined)
+      const { server: updated, sessionSync } = await toggleServer(
+        server,
+        resolveOperationCwd(server),
+        syncSessionId ?? undefined,
+      )
       if (!sessionSync?.applied) {
-        const detail = sessionSync?.reason === 'failed'
-          ? t('settings.mcp.toast.syncFailed', { error: sessionSync.error || t('settings.mcp.toast.toggleFailed') })
-          : sessionSync?.reason === 'not_running'
-            ? t('settings.mcp.toast.syncNotRunning')
-            : sessionSync?.reason === 'different_project'
-              ? t('settings.mcp.toast.syncDifferentProject')
-              : sessionSync?.reason === 'lean_profile'
-                ? t('settings.mcp.toast.syncLeanProfile')
-                : sessionSync?.reason === 'no_session' || !activeSessionId
-                  ? t('settings.mcp.toast.syncNoSession')
-                  : t('settings.mcp.toast.syncUnconfirmed')
+        const detail = describeSessionSync(sessionSync, t('settings.mcp.toast.toggleFailed'))
         addToast({
           type: 'warning',
           message: `${t('settings.mcp.toast.saved', { name: server.name })}. ${detail}`,
@@ -712,13 +1020,18 @@ export function McpSettings() {
       return { ...current, server: optimistic }
     })
     try {
-      const updated = await reconnectServer(server, resolveOperationCwd(server))
-      addToast({
-        type: updated.status === 'connected' ? 'success' : 'warning',
-        message: updated.status === 'connected'
-          ? t('settings.mcp.toast.reconnected', { name: server.name })
-          : updated.statusDetail || updated.statusLabel,
-      })
+      const { server: updated, sessionSync } = await reconnectServer(
+        server,
+        resolveOperationCwd(server),
+        syncSessionId ?? undefined,
+      )
+      if (updated.status !== 'connected') {
+        addToast({ type: 'warning', message: updated.statusDetail || updated.statusLabel })
+      } else if (!sessionSync?.applied) {
+        addToast({ type: 'warning', message: describeSessionSync(sessionSync, t('settings.mcp.toast.reconnectFailed')) })
+      } else {
+        addToast({ type: 'success', message: t('settings.mcp.toast.reconnected', { name: server.name }) })
+      }
       if (view.type === 'edit') setView({ type: 'edit', server: updated })
       if (view.type === 'details') setView({ type: 'details', server: updated })
     } catch (error) {
@@ -741,19 +1054,21 @@ export function McpSettings() {
   }
 
   const confirmDelete = async () => {
-    const server = pendingDeleteServer
-    if (!server) return
+    const target = pendingDeleteServer
+    if (!target) return
     setIsDeleting(true)
     try {
-      await deleteServer(server, resolveOperationCwd(server))
+      await deleteServer(target, resolveOperationCwd(target))
+      await fetchServersForKnownProjects(currentWorkDir)
       addToast({
         type: 'success',
-        message: t('settings.mcp.toast.deleted', { name: server.name }),
+        message: t('settings.mcp.toast.deleted', { name: target.name }),
       })
       setView({ type: 'list' })
       selectServer(null)
       setPendingDeleteServer(null)
     } catch (error) {
+      await fetchServersForKnownProjects(currentWorkDir).catch(() => undefined)
       addToast({
         type: 'error',
         message: error instanceof Error ? error.message : t('settings.mcp.toast.deleteFailed'),
@@ -771,7 +1086,14 @@ export function McpSettings() {
         setPendingDeleteServer(null)
       }}
       title={t('settings.mcp.form.deleteTitle')}
-      body={pendingDeleteServer ? t('settings.mcp.form.deleteConfirmBody', { name: pendingDeleteServer.name }) : ''}
+      body={pendingDeleteServer
+        ? pendingDeleteServer.scope === 'project'
+          ? t('settings.mcp.form.deleteProjectCopyBody', {
+              name: pendingDeleteServer.name,
+              path: pendingDeleteServer.projectPath ?? '',
+            })
+          : t('settings.mcp.form.deleteConfirmBody', { name: pendingDeleteServer.name })
+        : ''}
       confirmLabel={t('settings.mcp.form.confirmDelete')}
       cancelLabel={t('settings.mcp.form.cancel')}
       confirmVariant="danger"
@@ -781,10 +1103,27 @@ export function McpSettings() {
   )
 
   const handleSave = async () => {
-    if (!isDraftValid(draft)) return
+    if (!isDraftValid(draft, usesProjectSharing) || (usesProjectSharing && !projectSharing.canSave)) return
     setIsSaving(true)
     try {
       const payload = buildPayload(draft)
+      if (usesProjectSharing) {
+        const result = await saveProjectSharing(draft.name.trim(), {
+          config: payload.config,
+          ...(sharedSource?.projectPath ? { sourceCwd: sharedSource.projectPath } : {}),
+          ...(projectSharing.sourceConfig ? { sourceConfig: projectSharing.sourceConfig } : {}),
+          targets: projectSharing.targets,
+        }, currentWorkDir)
+        projectSharing.applyResults(result)
+        if (result.results.some(target => !target.success)) {
+          addToast({ type: 'error', message: t('settings.mcp.projects.partialFailure') })
+          return
+        }
+        addToast({ type: 'success', message: t('settings.mcp.toast.saved', { name: draft.name.trim() }) })
+        setView({ type: 'list' })
+        selectServer(null)
+        return
+      }
       const operationCwd = scopeRequiresProject(draft.scope) ? draft.projectPath.trim() : undefined
       const saved = view.type === 'edit'
         ? await updateServer(view.server, payload, operationCwd)
@@ -900,8 +1239,15 @@ export function McpSettings() {
   if (view.type === 'create' || view.type === 'edit') {
     const editing = view.type === 'edit'
     const targetServer = editing ? view.server : null
+    const projectLocked = editing && view.projectLocked === true
+    const canRemoveTarget = Boolean(targetServer?.canRemove)
     const transportLocked = editing
     const isBusy = isSaving || isDeleting
+    const savedProjectTargets = projectSharing.projects.filter(project => project.selected)
+    const sharedScopeLocked = !!sharedSource && draft.scope === 'project' && (
+      !projectSharing.ready || savedProjectTargets.length !== 1 ||
+      mcpProjectPathKey(savedProjectTargets[0]?.projectPath) !== mcpProjectPathKey(sharedSource.projectPath)
+    )
     const targetProjectPath = draft.projectPath.trim()
     const needsProjectTarget = scopeRequiresProject(draft.scope)
     const targetProjectHint = draft.scope === 'local'
@@ -911,11 +1257,7 @@ export function McpSettings() {
             ? t('settings.mcp.targetProject.emptyWithCurrent', { path: currentWorkDir })
             : t('settings.mcp.targetProject.localEmpty'))
       : draft.scope === 'project'
-        ? (targetProjectPath
-            ? t('settings.mcp.targetProject.projectSelected', { path: targetProjectPath })
-            : currentWorkDir
-              ? t('settings.mcp.targetProject.emptyWithCurrent', { path: currentWorkDir })
-              : t('settings.mcp.targetProject.projectEmpty'))
+        ? undefined
         : t('settings.mcp.targetProject.globalHint')
 
     return (
@@ -929,6 +1271,7 @@ export function McpSettings() {
             }}
           />
 
+          {!projectLocked && (
           <SettingsPageHeader
             title={editing ? t('settings.mcp.form.editTitle', { name: targetServer!.name }) : t('settings.mcp.form.createTitle')}
             description={(
@@ -937,7 +1280,7 @@ export function McpSettings() {
                 {editing && targetServer && <StatusLine server={targetServer} t={t} />}
               </>
             )}
-            action={editing && targetServer && (targetServer.canReconnect || targetServer.canRemove) ? (
+            action={editing && targetServer && (targetServer.canReconnect || canRemoveTarget) ? (
               <>
                 {targetServer.canReconnect && (
                   <Button
@@ -950,7 +1293,7 @@ export function McpSettings() {
                     {t('settings.mcp.form.reconnect')}
                   </Button>
                 )}
-                {targetServer.canRemove && (
+                {canRemoveTarget && (
                   <Button
                     variant="danger-ghost"
                     size="base"
@@ -964,7 +1307,9 @@ export function McpSettings() {
               </>
             ) : undefined}
           />
+          )}
 
+          {!projectLocked && (
           <SettingsGroup className="mt-6">
             <SettingsBlock className="py-3.5">
               <Input
@@ -990,6 +1335,7 @@ export function McpSettings() {
                       key={scope}
                       type="button"
                       aria-pressed={active}
+                      disabled={isBusy || (sharedScopeLocked && scope !== 'project')}
                       onClick={() => setDraftField('scope', scope)}
                       className={cx(
                         'flex flex-col justify-start rounded-[var(--radius-md)] border px-3 py-2.5 text-left transition-colors duration-150',
@@ -1009,13 +1355,18 @@ export function McpSettings() {
                   )
                 })}
               </div>
+              {sharedScopeLocked && projectSharing.ready && (
+                <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">{t('settings.mcp.projects.scopeHint')}</p>
+              )}
             </SettingsBlock>
 
             <SettingsRow
-              title={needsProjectTarget ? t('settings.mcp.targetProject.title') : t('settings.mcp.targetProject.globalTitle')}
+              title={usesProjectSharing ? t('settings.mcp.projects.label') : needsProjectTarget ? t('settings.mcp.targetProject.title') : t('settings.mcp.targetProject.globalTitle')}
               description={targetProjectHint}
             >
-              {needsProjectTarget && (
+              {usesProjectSharing ? (
+                <McpProjectTargets sharing={projectSharing} disabled={isBusy} />
+              ) : needsProjectTarget && (
                 <DirectoryPicker
                   value={draft.projectPath}
                   onChange={(path) => setDraftField('projectPath', path)}
@@ -1040,112 +1391,115 @@ export function McpSettings() {
               />
             </SettingsRow>
           </SettingsGroup>
-
-          {draft.transport === 'stdio' ? (
-            <>
-              <SettingsGroup className="mt-7">
-                <SettingsBlock className="py-3.5">
-                  <Input
-                    size="md"
-                    label={t('settings.mcp.form.command')}
-                    value={draft.command}
-                    onChange={(event) => setDraftField('command', event.target.value)}
-                    placeholder={t('settings.mcp.form.commandPlaceholder')}
-                    required
-                  />
-                  <p className="mt-2 text-xs leading-[1.5] text-[var(--color-text-tertiary)]">
-                    {t('settings.mcp.form.commandHostHint')}
-                  </p>
-                </SettingsBlock>
-              </SettingsGroup>
-
-              <ArraySection
-                title={t('settings.mcp.form.arguments')}
-                rows={draft.args}
-                onChange={(id, _field, value) => updateStringRows('args', id, value)}
-                onAdd={() => addRow('args')}
-                onRemove={(id) => removeRow('args', id)}
-                singleValue
-                displayValue={(_row, index) => displayMcpArgumentValue(draft.args, index)}
-                valuePlaceholder={t('settings.mcp.form.argumentPlaceholder')}
-                addLabel={t('settings.mcp.form.addArgument')}
-              />
-
-              <ArraySection
-                title={t('settings.mcp.form.environmentVariables')}
-                rows={draft.env}
-                onChange={(id, field, value) => updateKeyValueRows('env', id, field, value)}
-                onAdd={() => addRow('env')}
-                onRemove={(id) => removeRow('env', id)}
-                displayValue={(row) => ('key' in row ? displayMcpKeyValueRowValue(row) : row.value)}
-                keyPlaceholder={t('settings.mcp.form.keyPlaceholder')}
-                valuePlaceholder={t('settings.mcp.form.valuePlaceholder')}
-                addLabel={t('settings.mcp.form.addEnv')}
-              />
-            </>
-          ) : (
-            <>
-              <SettingsGroup className="mt-7">
-                <SettingsBlock className="py-3.5">
-                  <Input
-                    size="md"
-                    label={draft.transport === 'http' ? t('settings.mcp.form.url') : t('settings.mcp.form.sseUrl')}
-                    value={draft.url}
-                    onChange={(event) => setDraftField('url', event.target.value)}
-                    placeholder={t('settings.mcp.form.urlPlaceholder')}
-                    required
-                  />
-                </SettingsBlock>
-              </SettingsGroup>
-
-              <ArraySection
-                title={t('settings.mcp.form.headers')}
-                rows={draft.headers}
-                onChange={(id, field, value) => updateKeyValueRows('headers', id, field, value)}
-                onAdd={() => addRow('headers')}
-                onRemove={(id) => removeRow('headers', id)}
-                displayValue={(row) => ('key' in row ? displayMcpKeyValueRowValue(row) : row.value)}
-                keyPlaceholder={t('settings.mcp.form.keyPlaceholder')}
-                valuePlaceholder={t('settings.mcp.form.valuePlaceholder')}
-                addLabel={t('settings.mcp.form.addHeader')}
-              />
-
-              <SettingsGroup className="mt-7">
-                <SettingsBlock className="space-y-4 py-3.5">
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <Input
-                      size="md"
-                      label={t('settings.mcp.form.oauthClientId')}
-                      value={draft.oauthClientId}
-                      onChange={(event) => setDraftField('oauthClientId', event.target.value)}
-                      placeholder={t('settings.mcp.form.oauthClientIdPlaceholder')}
-                    />
-                    <Input
-                      size="md"
-                      label={t('settings.mcp.form.oauthCallbackPort')}
-                      value={draft.oauthCallbackPort}
-                      onChange={(event) => setDraftField('oauthCallbackPort', event.target.value)}
-                      placeholder={t('settings.mcp.form.oauthCallbackPortPlaceholder')}
-                    />
-                  </div>
-                  <Input
-                    size="md"
-                    label={t('settings.mcp.form.headersHelper')}
-                    value={draft.headersHelper}
-                    onChange={(event) => setDraftField('headersHelper', event.target.value)}
-                    placeholder={t('settings.mcp.form.headersHelperPlaceholder')}
-                  />
-                </SettingsBlock>
-              </SettingsGroup>
-            </>
           )}
+
+          <fieldset className="min-w-0" disabled={isBusy || (!!sharedSource && draft.scope === 'project' && !projectSharing.ready)}>
+            {draft.transport === 'stdio' ? (
+              <>
+                <SettingsGroup className="mt-7">
+                  <SettingsBlock className="py-3.5">
+                    <Input
+                      size="md"
+                      label={t('settings.mcp.form.command')}
+                      value={draft.command}
+                      onChange={(event) => setDraftField('command', event.target.value)}
+                      placeholder={t('settings.mcp.form.commandPlaceholder')}
+                      required
+                    />
+                    <p className="mt-2 text-xs leading-[1.5] text-[var(--color-text-tertiary)]">
+                      {t('settings.mcp.form.commandHostHint')}
+                    </p>
+                  </SettingsBlock>
+                </SettingsGroup>
+
+                <ArraySection
+                  title={t('settings.mcp.form.arguments')}
+                  rows={draft.args}
+                  onChange={(id, _field, value) => updateStringRows('args', id, value)}
+                  onAdd={() => addRow('args')}
+                  onRemove={(id) => removeRow('args', id)}
+                  singleValue
+                  displayValue={(_row, index) => displayMcpArgumentValue(draft.args, index)}
+                  valuePlaceholder={t('settings.mcp.form.argumentPlaceholder')}
+                  addLabel={t('settings.mcp.form.addArgument')}
+                />
+
+                <ArraySection
+                  title={t('settings.mcp.form.environmentVariables')}
+                  rows={draft.env}
+                  onChange={(id, field, value) => updateKeyValueRows('env', id, field, value)}
+                  onAdd={() => addRow('env')}
+                  onRemove={(id) => removeRow('env', id)}
+                  displayValue={(row) => ('key' in row ? displayMcpKeyValueRowValue(row) : row.value)}
+                  keyPlaceholder={t('settings.mcp.form.keyPlaceholder')}
+                  valuePlaceholder={t('settings.mcp.form.valuePlaceholder')}
+                  addLabel={t('settings.mcp.form.addEnv')}
+                />
+              </>
+            ) : (
+              <>
+                <SettingsGroup className="mt-7">
+                  <SettingsBlock className="py-3.5">
+                    <Input
+                      size="md"
+                      label={draft.transport === 'http' ? t('settings.mcp.form.url') : t('settings.mcp.form.sseUrl')}
+                      value={draft.url}
+                      onChange={(event) => setDraftField('url', event.target.value)}
+                      placeholder={t('settings.mcp.form.urlPlaceholder')}
+                      required
+                    />
+                  </SettingsBlock>
+                </SettingsGroup>
+
+                <ArraySection
+                  title={t('settings.mcp.form.headers')}
+                  rows={draft.headers}
+                  onChange={(id, field, value) => updateKeyValueRows('headers', id, field, value)}
+                  onAdd={() => addRow('headers')}
+                  onRemove={(id) => removeRow('headers', id)}
+                  displayValue={(row) => ('key' in row ? displayMcpKeyValueRowValue(row) : row.value)}
+                  keyPlaceholder={t('settings.mcp.form.keyPlaceholder')}
+                  valuePlaceholder={t('settings.mcp.form.valuePlaceholder')}
+                  addLabel={t('settings.mcp.form.addHeader')}
+                />
+
+                <SettingsGroup className="mt-7">
+                  <SettingsBlock className="space-y-4 py-3.5">
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <Input
+                        size="md"
+                        label={t('settings.mcp.form.oauthClientId')}
+                        value={draft.oauthClientId}
+                        onChange={(event) => setDraftField('oauthClientId', event.target.value)}
+                        placeholder={t('settings.mcp.form.oauthClientIdPlaceholder')}
+                      />
+                      <Input
+                        size="md"
+                        label={t('settings.mcp.form.oauthCallbackPort')}
+                        value={draft.oauthCallbackPort}
+                        onChange={(event) => setDraftField('oauthCallbackPort', event.target.value)}
+                        placeholder={t('settings.mcp.form.oauthCallbackPortPlaceholder')}
+                      />
+                    </div>
+                    <Input
+                      size="md"
+                      label={t('settings.mcp.form.headersHelper')}
+                      value={draft.headersHelper}
+                      onChange={(event) => setDraftField('headersHelper', event.target.value)}
+                      placeholder={t('settings.mcp.form.headersHelperPlaceholder')}
+                    />
+                  </SettingsBlock>
+                </SettingsGroup>
+              </>
+            )}
+          </fieldset>
 
           <div className="mt-7 flex justify-end">
             <Button
               variant="primary"
               size="base"
               onClick={handleSave}
-              disabled={!isDraftValid(draft) || isBusy}
+              disabled={!isDraftValid(draft, usesProjectSharing) || isBusy || (usesProjectSharing && !projectSharing.canSave)}
               loading={isSaving}
             >
               {t('settings.mcp.form.save')}
@@ -1198,7 +1552,10 @@ export function McpSettings() {
           ) : (
             MCP_GROUP_ORDER.map((group) => {
               const groupServers = groupedServers[group]
-              if (!groupServers?.length) return null
+              const sectionCount = group === 'project'
+                ? projectServiceGroups.length
+                : groupServers?.length ?? 0
+              if (sectionCount === 0) return null
 
               return (
                 <SettingsSection
@@ -1207,22 +1564,59 @@ export function McpSettings() {
                     <>
                       {group === 'plugin' ? t('settings.mcp.scope.plugin') : t(`settings.mcp.scope.${group}`)}
                       <span className="ml-1.5 font-mono text-[11px] font-normal tabular-nums text-[var(--color-text-tertiary)]">
-                        {groupServers.length}
+                        {sectionCount}
                       </span>
                     </>
                   )}
                 >
                   <SettingsGroup>
-                    {groupServers.map((server) => (
-                      <ServerRow
-                        key={getMcpServerIdentityKey(server)}
-                        server={server}
-                        isBusy={busyServerKey === getMcpServerIdentityKey(server)}
-                        onOpen={() => beginEdit(server)}
-                        onToggle={() => void handleToggle(server)}
-                        t={t}
-                      />
-                    ))}
+                    {group === 'project'
+                      ? projectServiceGroups.map((serviceGroup) => {
+                          if (serviceGroup.copies.length === 1) {
+                            const copy = serviceGroup.copies[0]!
+                            return (
+                              <ServerRow
+                                key={serviceGroup.name}
+                                server={copy}
+                                isBusy={busyServerKey === getMcpServerIdentityKey(copy)}
+                                onOpen={() => beginEdit(copy)}
+                                onToggle={() => void handleToggle(copy)}
+                                t={t}
+                              />
+                            )
+                          }
+
+                          return (
+                            <ProjectServiceGroupRow
+                              key={serviceGroup.name}
+                              group={serviceGroup}
+                              currentWorkDir={currentWorkDir}
+                              busyServerKey={busyServerKey}
+                              expanded={expandedServiceGroups.has(serviceGroup.name)}
+                              onToggleExpanded={() => setExpandedServiceGroups((current) => {
+                                const next = new Set(current)
+                                if (next.has(serviceGroup.name)) next.delete(serviceGroup.name)
+                                else next.add(serviceGroup.name)
+                                return next
+                              })}
+                              onOpenGroup={() => beginEdit(serviceGroup.primary)}
+                              onEditCopy={(copy) => beginEdit(copy, { projectLocked: true })}
+                              onToggleCopy={(copy) => void handleToggle(copy)}
+                              onDeleteCopy={handleDelete}
+                              t={t}
+                            />
+                          )
+                        })
+                      : groupServers!.map((server) => (
+                          <ServerRow
+                            key={getMcpServerIdentityKey(server)}
+                            server={server}
+                            isBusy={busyServerKey === getMcpServerIdentityKey(server)}
+                            onOpen={() => beginEdit(server)}
+                            onToggle={() => void handleToggle(server)}
+                            t={t}
+                          />
+                        ))}
                   </SettingsGroup>
                 </SettingsSection>
               )
