@@ -464,25 +464,39 @@ def ocr_fast(image):
     engine = win_ocr_engine()
     if engine is None or winsdk is None:
         return None
-    try:
-        import asyncio
+
+    async def run():
         import io
 
-        async def run():
-            stream = winsdk.InMemoryRandomAccessStream()
-            writer = winsdk.DataWriter(stream)
-            buffer = io.BytesIO()
-            image.save(buffer, format="PNG")
-            writer.write_bytes(buffer.getvalue())
-            await writer.store_async()
-            await writer.flush_async()
-            stream.seek(0)
-            decoder = await winsdk.BitmapDecoder.create_async(stream)
-            bitmap = await decoder.get_software_bitmap_async()
-            return await engine.recognize_async(bitmap)
+        stream = winsdk.InMemoryRandomAccessStream()
+        writer = winsdk.DataWriter(stream)
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        writer.write_bytes(buffer.getvalue())
+        await writer.store_async()
+        await writer.flush_async()
+        stream.seek(0)
+        decoder = await winsdk.BitmapDecoder.create_async(stream)
+        bitmap = await decoder.get_software_bitmap_async()
+        return await engine.recognize_async(bitmap)
 
-        result = asyncio.new_event_loop().run_until_complete(run())
-    except Exception:
+    def in_thread():
+        import asyncio
+
+        try:
+            box["result"] = asyncio.new_event_loop().run_until_complete(run())
+        except Exception as error:
+            box["error"] = error
+
+    # The reading thread has usually initialised COM as STA (the accessibility
+    # tree does), and a WinRT async call there waits for a message pump that
+    # never runs. A fresh thread is free of that apartment and returns.
+    box = {}
+    thread = threading.Thread(target=in_thread, daemon=True)
+    thread.start()
+    thread.join(20)
+    result = box.get("result")
+    if result is None:
         return None
     if result is None:
         return None
@@ -497,6 +511,11 @@ def ocr_fast(image):
         bottom = int(max(w.bounding_rect.y + w.bounding_rect.height for w in words))
         rows.append(([left, top, right - left, bottom - top], join_words([w.text for w in words]), 0.9))
     return rows or None
+
+
+def looks_underread(rows, image):
+    """快速 OCR 在大图上只蹦出不到两行，多半是读瞎了——值得用慢引擎重读。"""
+    return rows is not None and len(rows) < 2 and image.height > 300
 
 
 def read_text(hwnd, region, wait_seconds, accurate=False):
@@ -519,6 +538,8 @@ def read_text(hwnd, region, wait_seconds, accurate=False):
     rows = None
     if not accurate:
         rows = ocr_fast(image)
+        if looks_underread(rows, image):
+            rows = None  # 快速引擎没读出内容，落回慢引擎，别让调用方手选 accurate
     if rows is None:
         if ocr_engine is None:
             ocr_engine = RapidOCR()
@@ -902,6 +923,14 @@ def selftest():
     # 只读：不提供任何点击/输入动作
     assert "click_at" not in globals() and "scroll_at" not in globals()
     print("PASS: read-only — no click or scroll action exists")
+
+    # 快速 OCR 读瞎自动升级：大图上近空结果触发慢引擎重读
+    assert looks_underread(None, Image.new("RGB", (800, 600))) is False  # None 走原本回退
+    assert looks_underread([], Image.new("RGB", (800, 600))) is True     # 空行大图 → 重读
+    assert looks_underread([("b", "t", 0.9)], Image.new("RGB", (800, 600))) is True
+    assert looks_underread([], Image.new("RGB", (200, 100))) is False    # 小图一条没有也正常
+    assert looks_underread([("b", "t", 0.9)] * 3, Image.new("RGB", (800, 600))) is False
+    print("PASS: looks_underread escalates empty near-empty reads on large images only")
     return 0
 
 
