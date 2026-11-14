@@ -35,11 +35,17 @@ const noShot = {} as unknown as ComputerUseOverrides
 describe('withTailObservation (P4-a)', () => {
   afterEach(() => { delete process.env.CC_HAHA_CU_TAIL_OBS })
 
-  test('env off → payload untouched (default off)', async () => {
-    delete process.env.CC_HAHA_CU_TAIL_OBS // 并发文件可能刚设过
+  test('env=0 → payload untouched (opt-out)', async () => {
+    process.env.CC_HAHA_CU_TAIL_OBS = '0'
     const payload = { completed: [{ action: 'key', ok: true }] }
     const r = await withTailObservation(fakeAdapter(), overrides, payload)
     expect(r).toBe(payload) // same reference — nothing appended
+  })
+
+  test('env unset → default ON, appends tail observation', async () => {
+    delete process.env.CC_HAHA_CU_TAIL_OBS // 并发文件可能刚设过
+    const r = (await withTailObservation(fakeAdapter(), overrides, { completed: [] })) as Record<string, unknown>
+    expect(r.tailObservation).toBeTruthy()
   })
 
   test('env on + lastScreenshot → appends tailObservation with stamp + guard note', async () => {

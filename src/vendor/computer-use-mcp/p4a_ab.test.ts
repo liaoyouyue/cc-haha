@@ -49,8 +49,8 @@ const overrides = {
 describe('P4-a A/B x30 (real chain)', () => {
   // bun 并发跑测试文件会串 env：每个用例后强制清掉
   afterEach(() => { delete process.env.CC_HAHA_CU_TAIL_OBS })
-  test('B 组: env off — 30 次, 无 tailObservation, 基线耗时', async () => {
-    delete process.env.CC_HAHA_CU_TAIL_OBS
+  test('B 组: env=0 — 30 次, 无 tailObservation, 基线耗时', async () => {
+    process.env.CC_HAHA_CU_TAIL_OBS = '0'
     const adapter = realAdapter()
     const t: number[] = []
     for (let i = 0; i < N; i++) {
@@ -63,8 +63,8 @@ describe('P4-a A/B x30 (real chain)', () => {
     console.log(`B(off): n=${N} p50=${s[N >> 1].toFixed(2)}ms max=${s[N - 1].toFixed(2)}ms`)
   }, 120_000)
 
-  test('A 组: env on — 30 次, 有 tailObservation + 真实 crop 图', async () => {
-    process.env.CC_HAHA_CU_TAIL_OBS = '1'
+  test('A 组: 默认开 (env 未设) — 30 次, 有 tailObservation + 真实 crop 图', async () => {
+    delete process.env.CC_HAHA_CU_TAIL_OBS
     const adapter = realAdapter()
     const t: number[] = []
     let totalB64 = 0

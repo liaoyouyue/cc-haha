@@ -2902,7 +2902,8 @@ async function withTailObservation(
   overrides: ComputerUseOverrides,
   payload: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
-  if (process.env.CC_HAHA_CU_TAIL_OBS !== "1") return payload;
+  // P4-a tail observation. Default ON; opt out with CC_HAHA_CU_TAIL_OBS=0.
+  if (process.env.CC_HAHA_CU_TAIL_OBS === "0") return payload;
   const last = overrides.lastScreenshot;
   if (!last?.base64) return payload; // no pre-batch screenshot, nothing to anchor a crop to
 

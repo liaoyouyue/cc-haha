@@ -495,7 +495,9 @@ export function buildComputerUseTools(
         "batching a predictable sequence eliminates all but one. Use this whenever you can predict the outcome of several actions ahead — " +
         "e.g. click a field, type into it, press Return. Actions execute sequentially and stop on the first error. " +
         `${FRONTMOST_GATE_DESC} The frontmost check runs before EACH action inside the batch — if an action opens a non-allowed app, the next action's gate fires and the batch stops there. ` +
-        "Mid-batch screenshot actions are allowed for inspection but coordinates in subsequent clicks always refer to the PRE-BATCH full-screen screenshot.",
+        "Mid-batch screenshot actions are allowed for inspection but coordinates in subsequent clicks always refer to the PRE-BATCH full-screen screenshot. " +
+        "Batch deeper: 6-12 actions per call when the outcome is predictable — each extra action saved is one model round trip (~2-5s) saved. " +
+        "Prefer short wait durations (or none) and rely on the post-batch confirmation image to check the result; long blind waits cost seconds each.",
       inputSchema: {
         type: "object" as const,
         properties: {
