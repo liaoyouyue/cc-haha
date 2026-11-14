@@ -235,6 +235,16 @@ describe('DoctorService', () => {
 })
 
 describe('doctor API', () => {
+  test('quick startup report checks settings without scanning session transcripts', async () => {
+    const request = makeRequest('GET', '/api/doctor/report?quick=1')
+    const response = await handleDoctorApi(request.req, request.url, request.segments)
+    const body = await response.json() as { report: { items: Array<{ id: string; status: string }> } }
+
+    expect(response.status).toBe(200)
+    expect(body.report.items).toContainEqual(expect.objectContaining({ id: 'user-settings', status: 'invalid_json' }))
+    expect(body.report.items.some((item) => item.id.startsWith('session-jsonl:'))).toBe(false)
+  })
+
   test('returns a report and dry-run repair result', async () => {
     const reportReq = makeRequest(
       'GET',

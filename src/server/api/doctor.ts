@@ -12,7 +12,7 @@ export async function handleDoctorApi(
     if ((req.method === 'GET' && !sub) || (req.method === 'GET' && sub === 'report')) {
       const cwd = url.searchParams.get('cwd') || undefined
       const service = new DoctorService({ projectRoot: cwd })
-      return Response.json({ report: await service.getReport() })
+      return Response.json({ report: await service.getReport({ quick: url.searchParams.get('quick') === '1' }) })
     }
 
     if (req.method === 'POST' && sub === 'repair') {

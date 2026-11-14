@@ -72,7 +72,7 @@ export function runLocalDoctorRepair(storage: DoctorStorage | null = getDefaultD
   return { removedKeys, missingKeys, failedKeys }
 }
 
-export async function runDoctorCheck(options: { cwd?: string; timeout?: number } = {}): Promise<DoctorReport> {
-  const { report } = await doctorApi.report(options.cwd, { timeout: options.timeout })
+export async function runDoctorCheck(options: { cwd?: string; timeout?: number; quick?: boolean } = {}): Promise<DoctorReport> {
+  const { report } = await doctorApi.report(options.cwd, { timeout: options.timeout, quick: options.quick })
   return report
 }

@@ -98,8 +98,8 @@ export class DoctorService {
     this.usesConfigDirOverride = Boolean(options.configDir || process.env.CLAUDE_CONFIG_DIR)
   }
 
-  async getReport(): Promise<DoctorReport> {
-    const targets = await this.buildTargets()
+  async getReport(options: { quick?: boolean } = {}): Promise<DoctorReport> {
+    const targets = await this.buildTargets(options.quick)
     const items = await Promise.all(targets.map((target) => this.inspectTarget(target)))
     const protectedSkips = items
       .filter((item) => item.protected)
@@ -163,7 +163,7 @@ export class DoctorService {
     }
   }
 
-  private async buildTargets(): Promise<DoctorTarget[]> {
+  private async buildTargets(quick = false): Promise<DoctorTarget[]> {
     const agentSkillsEnabled = isAgentSkillsDirectoryEnabled()
     const targets: DoctorTarget[] = [
       this.jsonTarget('user-settings', 'User settings', 'user', path.join(this.configDir, 'settings.json')),
@@ -257,7 +257,7 @@ export class DoctorService {
       )
     }
 
-    const sessionFiles = await this.listJsonlFiles(path.join(this.configDir, 'projects'))
+    const sessionFiles = quick ? [] : await this.listJsonlFiles(path.join(this.configDir, 'projects'))
     for (const filePath of sessionFiles) {
       const relativePath = toPosix(path.relative(this.configDir, filePath))
       targets.push(

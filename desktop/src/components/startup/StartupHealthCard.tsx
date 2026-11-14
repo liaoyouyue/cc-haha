@@ -17,9 +17,7 @@ export function StartupHealthCard() {
 
   useEffect(() => {
     let active = true
-    // Boot budget: this machine's first doctor pass measured 2-4s, so the
-    // interactive 3s default reported a false "unavailable" on every launch.
-    runDoctorCheck({ timeout: 20_000 })
+    runDoctorCheck({ timeout: 20_000, quick: true })
       .then((report) => {
         if (active) setSummary(summarizeStartupHealth(report))
       })

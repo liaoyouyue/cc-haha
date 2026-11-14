@@ -41,6 +41,7 @@ describe('StartupHealthCard', () => {
     const card = await screen.findByRole('status')
     expect(card).toHaveAttribute('data-startup-health', 'ok')
     expect(card).toHaveTextContent('all good')
+    expect(runDoctorCheckMock).toHaveBeenCalledWith({ timeout: 20_000, quick: true })
   })
 
   it('raises a warning when config files are missing', async () => {
