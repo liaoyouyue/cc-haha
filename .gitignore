@@ -64,6 +64,29 @@ credentials*.json
 # TS build cache
 *.tsbuildinfo
 
+# TS 编译产物（.ts/.tsx 旁边的同名 .js/.js.map/.d.ts）
+# 源文件是 .ts/.tsx；这些是 build 输出，防止再以未跟踪状态出现
+src/**/*.js
+src/**/*.js.map
+src/**/*.d.ts
+desktop/**/*.js
+desktop/**/*.js.map
+desktop/**/*.d.ts
+mobile/**/*.js
+mobile/**/*.js.map
+mobile/**/*.d.ts
+scripts/**/*.js
+scripts/**/*.js.map
+site/**/*.js
+site/**/*.js.map
+tests/**/*.js
+adapters/**/*.js
+adapters/**/*.js.map
+adapters/**/*.d.ts
+stubs/**/*.js
+preload.js
+preload.js.map
+
 # Temp markdown snapshots
 sidebar-snapshot.md
 
