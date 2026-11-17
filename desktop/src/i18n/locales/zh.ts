@@ -5326,6 +5326,7 @@ export const zh: Record<TranslationKey, string> = {
   'dailyReport.tokens': 'Token',
   'dailyReport.cost': '费用',
   'dailyReport.costEstimated': '估算',
+  'dailyReport.costPartial': '未含无单价模型',
   'dailyReport.weekTitle': '近 7 天',
   'dailyReport.tasksTitle': '今天跑过的任务',
   'dailyReport.taskCount': '完成 {done}，失败 {failed}',

@@ -5328,6 +5328,7 @@ Row 9, all 8 cells: continuing from straight down, turning left through lower-le
   'dailyReport.tokens': 'Tokens',
   'dailyReport.cost': 'Cost',
   'dailyReport.costEstimated': 'estimated',
+  'dailyReport.costPartial': 'excludes unpriced models',
   'dailyReport.weekTitle': 'Last 7 days',
   'dailyReport.tasksTitle': 'Tasks that ran today',
   'dailyReport.taskCount': '{done} done, {failed} failed',

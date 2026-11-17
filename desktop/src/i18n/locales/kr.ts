@@ -5331,6 +5331,7 @@ export const kr: Record<TranslationKey, string> = {
   'dailyReport.tokens': 'Token',
   'dailyReport.cost': '비용',
   'dailyReport.costEstimated': '추정',
+  'dailyReport.costPartial': '가격 미정 모델 제외',
   'dailyReport.weekTitle': '최근 7일',
   'dailyReport.tasksTitle': '오늘 실행된 작업',
   'dailyReport.taskCount': '완료 {done}, 실패 {failed}',

@@ -5329,6 +5329,7 @@ export const jp: Record<TranslationKey, string> = {
   'dailyReport.tokens': 'Token',
   'dailyReport.cost': 'コスト',
   'dailyReport.costEstimated': '推定',
+  'dailyReport.costPartial': '価格未設定のモデルを除く',
   'dailyReport.weekTitle': '直近 7 日間',
   'dailyReport.tasksTitle': '今日実行されたタスク',
   'dailyReport.taskCount': '完了 {done}、失敗 {failed}',

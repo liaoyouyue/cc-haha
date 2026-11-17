@@ -138,6 +138,15 @@ export function DailyReport() {
     () => estimateDailyCost(today, stats?.dailyModelTokens ?? [], stats?.modelUsage ?? {}),
     [stats, today],
   )
+  // Models with no published rate contribute tokens but no dollars. Saying so beats a $0
+  // that reads like the day was free.
+  const todayUnpriced = useMemo(() => {
+    const day = stats?.dailyModelTokens.find(row => row.date === today)
+    const unpriced = new Set(stats?.unpricedModels ?? [])
+    if (!day) return []
+    const used = Object.keys(day.tokensByModel)
+    return used.filter(model => unpriced.has(model))
+  }, [stats, today])
   const todayEntries = useMemo(() => pickTodayEntries(entries, now), [entries, now])
   const failures = todayEntries.filter(entry => entry.status === 'failed')
   const problems = useMemo(
@@ -186,7 +195,11 @@ export function DailyReport() {
           <StatTile label={t('dailyReport.sessions')} value={String(todayActivity?.sessionCount ?? 0)} />
           <StatTile label={t('dailyReport.toolCalls')} value={String(todayActivity?.toolCallCount ?? 0)} />
           <StatTile label={t('dailyReport.tokens')} value={formatTokens(todayTokens)} />
-          <StatTile label={t('dailyReport.cost')} value={formatCost(todayCost)} detail={t('dailyReport.costEstimated')} />
+          <StatTile
+            label={t('dailyReport.cost')}
+            value={todayUnpriced.length > 0 && todayCost <= 0 ? '—' : formatCost(todayCost)}
+            detail={todayUnpriced.length > 0 ? t('dailyReport.costPartial') : t('dailyReport.costEstimated')}
+          />
         </dl>
 
         <section className="mt-9">
