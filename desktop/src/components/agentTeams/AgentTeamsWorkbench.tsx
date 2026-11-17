@@ -14,8 +14,6 @@ import type {
 } from '../../types/team'
 import { AgentTeamsCanvas } from './AgentTeamsCanvas'
 import { AgentTeamsCommunicationFeed } from './AgentTeamsCommunicationFeed'
-import { AgentTeamsGroupComposer } from './AgentTeamsGroupComposer'
-import { AgentTeamsChatView } from './AgentTeamsChatView'
 import { AgentTeamsMemberInspector } from './AgentTeamsMemberInspector'
 import {
   getMemberWorkState,
@@ -133,8 +131,6 @@ export function AgentTeamsWorkbench({ sessionId }: { sessionId: string }) {
     (state) => (state.sessions[sessionId]?.chatState ?? 'idle') !== 'idle',
   )
   const [communicationOpen, setCommunicationOpen] = useState(false)
-  // 群聊是主界面：打开团队先看到的是一屏消息流，不是看板。
-  const [viewMode, setViewMode] = useState<'chat' | 'board'>('chat')
   const [selectedMemberId, setSelectedMemberId] = useState<string | null>(null)
   const [selectedTask, setSelectedTask] = useState<TeamWorkbenchTask | null>(null)
   const [replaySpeed, setReplaySpeed] = useState<(typeof REPLAY_SPEEDS)[number]>(1)
@@ -400,41 +396,6 @@ export function AgentTeamsWorkbench({ sessionId }: { sessionId: string }) {
             <TimelineStat label={t('agentTeams.stats.blocked')} value={counts.blocked} tone="muted" />
           </div>
 
-          <div
-            role="group"
-            aria-label={t('agentTeams.view.switch')}
-            className="flex shrink-0 overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-border)]"
-          >
-            <button
-              type="button"
-              data-testid="agent-teams-view-chat"
-              aria-pressed={viewMode === 'chat'}
-              onClick={() => setViewMode('chat')}
-              className={[
-                'h-7 border-r border-[var(--color-border)] px-3 text-[11px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-border-focus)]',
-                viewMode === 'chat'
-                  ? 'bg-[var(--color-surface-selected)] text-[var(--color-text-primary)]'
-                  : 'bg-[var(--color-surface-container-lowest)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]',
-              ].join(' ')}
-            >
-              {t('agentTeams.view.chat')}
-            </button>
-            <button
-              type="button"
-              data-testid="agent-teams-view-board"
-              aria-pressed={viewMode === 'board'}
-              onClick={() => setViewMode('board')}
-              className={[
-                'h-7 px-3 text-[11px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-border-focus)]',
-                viewMode === 'board'
-                  ? 'bg-[var(--color-surface-selected)] text-[var(--color-text-primary)]'
-                  : 'bg-[var(--color-surface-container-lowest)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]',
-              ].join(' ')}
-            >
-              {t('agentTeams.view.board')}
-            </button>
-          </div>
-
           {followingLive ? (
             <div data-testid="agent-teams-live-controls" className="flex min-w-0 flex-[1_1_480px] items-center gap-3.5">
               <div className="flex shrink-0 items-center gap-1.5 rounded-full bg-[var(--color-info-container)] px-2.5 py-1">
@@ -614,28 +575,22 @@ export function AgentTeamsWorkbench({ sessionId }: { sessionId: string }) {
                 onOpenExecution={openSelectedExecution}
               />
             ) : (
-              <div className="flex h-full min-h-0 flex-col">
-                <div className="relative min-h-0 flex-1">
-                  <AgentTeamsCommunicationFeed
-                    snapshot={snapshot}
-                    fill
-                    onFocusTask={setFeedFocusedTaskId}
-                  />
-                  <div className="absolute right-3 top-2.5 z-[var(--z-raised)]">
-                    <IconButton
-                      icon={<ChevronRight aria-hidden="true" />}
-                      label={t('agentTeams.communication.close')}
-                      size="sm"
-                      tone="muted"
-                      bordered
-                      onClick={closeCommunication}
-                    />
-                  </div>
-                </div>
-                <AgentTeamsGroupComposer
-                  teamName={snapshot.team.name}
-                  members={snapshot.team.members}
+              <div className="relative h-full min-h-0">
+                <AgentTeamsCommunicationFeed
+                  snapshot={snapshot}
+                  fill
+                  onFocusTask={setFeedFocusedTaskId}
                 />
+                <div className="absolute right-3 top-2.5 z-[var(--z-raised)]">
+                  <IconButton
+                    icon={<ChevronRight aria-hidden="true" />}
+                    label={t('agentTeams.communication.close')}
+                    size="sm"
+                    tone="muted"
+                    bordered
+                    onClick={closeCommunication}
+                  />
+                </div>
               </div>
             )}
           </aside>
@@ -644,12 +599,7 @@ export function AgentTeamsWorkbench({ sessionId }: { sessionId: string }) {
             type="button"
             data-testid="agent-teams-communication-rail"
             aria-label={t('agentTeams.communication.open')}
-            onClick={() => {
-              // The pane belongs to the board; opening it from the rail leaves
-              // the full-screen chat so the same messages are not on screen twice.
-              setCommunicationOpen(true)
-              setViewMode('board')
-            }}
+            onClick={() => setCommunicationOpen(true)}
             className="flex h-full w-14 shrink-0 flex-col items-center gap-3 border-l border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] py-3 outline-none transition-colors hover:bg-[var(--color-surface-container-low)] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-border-focus)]"
           >
             <span className="flex h-[30px] w-[30px] items-center justify-center rounded-[var(--radius-md)] border border-[var(--color-outline)] text-[var(--color-text-secondary)]">
@@ -672,21 +622,6 @@ export function AgentTeamsWorkbench({ sessionId }: { sessionId: string }) {
             />
           </button>
         )}
-
-        {viewMode === 'chat' ? (
-          <div
-            data-testid="agent-teams-group-chat"
-            className="absolute inset-0 z-[var(--z-raised)] flex min-h-0 flex-col bg-[var(--color-surface)]"
-          >
-            <div className="min-h-0 flex-1">
-              <AgentTeamsChatView snapshot={snapshot} />
-            </div>
-            <AgentTeamsGroupComposer
-              teamName={snapshot.team.name}
-              members={snapshot.team.members}
-            />
-          </div>
-        ) : null}
 
         {selectedTask && snapshot.tasks.some(task => task.id === selectedTask.id) ? (
           <TaskDetailPanel

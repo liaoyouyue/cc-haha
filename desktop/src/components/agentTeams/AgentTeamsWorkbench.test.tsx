@@ -608,21 +608,4 @@ describe('AgentTeamsWorkbench', () => {
       vi.unstubAllGlobals()
     }
   })
-
-  it('opens on the full-screen group chat and switches to the board', async () => {
-    getWorkbenchMock.mockResolvedValueOnce(workbench('v1', ['completed', 'in_progress', 'pending']))
-    await act(async () => {
-      await useTeamStore.getState().fetchWorkbench('visual-team')
-    })
-    render(<AgentTeamsWorkbench sessionId="lead-session" />)
-
-    // 群聊是默认页：一屏消息流 + 底部输入框。
-    expect(screen.getByTestId('agent-teams-group-chat')).toBeTruthy()
-    expect(screen.getByTestId('agent-teams-group-input')).toBeTruthy()
-    expect(screen.getByTestId('agent-teams-view-chat').getAttribute('aria-pressed')).toBe('true')
-
-    fireEvent.click(screen.getByTestId('agent-teams-view-board'))
-    expect(screen.queryByTestId('agent-teams-group-chat')).toBeNull()
-    expect(screen.getByTestId('agent-teams-view-board').getAttribute('aria-pressed')).toBe('true')
-  })
 })

@@ -9,6 +9,7 @@ import { Settings } from '../../pages/Settings'
 import { TerminalSettings } from '../../pages/TerminalSettings'
 import { SubagentRunPage, TeamMemberRunPage } from '../../pages/SubagentRunPage'
 import { AgentTeamsWorkbenchTab } from '../agentTeams/AgentTeamsWorkbenchTab'
+import { GroupChatPage } from '../../pages/GroupChatPage'
 import { WorkspaceBrowserGuestLayer } from '../workbench/WorkspaceBrowserGuestLayer'
 
 type ContentRouterProps = {
@@ -69,6 +70,8 @@ export function ContentRouter({ homePage }: ContentRouterProps = {}) {
     page = <Settings />
   } else if (activeTabType === 'scheduled') {
     page = <ScheduledTasks />
+  } else if (activeTabType === 'group-chat') {
+    page = <GroupChatPage />
   } else if (activeTabType === 'connectors' || activeTabType === 'market') {
     page = <ExtensionMarket />
   } else if (activeTabType === 'subagent') {
