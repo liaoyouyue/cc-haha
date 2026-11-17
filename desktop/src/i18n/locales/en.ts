@@ -4084,6 +4084,15 @@ Row 9, all 8 cells: continuing from straight down, turning left through lower-le
   'agentTeams.communication.close': 'Close communication panel',
   'agentTeams.communication.backToFeed': 'Back to communication',
 
+  'agentTeams.view.chat': 'Chat',
+
+  'agentTeams.view.board': 'Board',
+
+  'agentTeams.view.switch': 'Switch view',
+
+
+  'agentTeams.chat.empty': 'Nobody has spoken yet. Say something to start.',
+
   'agentTeams.group.placeholder': 'Message the team… (@name to target, empty for everyone)',
 
     'agentTeams.group.send': 'Send',

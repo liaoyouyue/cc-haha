@@ -4087,6 +4087,15 @@ export const kr: Record<TranslationKey, string> = {
   'agentTeams.communication.close': '통신 패널 닫기',
   'agentTeams.communication.backToFeed': '통신 목록으로',
 
+  'agentTeams.view.chat': '채팅',
+
+  'agentTeams.view.board': '보드',
+
+  'agentTeams.view.switch': '보기 전환',
+
+
+  'agentTeams.chat.empty': '아직 아무도 말하지 않았습니다. 먼저 말을 걸어 보세요.',
+
   'agentTeams.group.placeholder': '팀에 메시지…(@이름 멘션, 비우면 전체)',
 
     'agentTeams.group.send': '보내기',

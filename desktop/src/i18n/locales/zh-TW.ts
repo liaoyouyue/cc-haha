@@ -4084,6 +4084,15 @@ export const zh: Record<TranslationKey, string> = {
   'agentTeams.communication.close': '收合通訊面板',
   'agentTeams.communication.backToFeed': '返回通訊流',
 
+  'agentTeams.view.chat': '群聊',
+
+  'agentTeams.view.board': '看板',
+
+  'agentTeams.view.switch': '檢視切換',
+
+
+  'agentTeams.chat.empty': '群裡還沒人說話，發一條開始吧。',
+
   'agentTeams.group.placeholder': '說點什麼…（@名字 定向傳送，留空發全員）',
 
     'agentTeams.group.send': '傳送',

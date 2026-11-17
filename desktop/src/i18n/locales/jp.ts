@@ -4085,6 +4085,15 @@ export const jp: Record<TranslationKey, string> = {
   'agentTeams.communication.close': '通信パネルを閉じる',
   'agentTeams.communication.backToFeed': '通信一覧に戻る',
 
+  'agentTeams.view.chat': 'チャット',
+
+  'agentTeams.view.board': 'ボード',
+
+  'agentTeams.view.switch': '表示切替',
+
+
+  'agentTeams.chat.empty': 'まだ誰も話していません。何か送って始めましょう。',
+
   'agentTeams.group.placeholder': 'チームにメッセージ…（@名前でメンション、空で全員）',
 
     'agentTeams.group.send': '送信',

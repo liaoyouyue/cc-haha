@@ -4082,6 +4082,15 @@ export const zh: Record<TranslationKey, string> = {
   'agentTeams.communication.close': '收起通讯面板',
   'agentTeams.communication.backToFeed': '返回通讯流',
 
+  'agentTeams.view.chat': '群聊',
+
+  'agentTeams.view.board': '看板',
+
+  'agentTeams.view.switch': '视图切换',
+
+
+  'agentTeams.chat.empty': '群里还没人说话，发一条开始吧。',
+
   'agentTeams.group.placeholder': '说点什么…（@名字 定向发送，留空发全员）',
 
     'agentTeams.group.send': '发送',
