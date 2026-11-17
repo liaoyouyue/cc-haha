@@ -457,7 +457,10 @@ export const ContextUsageIndicator = forwardRef<ContextUsageIndicatorHandle, Pro
       // From the ws-event token usage (chatStore summarize): null when the
       // engine reports no reasoning split — the Details row then hides.
       reasoningTokens: sessionState?.tokenUsage.reasoning_tokens ?? null,
-      liveRate: estimatedRate,
+      // While the model emits, the sampled estimate is the honest reading. Once it
+      // stops, fall back to the last turn's measured rate rather than blanking the
+      // row — a session that just finished still has a speed worth showing.
+      liveRate: estimatedRate ?? measuredRate,
       costDisplay: displayUsage.costDisplay,
     }
   }, [displayUsage, estimatedRate, turnTiming, sessionState?.tokenUsage.output_tokens, sessionState?.tokenUsage.reasoning_tokens])

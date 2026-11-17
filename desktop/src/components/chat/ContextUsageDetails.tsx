@@ -179,10 +179,10 @@ function SessionStatGrid({
       <div className="min-w-0">
         <div className={labelClass}>{labels.sessionSpeed}</div>
         <div className={valueClass} data-testid="session-speed">
-          {stats.measuredRate === null
+          {stats.tokensPerSecond === null
             ? '--'
-            : formatTokensPerSecond(stats.measuredRate)}
-          {stats.measuredRate !== null && (
+            : formatTokensPerSecond(stats.tokensPerSecond)}
+          {stats.tokensPerSecond !== null && (
             <span className="ml-1 text-[11px] text-[var(--color-text-tertiary)]">{labels.sessionSpeedUnit}</span>
           )}
         </div>

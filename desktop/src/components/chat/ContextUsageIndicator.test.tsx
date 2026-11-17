@@ -1175,8 +1175,9 @@ describe('ContextUsageIndicator session usage', () => {
     // Cache reads stay in the hit-rate row; they are not a separate headline.
     expect(await screen.findByTestId('session-cache-hit')).toHaveTextContent('90.0%')
     // 2400 output / 42s API time, including prefill — not the 12s decode span (200 tok/s).
-    // No completed turn in the store: the measured rate has no reading.
-    expect(screen.getByTestId('session-speed')).toHaveTextContent('--')
+    expect(screen.getByTestId('session-speed')).toHaveTextContent('57')
+    // No completed turn in the store: nothing to fall back to yet.
+    expect(screen.getByTestId('live-speed')).toHaveTextContent('--')
     expect(screen.getByTestId('session-cost')).toHaveTextContent('$1.23')
     expect(sessionsApiMock.getSessionUsage).toHaveBeenCalledWith('session-1', expect.anything())
   })
@@ -1205,9 +1206,40 @@ describe('ContextUsageIndicator session usage', () => {
       expect(screen.getByTestId('context-usage-indicator')).toHaveTextContent('21%')
     })
     fireEvent.click(screen.getByTestId('context-usage-indicator'))
-    // 120 tokens / 4s decode = 30 tok/s measured.
-    expect(await screen.findByTestId('session-speed')).toHaveTextContent('30')
+    // 120 tokens / 4s decode = 30 tok/s measured. Nothing is streaming, so the
+    // live row falls back to that rate.
+    expect(await screen.findByTestId('live-speed')).toHaveTextContent('30')
     expect(screen.getByTestId('session-ttft')).toHaveTextContent('850ms')
+  })
+
+  it('falls back to the last measured rate when the model is not emitting', async () => {
+    useChatStore.setState({ sessions: {} })
+    const base = useChatStore.getState().getSession('session-1')
+    useChatStore.setState({
+      sessions: {
+        'session-1': {
+          ...base,
+          chatState: 'idle',
+          messages: [],
+          tokenUsage: { input_tokens: 900, output_tokens: 120 },
+          turnTiming: { duration_ms: 10_000, duration_api_ms: 8_000, ttft_ms: 850, decode_ms: 4_000 },
+        },
+      },
+    })
+
+    render(
+      <ContextUsageIndicator sessionId="session-1" chatState="idle" messageCount={1} />,
+    )
+    await waitFor(() => {
+      expect(screen.getByTestId('context-usage-indicator')).toHaveTextContent('21%')
+    })
+    fireEvent.click(screen.getByTestId('context-usage-indicator'))
+
+    // Nothing is streaming, so the live reading falls back to the last turn's
+    // measured rate: 120 output tokens over a 4s decode span = 30 tok/s.
+    expect(await screen.findByTestId('live-speed')).toHaveTextContent('30')
+    // The interface average stays the session-wide API figure: 2400 tokens / 42s.
+    expect(screen.getByTestId('session-speed')).toHaveTextContent('57')
   })
 
   it('never reports a partial cache as a perfect one', async () => {
