@@ -4,6 +4,7 @@ import { useTabStore } from '../../stores/tabStore'
 import { EmptySession } from '../../pages/EmptySession'
 import { ActiveSession } from '../../pages/ActiveSession'
 import { ScheduledTasks } from '../../pages/ScheduledTasks'
+import { DailyReport } from '../../pages/DailyReport'
 import { ExtensionMarket } from '@/pages/ExtensionMarket'
 import { Settings } from '../../pages/Settings'
 import { TerminalSettings } from '../../pages/TerminalSettings'
@@ -69,6 +70,8 @@ export function ContentRouter({ homePage }: ContentRouterProps = {}) {
     page = <Settings />
   } else if (activeTabType === 'scheduled') {
     page = <ScheduledTasks />
+  } else if (activeTabType === 'daily') {
+    page = <DailyReport />
   } else if (activeTabType === 'connectors' || activeTabType === 'market') {
     page = <ExtensionMarket />
   } else if (activeTabType === 'subagent') {
