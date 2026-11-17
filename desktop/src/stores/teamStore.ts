@@ -1105,6 +1105,7 @@ type TeamStore = {
     snapshot?: TeamWorkbenchSnapshot,
   ) => void
   sendMessageToMember: (sessionId: string, content: string) => Promise<void>
+  sendTeamMessage: (teamName: string, content: string, to?: string) => Promise<{ recipients: string[]; broadcast: boolean }>
   /** Switches a member's model through the team runtime; rejects with the server's error. */
   updateMemberRuntime: (sessionId: string, selection: RuntimeSelection) => Promise<void>
   startMemberPolling: (sessionId: string, force?: boolean) => void
@@ -1787,6 +1788,18 @@ export const useTeamStore = create<TeamStore>((set, get) => ({
       removeAwaitingMemberReply(sessionId, awaitingReply)
       throw error
     }
+  },
+
+  sendTeamMessage: async (teamName, content, to) => {
+    const result = await teamsApi.sendTeamMessage(teamName, content, to)
+    // The mailbox is now the source of truth; the workbench will pick this up
+    // via team_workbench_updated. Refresh the active timeline proactively so
+    // the composer feels responsive.
+    const knownLead = Object.entries(get().workbenchesBySession).find(
+      ([, timeline]) => timeline?.snapshots.at(-1)?.team.name === teamName,
+    )?.[0]
+    if (knownLead) void get().fetchTeamForSession(knownLead, { force: true })
+    return result
   },
 
   updateMemberRuntime: async (sessionId, selection) => {

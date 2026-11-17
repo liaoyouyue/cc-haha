@@ -146,6 +146,24 @@ export async function handleTeamsApi(
       return Response.json({ ok: true })
     }
 
+    // ── POST /api/teams/:name/messages (group chat) ───────────────────────
+    if (
+      method === 'POST' &&
+      teamName &&
+      segments[3] === 'messages' &&
+      !segments[4]
+    ) {
+      let body: { content?: string; to?: string }
+      try {
+        body = (await req.json()) as { content?: string; to?: string }
+      } catch {
+        throw ApiError.badRequest('Invalid JSON body')
+      }
+      const result = await teamService.sendTeamMessage(teamName, body.content ?? '', body.to)
+      return Response.json({ ok: true, ...result })
+    }
+
+
     // ── PATCH /api/teams/:name/members/:id/runtime ────────────────────────
     if (
       method === 'PATCH' &&

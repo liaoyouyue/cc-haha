@@ -4086,6 +4086,10 @@ export const kr: Record<TranslationKey, string> = {
   'agentTeams.communication.open': '통신 패널 열기',
   'agentTeams.communication.close': '통신 패널 닫기',
   'agentTeams.communication.backToFeed': '통신 목록으로',
+
+  'agentTeams.group.placeholder': '팀에 메시지…(@이름 멘션, 비우면 전체)',
+
+    'agentTeams.group.send': '보내기',
   'agentTeams.inspector.independentContext': '{role} · 독립 컨텍스트',
   'agentTeams.inspector.current': '현재',
   'agentTeams.inspector.completedTasks': '완료',

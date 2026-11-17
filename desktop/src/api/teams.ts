@@ -126,6 +126,13 @@ export const teamsApi = {
     )
   },
 
+  sendTeamMessage(teamName: string, content: string, to?: string) {
+    return api.post<{ ok: true; recipients: string[]; broadcast: boolean }>(
+      `/api/teams/${encodeURIComponent(teamName)}/messages`,
+      { content, ...(to ? { to } : {}) },
+    )
+  },
+
   /**
    * Switches a member's model through the team runtime, which restarts its CLI
    * as the same member. Never route this through the session runtime path.

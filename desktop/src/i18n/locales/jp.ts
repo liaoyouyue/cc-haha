@@ -4084,6 +4084,10 @@ export const jp: Record<TranslationKey, string> = {
   'agentTeams.communication.open': '通信パネルを開く',
   'agentTeams.communication.close': '通信パネルを閉じる',
   'agentTeams.communication.backToFeed': '通信一覧に戻る',
+
+  'agentTeams.group.placeholder': 'チームにメッセージ…（@名前でメンション、空で全員）',
+
+    'agentTeams.group.send': '送信',
   'agentTeams.inspector.independentContext': '{role} · 独立コンテキスト',
   'agentTeams.inspector.current': '現在',
   'agentTeams.inspector.completedTasks': '完了',

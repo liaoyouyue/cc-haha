@@ -17,7 +17,9 @@ import { ApiError } from '../middleware/errorHandler.js'
 import { readTeamTranscriptProjection } from './teamTranscriptProjection.js'
 import { readMemberFailure } from '../../utils/swarm/turnFailure.js'
 import { unescapeXmlAttr } from '../../utils/xml.js'
+import { TEAM_LEAD_NAME } from '../../utils/swarm/constants.js'
 import {
+  createMailboxMessageId,
   MAILBOX_HISTORY_SUFFIX,
   readMailboxHistoryAtPath,
   writeToMailbox,
@@ -1825,6 +1827,78 @@ export class TeamService {
       this.pendingMemberMessages -= 1
       powerActivityClock.changed()
     }
+  }
+
+  /**
+   * 群聊：向指定成员或全员投递一条消息，共享同一 messageId 保证工作台聚合后不重复。
+   */
+  async sendTeamMessage(
+    teamName: string,
+    content: string,
+    to?: string,
+  ): Promise<{ recipients: string[]; broadcast: boolean }> {
+    const text = content.trim()
+    if (!text) {
+      throw ApiError.badRequest('content (string) is required in request body')
+    }
+    const config = await this.loadTeamConfig(teamName)
+    const members = config.members ?? []
+    const wanted = (to ?? '').trim()
+    const broadcast = !wanted || wanted === '*' || wanted === '@all'
+    let recipients: string[]
+    if (broadcast) {
+      // The lead already talks to the user in the main session; the group is
+      // the teammates. `team-lead` is the coordinator's own name in the
+      // roster, the same name the rest of the swarm code uses.
+      recipients = members
+        .filter((m) => m.name !== TEAM_LEAD_NAME)
+        .map((m) => m.name)
+        .filter((name): name is string => Boolean(name))
+    } else {
+      const wantedName = wanted.replace(/^@/, '')
+      // A member is addressed by the name shown in the roster, which is what
+      // the user types. Fall back to the agentId lookup for callers that
+      // already have one.
+      const byName = members.find((m) => m.name?.toLowerCase() === wantedName.toLowerCase())
+      const name = byName?.name
+        ?? await this.resolveMemberName(config, teamName, wantedName)
+      if (!name) {
+        throw ApiError.notFound(`Team member not found: ${wanted} in team ${teamName}`)
+      }
+      recipients = [name]
+    }
+    if (recipients.length === 0) {
+      throw ApiError.badRequest('No teammates to send to')
+    }
+    const messageId = createMailboxMessageId()
+    const timestamp = new Date().toISOString()
+    this.pendingMemberMessages += 1
+    powerActivityClock.changed()
+    try {
+      const failed: string[] = []
+      for (const recipientName of recipients) {
+        const delivered = await writeToMailbox(
+          recipientName,
+          { id: messageId, from: 'user', text, timestamp },
+          teamName,
+        )
+        if (!delivered) failed.push(recipientName)
+      }
+      if (failed.length) {
+        const ok = recipients.filter((r) => !failed.includes(r))
+        throw new ApiError(
+          503,
+          ok.length
+            ? `Sent to ${ok.join(', ')}; failed: ${failed.join(', ')}`
+            : `Could not deliver to ${failed.join(', ')}`,
+          'MAILBOX_UNAVAILABLE',
+        )
+      }
+    } finally {
+      this.pendingMemberMessages -= 1
+      powerActivityClock.changed()
+    }
+    return { recipients, broadcast }
   }
 
   private async writeMemberMessage(teamName: string, agentId: string, text: string): Promise<void> {

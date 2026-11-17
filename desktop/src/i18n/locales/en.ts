@@ -4083,6 +4083,10 @@ Row 9, all 8 cells: continuing from straight down, turning left through lower-le
   'agentTeams.communication.open': 'Open communication panel',
   'agentTeams.communication.close': 'Close communication panel',
   'agentTeams.communication.backToFeed': 'Back to communication',
+
+  'agentTeams.group.placeholder': 'Message the team… (@name to target, empty for everyone)',
+
+    'agentTeams.group.send': 'Send',
   'agentTeams.inspector.independentContext': '{role} · independent context',
   'agentTeams.inspector.current': 'Current',
   'agentTeams.inspector.completedTasks': 'Completed',

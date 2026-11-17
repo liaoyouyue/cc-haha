@@ -4081,6 +4081,10 @@ export const zh: Record<TranslationKey, string> = {
   'agentTeams.communication.open': '展开通讯面板',
   'agentTeams.communication.close': '收起通讯面板',
   'agentTeams.communication.backToFeed': '返回通讯流',
+
+  'agentTeams.group.placeholder': '说点什么…（@名字 定向发送，留空发全员）',
+
+    'agentTeams.group.send': '发送',
   'agentTeams.inspector.independentContext': '{role} · 独立上下文',
   'agentTeams.inspector.current': '当前',
   'agentTeams.inspector.completedTasks': '已完成',

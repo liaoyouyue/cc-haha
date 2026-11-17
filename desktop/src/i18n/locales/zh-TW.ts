@@ -4083,6 +4083,10 @@ export const zh: Record<TranslationKey, string> = {
   'agentTeams.communication.open': '展開通訊面板',
   'agentTeams.communication.close': '收合通訊面板',
   'agentTeams.communication.backToFeed': '返回通訊流',
+
+  'agentTeams.group.placeholder': '說點什麼…（@名字 定向傳送，留空發全員）',
+
+    'agentTeams.group.send': '傳送',
   'agentTeams.inspector.independentContext': '{role} · 獨立內容',
   'agentTeams.inspector.current': '目前',
   'agentTeams.inspector.completedTasks': '已完成',

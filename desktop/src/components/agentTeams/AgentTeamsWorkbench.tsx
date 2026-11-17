@@ -14,6 +14,7 @@ import type {
 } from '../../types/team'
 import { AgentTeamsCanvas } from './AgentTeamsCanvas'
 import { AgentTeamsCommunicationFeed } from './AgentTeamsCommunicationFeed'
+import { AgentTeamsGroupComposer } from './AgentTeamsGroupComposer'
 import { AgentTeamsMemberInspector } from './AgentTeamsMemberInspector'
 import {
   getMemberWorkState,
@@ -575,22 +576,28 @@ export function AgentTeamsWorkbench({ sessionId }: { sessionId: string }) {
                 onOpenExecution={openSelectedExecution}
               />
             ) : (
-              <div className="relative h-full min-h-0">
-                <AgentTeamsCommunicationFeed
-                  snapshot={snapshot}
-                  fill
-                  onFocusTask={setFeedFocusedTaskId}
-                />
-                <div className="absolute right-3 top-2.5 z-[var(--z-raised)]">
-                  <IconButton
-                    icon={<ChevronRight aria-hidden="true" />}
-                    label={t('agentTeams.communication.close')}
-                    size="sm"
-                    tone="muted"
-                    bordered
-                    onClick={closeCommunication}
+              <div className="flex h-full min-h-0 flex-col">
+                <div className="relative min-h-0 flex-1">
+                  <AgentTeamsCommunicationFeed
+                    snapshot={snapshot}
+                    fill
+                    onFocusTask={setFeedFocusedTaskId}
                   />
+                  <div className="absolute right-3 top-2.5 z-[var(--z-raised)]">
+                    <IconButton
+                      icon={<ChevronRight aria-hidden="true" />}
+                      label={t('agentTeams.communication.close')}
+                      size="sm"
+                      tone="muted"
+                      bordered
+                      onClick={closeCommunication}
+                    />
+                  </div>
                 </div>
+                <AgentTeamsGroupComposer
+                  teamName={snapshot.team.name}
+                  members={snapshot.team.members}
+                />
               </div>
             )}
           </aside>
