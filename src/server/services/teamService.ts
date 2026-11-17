@@ -2613,6 +2613,9 @@ export class TeamService {
           // tells members what the room already said.
           const text = groupRoundText(parsed.text)
           if (!text) continue
+          // Protocol traffic (idle notifications, shutdown answers) is plumbing,
+          // not something anyone said in the group.
+          if (text.startsWith('{')) continue
           if (!newest || parsed.timestamp > newest.timestamp) {
             newest = { from: parsed.from, text, timestamp: parsed.timestamp }
           }

@@ -7,6 +7,7 @@ import { GROUP_CHAT_TAB_ID } from '../stores/tabStore'
 import { GroupChatPage } from './GroupChatPage'
 
 const getWorkbench = vi.fn()
+const addMember = vi.fn()
 
 vi.mock('../api/teams', () => ({
   teamsApi: {
@@ -17,6 +18,7 @@ vi.mock('../api/teams', () => ({
     getMemberTranscript: vi.fn(),
     sendMemberMessage: vi.fn(),
     sendTeamMessage: vi.fn(),
+    addMember: (...args: unknown[]) => addMember(...args),
     delete: vi.fn(),
   },
 }))
@@ -43,7 +45,7 @@ const SNAPSHOT = {
   },
   tasks: [],
   messages: [
-    { id: 'm1', from: 'arch', to: '*', recipients: ['arch'], kind: 'broadcast' as const, text: '我先说', timestamp: '2026-11-17T18:22:00.000Z' },
+    { id: 'm1', from: 'arch', to: '*', recipients: ['arch'], kind: 'broadcast' as const, text: '架构观点', timestamp: '2026-11-17T18:22:00.000Z' },
     { id: 'm2', from: 'user', to: '*', recipients: ['arch'], kind: 'broadcast' as const, text: '我知道了', timestamp: '2026-11-17T18:23:00.000Z' },
   ],
 }
@@ -51,12 +53,17 @@ const SNAPSHOT = {
 beforeEach(() => {
   getWorkbench.mockReset()
   getWorkbench.mockResolvedValue(SNAPSHOT)
-  useTeamStore.setState({ teams: [TEAM], sendTeamMessage: vi.fn().mockResolvedValue({ recipients: ['arch'], broadcast: true }) } as never)
+  addMember.mockReset()
+  addMember.mockResolvedValue({ ok: true, member: { name: 'newbie' }, planState: 'running' })
+  useTeamStore.setState({
+    teams: [TEAM],
+    sendTeamMessage: vi.fn().mockResolvedValue({ recipients: ['arch'], broadcast: true }),
+  } as never)
   useTabStore.setState({ tabs: [], activeTabId: null })
 })
 
-describe('独立群聊页', () => {
-  it('侧栏开群聊后显示群列表、群头部、微信式气泡和输入条', async () => {
+describe('群聊独立页', () => {
+  it('打开就是整屏聊天：群列表、群头部、气泡、输入框', async () => {
     useTabStore.getState().openTab(GROUP_CHAT_TAB_ID, '开群聊', 'group-chat')
     render(<ContentRouter />)
 
@@ -66,21 +73,32 @@ describe('独立群聊页', () => {
     expect(screen.getByTestId('group-chat-header').textContent).toContain('demo-group')
     expect(screen.getByTestId('group-chat-bubble-m1').textContent).toContain('AI助手')
     expect(screen.getByTestId('group-chat-bubble-m2').getAttribute('data-from')).toBe('user')
-    expect(screen.getByTestId('group-chat-input')).toBeTruthy()
-    expect(screen.getByTestId('group-chat-send')).toBeTruthy()
-    expect(screen.getByTestId('group-chat-online')).toBeTruthy()
-    expect(screen.getByTestId('group-chat-day')).toBeTruthy()
+    expect(screen.getByTestId('group-chat-online').textContent).toContain('在线')
   })
 
-  it('输入一条消息会调用 sendTeamMessage 并刷新消息流', async () => {
+  it('输入框能打字，发送会调用 sendTeamMessage 并刷新消息流', async () => {
     render(<GroupChatPage />)
     await waitFor(() => expect(screen.getByTestId('group-chat-window')).toBeTruthy())
     const send = useTeamStore.getState().sendTeamMessage as ReturnType<typeof vi.fn>
 
-    fireEvent.change(screen.getByTestId('group-chat-input'), { target: { value: '开会' } })
+    const input = screen.getByTestId('group-chat-input') as HTMLTextAreaElement
+    fireEvent.change(input, { target: { value: '开会' } })
+    expect(input.value).toBe('开会')
     fireEvent.click(screen.getByTestId('group-chat-send'))
 
     await waitFor(() => expect(send).toHaveBeenCalledWith('demo-group', '开会', undefined))
-    await waitFor(() => expect(screen.getByTestId('group-chat-input')).toHaveProperty('value', ''))
+    await waitFor(() => expect((screen.getByTestId('group-chat-input') as HTMLTextAreaElement).value).toBe(''))
+  })
+
+  it('加成员按钮会调 addMember 接口', async () => {
+    render(<GroupChatPage />)
+    await waitFor(() => expect(screen.getByTestId('group-chat-window')).toBeTruthy())
+
+    fireEvent.click(screen.getByTestId('group-chat-members'))
+    fireEvent.click(screen.getByTestId('group-chat-add-member'))
+    fireEvent.change(screen.getByTestId('group-chat-new-member-name'), { target: { value: 'newbie' } })
+    fireEvent.click(screen.getByTestId('group-chat-new-member-confirm'))
+
+    await waitFor(() => expect(addMember).toHaveBeenCalledWith('demo-group', { name: 'newbie', agentType: 'general-purpose' }))
   })
 })

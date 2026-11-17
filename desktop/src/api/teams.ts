@@ -126,6 +126,13 @@ export const teamsApi = {
     )
   },
 
+  addMember(teamName: string, input: { name: string; agentType: string; prompt?: string; model?: string; providerId?: string; effortLevel?: string }) {
+    return api.post<{ ok: true; member: { name: string }; planState: string }>(
+      `/api/teams/${encodeURIComponent(teamName)}/members`,
+      input,
+    )
+  },
+
   sendTeamMessage(teamName: string, content: string, to?: string) {
     return api.post<{ ok: true; recipients: string[]; broadcast: boolean }>(
       `/api/teams/${encodeURIComponent(teamName)}/messages`,

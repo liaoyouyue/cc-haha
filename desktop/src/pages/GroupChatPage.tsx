@@ -1,8 +1,7 @@
-import { useEffect, useState } from 'react'
-import { Ellipsis, Image, Paperclip, Search, Send, Smile, UsersRound } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Ellipsis, Plus, Search, Send, UsersRound } from 'lucide-react'
 import { teamsApi } from '../api/teams'
 import { useTeamStore } from '../stores/teamStore'
-import { useSettingsStore } from '../stores/settingsStore'
 import { MEMBER_AVATARS, memberAccentColor } from '../components/agentTeams/agentTeamsAvatars'
 import { getMemberAvatarKey } from '../components/agentTeams/agentTeamsModel'
 import type { TeamMember, TeamSummary, TeamWorkbenchMessage, TeamWorkbenchSnapshot } from '../types/team'
@@ -10,7 +9,7 @@ import type { TeamMember, TeamSummary, TeamWorkbenchMessage, TeamWorkbenchSnapsh
 const DAY_LABEL = new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric' })
 
 /** 群聊独立页：左群列表，右微信式聊天窗。 */
-export function GroupChatPage({ groupId = '__group-chat__' }: { groupId?: string }) {
+export function GroupChatPage() {
   const teams = useTeamStore((state) => state.teams)
   const [selected, setSelected] = useState<string | null>(null)
   const [snapshot, setSnapshot] = useState<TeamWorkbenchSnapshot | null>(null)
@@ -22,7 +21,6 @@ export function GroupChatPage({ groupId = '__group-chat__' }: { groupId?: string
 
   useEffect(() => {
     if (!teams.length) return
-    // Keep a chosen group; otherwise open the one with the newest line.
     const found = selected && teams.some((team) => team.name === selected)
       ? selected
       : teams.reduce((a, b) => ((b.updatedAt ?? '') > (a.updatedAt ?? '') ? b : a)).name
@@ -45,10 +43,10 @@ export function GroupChatPage({ groupId = '__group-chat__' }: { groupId?: string
       {error && !snapshot ? (
         <div className="flex flex-1 items-center justify-center text-sm text-[var(--color-error)]">{error}</div>
       ) : active && snapshot ? (
-        <GroupChat team={active} snapshot={snapshot} onSent={(next) => setSnapshot(next)} groupId={groupId} />
+        <GroupChat team={active} snapshot={snapshot} onSent={setSnapshot} />
       ) : (
         <div className="flex flex-1 items-center justify-center text-sm text-[var(--color-text-tertiary)]">
-          没有群聊，先在会话里组建一个团队
+          没有群聊。先在会话里组建一个团队，它就会出现在这里。
         </div>
       )}
     </div>
@@ -92,24 +90,32 @@ function GroupList({ teams, selected, onSelect }: {
   )
 }
 
-function GroupChat({ team, snapshot, onSent, groupId }: {
+function GroupChat({ team, snapshot, onSent }: {
   team: TeamSummary
   snapshot: TeamWorkbenchSnapshot
   onSent: (next: TeamWorkbenchSnapshot) => void
-  groupId: string
 }) {
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
   const [find, setFind] = useState('')
   const [showMembers, setShowMembers] = useState(false)
-  const model = useSettingsStore((state) => state.currentModel)
+  const [adding, setAdding] = useState(false)
+  const [newName, setNewName] = useState('')
+  const [addError, setAddError] = useState<string | null>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
+
   const members = snapshot.team.members
   const online = members.filter((member) => member.activity === 'active' || member.status === 'running')
   const messages = snapshot.messages.filter((message) => message.kind !== 'system')
-  const filtered = find
-    ? messages.filter((message) => message.text.toLowerCase().includes(find.toLowerCase()))
-    : messages
+  const filtered = useMemo(
+    () => (find ? messages.filter((message) => message.text.toLowerCase().includes(find.toLowerCase())) : messages),
+    [messages, find],
+  )
+
+  // The composer takes the first click: a chat you have to aim at is a chat
+  // that feels broken.
+  useEffect(() => { inputRef.current?.focus() }, [team.name])
 
   const send = async () => {
     const body = text.trim()
@@ -137,6 +143,20 @@ function GroupChat({ team, snapshot, onSent, groupId }: {
     }
   }
 
+  const addMember = async () => {
+    const name = newName.trim()
+    if (!name) return
+    setAddError(null)
+    try {
+      await teamsApi.addMember(team.name, { name, agentType: 'general-purpose' })
+      setNewName('')
+      setAdding(false)
+      onSent(await teamsApi.getWorkbench(team.name))
+    } catch (err) {
+      setAddError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
   return (
     <section data-testid="group-chat-window" className="flex min-w-0 flex-1 flex-col">
       <header data-testid="group-chat-header" className="flex shrink-0 items-center gap-3 border-b border-[var(--color-border)] px-4 py-2.5">
@@ -146,10 +166,12 @@ function GroupChat({ team, snapshot, onSent, groupId }: {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="truncate text-[15px] font-semibold">{team.name}</span>
-            <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-success)]" aria-hidden="true" />
+            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-success)]" aria-hidden="true" />
             <span className="shrink-0 text-[11px] text-[var(--color-text-tertiary)]">{members.length} 名成员</span>
           </div>
-          <div className="truncate text-[11px] text-[var(--color-text-tertiary)]">多智能体协作 · 产品 / 开发 / 评审 / 运营</div>
+          <div className="truncate text-[11px] text-[var(--color-text-tertiary)]">
+            {online.length ? `${online.map((m) => m.name).filter(Boolean).join(' · ')} 在线` : `${members.length} 名成员`}
+          </div>
         </div>
         <button type="button" data-testid="group-chat-members" aria-label="成员" onClick={() => setShowMembers((v) => !v)} className="rounded p-1.5 text-[13px] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]">成员</button>
         <button type="button" data-testid="group-chat-search" aria-label="搜索" onClick={() => setFind(find ? '' : ' ')} className="rounded p-1.5 text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]"><Search size={15} aria-hidden="true" /></button>
@@ -157,17 +179,36 @@ function GroupChat({ team, snapshot, onSent, groupId }: {
       </header>
 
       {showMembers ? (
-        <div data-testid="group-chat-member-panel" className="flex shrink-0 gap-2 overflow-x-auto border-b border-[var(--color-border)] px-4 py-2">
-          {members.map((member, index) => (
-            <span key={member.agentId} className="flex shrink-0 items-center gap-1 rounded-full bg-[var(--color-surface-container)] px-2 py-1 text-[11px]">
+        <div data-testid="group-chat-member-panel" className="flex shrink-0 items-center gap-2 overflow-x-auto border-b border-[var(--color-border)] px-4 py-2">
+          {members.map((member) => (
+            <span key={member.agentId} className="flex shrink-0 items-center gap-1.5 rounded-full bg-[var(--color-surface-container)] px-2 py-1 text-[11px]">
               <img src={MEMBER_AVATARS[getMemberAvatarKey(member)]} alt="" className="h-4 w-4 rounded-full object-cover" />
               {member.name ?? member.agentId}
               {online.includes(member) ? <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-success)]" /> : null}
-              <span className="text-[var(--color-text-tertiary)]">{index}</span>
             </span>
           ))}
+          {adding ? (
+            <span className="flex shrink-0 items-center gap-1 rounded-full border border-[var(--color-border)] px-2 py-1 text-[11px]">
+              <input
+                data-testid="group-chat-new-member-name"
+                autoFocus
+                value={newName}
+                onChange={(event) => setNewName(event.target.value)}
+                onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void addMember() } }}
+                placeholder="成员名"
+                className="w-20 bg-transparent outline-none"
+              />
+              <button type="button" data-testid="group-chat-new-member-confirm" onClick={() => void addMember()} className="rounded px-1.5 hover:bg-[var(--color-surface-hover)]">加入</button>
+            </span>
+          ) : (
+            <button type="button" data-testid="group-chat-add-member" onClick={() => { setAdding(true); setAddError(null) }} className="flex shrink-0 items-center gap-1 rounded-full border border-dashed border-[var(--color-border)] px-2 py-1 text-[11px] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]">
+              <Plus size={11} aria-hidden="true" /> 加成员
+            </button>
+          )}
+          {addError ? <span role="alert" className="shrink-0 text-[11px] text-[var(--color-error)]">{addError}</span> : null}
         </div>
       ) : null}
+
       {find ? (
         <input
           data-testid="group-chat-find-input"
@@ -185,52 +226,43 @@ function GroupChat({ team, snapshot, onSent, groupId }: {
             <Bubble message={message} members={members} />
           </DayRow>
         ))}
-        {!filtered.length ? <div className="flex h-full items-center justify-center text-sm text-[var(--color-text-tertiary)]">没有消息</div> : null}
+        {!filtered.length ? <div className="flex h-full items-center justify-center text-sm text-[var(--color-text-tertiary)]">还没有人说话</div> : null}
       </div>
 
       <div data-testid="group-chat-online" className="flex shrink-0 items-center gap-1.5 border-t border-[var(--color-border)] px-4 py-1 text-[11px] text-[var(--color-text-tertiary)]">
         <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-success)]" />
-        {online.length ? `${online.map((member) => member.name).filter(Boolean).join(' · ')} 在线` : `${members.length} 名成员`}
+        {online.length ? `${online.map((m) => m.name).filter(Boolean).join(' · ')} 在线` : `${members.length} 名成员`}
       </div>
 
       <footer data-testid="group-chat-composer" className="shrink-0 border-t border-[var(--color-border)] px-4 py-2.5">
-        <div className="flex items-center gap-1.5 text-[var(--color-text-tertiary)]">
-          <button type="button" aria-label="表情" className="rounded p-1 hover:bg-[var(--color-surface-hover)]"><Smile size={16} /></button>
-          <button type="button" aria-label="文件" className="rounded p-1 hover:bg-[var(--color-surface-hover)]"><Paperclip size={16} /></button>
-          <button type="button" aria-label="图片" className="rounded p-1 hover:bg-[var(--color-surface-hover)]"><Image size={16} /></button>
-        </div>
         <textarea
+          ref={inputRef}
           data-testid="group-chat-input"
           value={text}
           onChange={(event) => setText(event.target.value)}
           onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send() } }}
           placeholder="发消息…（@成员 定向，留空发全员）"
           rows={2}
-          className="mt-1 w-full resize-none bg-transparent text-sm outline-none placeholder:text-[var(--color-text-tertiary)]"
+          className="w-full resize-none rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] px-3 py-2 text-sm outline-none placeholder:text-[var(--color-text-tertiary)] focus:border-[var(--color-border-focus)]"
         />
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-2 text-[11px] text-[var(--color-text-tertiary)]">
-            <span>+ Administrator</span>
-            <span>跳过</span>
-            <span className="truncate">{model?.name ?? model?.id ?? groupId}</span>
-            <span>最大</span>
-          </div>
+        <div className="mt-2 flex items-center justify-between gap-2">
+          {sendError ? <span role="alert" className="text-xs text-[var(--color-error)]">{sendError}</span> : <span />}
           <button
             type="button"
             data-testid="group-chat-send"
             disabled={!text.trim() || sending}
             onClick={() => void send()}
-            className="flex items-center gap-1 rounded-[var(--radius-sm)] bg-[var(--color-btn-primary-bg)] px-3 py-1 text-xs text-[var(--color-btn-primary-fg)] disabled:opacity-50"
+            className="flex items-center gap-1 rounded-[var(--radius-sm)] bg-[var(--color-btn-primary-bg)] px-3 py-1.5 text-xs text-[var(--color-btn-primary-fg)] disabled:opacity-50"
           >
             发送 <Send size={13} />
           </button>
         </div>
-        {sendError ? <div role="alert" className="mt-1 text-xs text-[var(--color-error)]">{sendError}</div> : null}
       </footer>
     </section>
   )
 }
 
+/** 日期分隔线：新的一天先画一条居中的日期。 */
 function DayRow({ message, previous, children }: {
   message: TeamWorkbenchMessage
   previous: TeamWorkbenchMessage | undefined
@@ -238,10 +270,12 @@ function DayRow({ message, previous, children }: {
 }) {
   const day = message.timestamp.slice(0, 10)
   if (previous && previous.timestamp.slice(0, 10) === day) return <>{children}</>
-  return <>
-    <div data-testid="group-chat-day" className="my-3 text-center text-[11px] text-[var(--color-text-tertiary)]">{relativeDay(day)} {timeLabel(message.timestamp)}</div>
-    {children}
-  </>
+  return (
+    <>
+      <div data-testid="group-chat-day" className="my-3 text-center text-[11px] text-[var(--color-text-tertiary)]">{relativeDay(day)}</div>
+      {children}
+    </>
+  )
 }
 
 function Bubble({ message, members }: { message: TeamWorkbenchMessage; members: TeamMember[] }) {
@@ -254,12 +288,12 @@ function Bubble({ message, members }: { message: TeamWorkbenchMessage; members: 
   return (
     <div data-testid={`group-chat-bubble-${message.id}`} data-from={message.from} className={mine ? 'mb-3 flex justify-end' : 'mb-3 flex gap-2'}>
       {!mine && avatar}
-      <div className={`flex max-w-[72%] min-w-0 flex-col ${mine ? 'items-end' : 'items-start'}`}>
+      <div className={['flex max-w-[72%] min-w-0 flex-col', mine ? 'items-end' : 'items-start'].join(' ')}>
         <div className="mb-0.5 flex items-center gap-1.5 px-0.5">
           {!mine ? <><span className="text-[12px] font-semibold" style={{ color }}>{message.from}</span><span className="text-[10px] text-[var(--color-text-tertiary)]">AI助手</span></> : null}
-          <span className="font-mono text-[10px] text-[var(--color-text-tertiary)]">{timeLabel(message.timestamp)}</span>
+          <span className="font-mono text-[10px] tabular-nums text-[var(--color-text-tertiary)]">{timeLabel(message.timestamp)}</span>
         </div>
-        <div className={`whitespace-pre-wrap break-words rounded-[var(--radius-lg)] px-3 py-2 text-sm ${mine ? 'bg-[var(--color-surface-user-msg)]' : 'bg-[var(--color-surface-container-lowest)]'}`}>
+        <div className={['whitespace-pre-wrap break-words rounded-[var(--radius-lg)] px-3 py-2 text-sm', mine ? 'bg-[var(--color-surface-user-msg)]' : 'bg-[var(--color-surface-container-lowest)]'].join(' ')}>
           {message.text}
         </div>
       </div>
