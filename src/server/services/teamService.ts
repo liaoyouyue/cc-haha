@@ -1449,6 +1449,21 @@ type TeamFileRaw = {
 
 // ─── Service ───────────────────────────────────────────────────────────────
 
+/**
+ * 群聊消息的包装格式：成员收到的正文带着"谁在群里、已经聊到哪"，工作台
+ * 显示时剥掉这层，只留用户原话。
+ */
+const GROUP_CONTEXT_MARKER = '[群聊]'
+const GROUP_ROUND_MARKER = '[本轮]'
+
+/** 用户原话：包装里最后一段，其余是机器生成的上下文。 */
+function groupRoundText(text: string): string {
+  if (!text.startsWith(GROUP_CONTEXT_MARKER)) return text
+  const at = text.lastIndexOf(GROUP_ROUND_MARKER)
+  if (at === -1) return text
+  return text.slice(at + GROUP_ROUND_MARKER.length).trim()
+}
+
 export class TeamService {
   private readonly sessionLocator: Pick<typeof sessionService, 'findSessionFile'>
   private readonly sessionReader: Pick<typeof sessionService, 'getSessionMessages'> | undefined
@@ -1870,6 +1885,7 @@ export class TeamService {
     if (recipients.length === 0) {
       throw ApiError.badRequest('No teammates to send to')
     }
+    const deliveredText = await this.wrapGroupMessage(teamName, text, recipients)
     const messageId = createMailboxMessageId()
     const timestamp = new Date().toISOString()
     this.pendingMemberMessages += 1
@@ -1879,7 +1895,7 @@ export class TeamService {
       for (const recipientName of recipients) {
         const delivered = await writeToMailbox(
           recipientName,
-          { id: messageId, from: 'user', text, timestamp },
+          { id: messageId, from: 'user', text: deliveredText, timestamp },
           teamName,
         )
         if (!delivered) failed.push(recipientName)
@@ -2522,6 +2538,38 @@ export class TeamService {
     }
   }
 
+  /**
+   * 群里近期讨论的摘要。没有上下文，成员只能各答各的；有了它，它们接得上话。
+   */
+  private async buildGroupDigest(teamName: string): Promise<string> {
+    const messages = await this.readWorkbenchMessages(teamName)
+    const recent = messages.filter((message) => message.kind !== 'system').slice(-8)
+    const lines: string[] = []
+    for (const message of recent) {
+      const body = groupRoundText(message.text).trim()
+      if (!body) continue
+      lines.push(`- ${message.from}: ${body.slice(0, 200)}`)
+    }
+    return lines.join('\n')
+  }
+
+  /**
+   * 把群聊消息包成"谁在群里 + 已经聊到哪 + 本轮要说什么"。工作台读到这条
+   * 时会把包装剥掉，用户看到的仍是自己那一句。
+   */
+  private async wrapGroupMessage(
+    teamName: string,
+    text: string,
+    recipients: string[],
+  ): Promise<string> {
+    const digest = await this.buildGroupDigest(teamName)
+    const head = [
+      `${GROUP_CONTEXT_MARKER} 一起讨论的成员：${recipients.join('、')}`,
+      ...(digest ? [`[群里最近]\n${digest}`] : []),
+    ].join('\n')
+    return `${head}\n${GROUP_ROUND_MARKER}\n${text}`
+  }
+
   private async readWorkbenchMessages(
     teamName: string,
   ): Promise<TeamWorkbenchMessage[]> {
@@ -2632,7 +2680,9 @@ export class TeamService {
     const recipients = Array.from(message.recipients).sort()
     let protocolType: string | undefined
     let taskId: string | undefined
-    let text = message.text
+    // A group message carries machine-generated context for the members; the
+    // workbench shows the user's own words only.
+    let text = groupRoundText(message.text)
 
     try {
       const structured = JSON.parse(message.text) as Record<string, unknown>

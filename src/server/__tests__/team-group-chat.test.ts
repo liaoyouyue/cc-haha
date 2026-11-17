@@ -16,6 +16,16 @@ async function writeTeamConfig(
   await fs.writeFile(path.join(teamDir, 'config.json'), JSON.stringify(config), 'utf-8')
 }
 
+async function writeTeamInbox(
+  teamName: string,
+  recipient: string,
+  messages: Record<string, unknown>[],
+): Promise<void> {
+  const inboxDir = path.join(tmpDir, 'teams', teamName, 'inboxes')
+  await fs.mkdir(inboxDir, { recursive: true })
+  await fs.writeFile(path.join(inboxDir, `${recipient}.json`), JSON.stringify(messages), 'utf8')
+}
+
 function makeTeamConfig(): Record<string, unknown> {
   return {
     name: 'group-team',
@@ -65,7 +75,9 @@ describe('TeamService.sendTeamMessage (group chat)', () => {
     const inbox = await readMailboxHistory('Worker Agent', 'group-team')
     expect(inbox.length).toBe(1)
     expect(inbox[0]!.from).toBe('user')
-    expect(inbox[0]!.text).toBe('大家好，开个会')
+    // The member sees who is in the room and what was said before it.
+    expect(inbox[0]!.text).toContain('[群聊] 一起讨论的成员：Worker Agent')
+    expect(inbox[0]!.text).toContain('大家好，开个会')
     expect(inbox[0]!.id).toStartWith('mailbox-')
 
     const leadInbox = await readMailboxHistory('team-lead', 'group-team')
@@ -80,7 +92,7 @@ describe('TeamService.sendTeamMessage (group chat)', () => {
 
     const inbox = await readMailboxHistory('Worker Agent', 'group-team')
     expect(inbox.length).toBe(1)
-    expect(inbox[0]!.text).toBe('你来分析下')
+    expect(inbox[0]!.text).toContain('你来分析下')
   })
 
   it('throws 404 for an unknown member', async () => {
@@ -101,6 +113,38 @@ describe('TeamService.sendTeamMessage (group chat)', () => {
     } catch (error) {
       expect((error as { statusCode?: number }).statusCode).toBe(400)
     }
+  })
+
+  it('shows only the user words in the workbench, not the machine context', async () => {
+    await writeTeamConfig('group-team', makeTeamConfig())
+    await teamService.sendTeamMessage('group-team', '开个会')
+
+    const snapshot = await teamService.getWorkbench('group-team')
+    const mine = snapshot.messages.filter((m) => m.from === 'user')
+    expect(mine.length).toBe(1)
+    expect(mine[0]!.text).toBe('开个会')
+  })
+
+  it('gives the next round the earlier discussion so members can build on it', async () => {
+    await writeTeamConfig('group-team', makeTeamConfig())
+    await teamService.sendTeamMessage('group-team', '先说方案')
+
+    // A member answers; the answer lands in the team feed.
+    await writeTeamInbox('group-team', 'Worker Agent', [{
+      id: 'mailbox-reply-1',
+      from: 'Worker Agent',
+      text: '我建议先做 A',
+      timestamp: new Date().toISOString(),
+      read: true,
+    }])
+
+    await teamService.sendTeamMessage('group-team', '那继续')
+
+    const inbox = await readMailboxHistory('Worker Agent', 'group-team')
+    const latest = inbox.at(-1)!
+    expect(latest.text).toContain('[群里最近]')
+    expect(latest.text).toContain('Worker Agent: 我建议先做 A')
+    expect(latest.text).toContain('那继续')
   })
 })
 
@@ -152,7 +196,7 @@ describe('POST /api/teams/:name/messages', () => {
 
     const inbox = await readMailboxHistory('Worker Agent', 'group-team')
     expect(inbox.length).toBe(1)
-    expect(inbox[0]!.text).toBe('开个会')
+    expect(inbox[0]!.text).toContain('开个会')
   })
 
   it('returns 400 for an empty body', async () => {
