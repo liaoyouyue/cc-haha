@@ -93,6 +93,12 @@ export type TeamSummary = {
   incarnationId: string
   memberCount: number
   activeMemberCount: number
+  /** The newest line in the group's chat, for the chat list. */
+  lastMessage?: { from: string; text: string; timestamp: string }
+  /** When the group last said something, for the chat list. */
+  updatedAt?: string
+  /** The lead's session; the sidebar opens the group's tab through it. */
+  leadSessionId?: string
 }
 
 export type TeamDetail = TeamSummary & {
@@ -1545,6 +1551,12 @@ export class TeamService {
         const summary = this.toSummary(config)
         summary.memberCount += extraCount
         summary.activeMemberCount += extraCount // assume running if newly discovered
+        const last = await this.lastGroupMessage(entry.name)
+        if (last) {
+          summary.lastMessage = { from: last.from, text: last.text, timestamp: last.timestamp }
+          summary.updatedAt = last.timestamp
+        }
+        summary.leadSessionId = config.leadSessionId
         teams.push(summary)
       } catch {
         // Skip malformed team directories
@@ -2568,6 +2580,48 @@ export class TeamService {
       ...(digest ? [`[群里最近]\n${digest}`] : []),
     ].join('\n')
     return `${head}\n${GROUP_ROUND_MARKER}\n${text}`
+  }
+
+  /**
+   * The newest line anyone said in this group. The chat list needs one line
+   * per group; reading the whole transcript for each would cost every inbox.
+   */
+  private async lastGroupMessage(teamName: string): Promise<{ from: string; text: string; timestamp: string } | null> {
+    const inboxDir = path.join(this.getTeamsDir(), teamName, 'inboxes')
+    let newest: { from: string; text: string; timestamp: string } | null = null
+    let files: string[]
+    try {
+      files = await fs.readdir(inboxDir)
+    } catch {
+      return null
+    }
+    for (const file of files) {
+      if (!file.endsWith(MAILBOX_HISTORY_SUFFIX)) continue
+      try {
+        const raw = await fs.readFile(path.join(inboxDir, file), 'utf-8')
+        const lines = raw.split('\n').filter(Boolean)
+        for (const line of lines) {
+          let parsed: { from?: unknown; text?: unknown; timestamp?: unknown }
+          try {
+            parsed = JSON.parse(line)
+          } catch {
+            continue
+          }
+          if (typeof parsed.from !== 'string' || typeof parsed.text !== 'string') continue
+          if (typeof parsed.timestamp !== 'string') continue
+          // The group chat shows the user's own words, not the wrapper that
+          // tells members what the room already said.
+          const text = groupRoundText(parsed.text)
+          if (!text) continue
+          if (!newest || parsed.timestamp > newest.timestamp) {
+            newest = { from: parsed.from, text, timestamp: parsed.timestamp }
+          }
+        }
+      } catch {
+        // A mailbox being rewritten right now: the next read picks it up.
+      }
+    }
+    return newest
   }
 
   private async readWorkbenchMessages(

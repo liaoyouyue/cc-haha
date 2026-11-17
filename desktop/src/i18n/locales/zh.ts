@@ -867,6 +867,26 @@ export const zh: Record<TranslationKey, string> = {
   // ─── Sidebar ──────────────────────────────────────
   'sidebar.newSession': '新建会话',
   'sidebar.scheduled': '定时任务',
+
+  'sidebar.groupChat': '开群聊',
+
+  'agentTeams.view.chat': '群聊',
+
+  'agentTeams.view.board': '看板',
+
+  'agentTeams.view.switch': '视图切换',
+
+  'agentTeams.chat.empty': '群里还没人说话，发一条开始吧。',
+
+  'agentTeams.chat.memberCount': '{count} 名成员',
+
+  'agentTeams.chat.online': '在线',
+
+  'agentTeams.chat.day': '{day}',
+
+  'agentTeams.group.placeholder': '说点什么…（@名字 定向发送，留空发全员）',
+
+  'agentTeams.group.send': '发送',
   'sidebar.skills': '技能',
   'sidebar.terminal': '终端',
   'sidebar.settings': '设置',
@@ -4081,19 +4101,6 @@ export const zh: Record<TranslationKey, string> = {
   'agentTeams.communication.open': '展开通讯面板',
   'agentTeams.communication.close': '收起通讯面板',
   'agentTeams.communication.backToFeed': '返回通讯流',
-
-  'agentTeams.view.chat': '群聊',
-
-  'agentTeams.view.board': '看板',
-
-  'agentTeams.view.switch': '视图切换',
-
-
-  'agentTeams.chat.empty': '群里还没人说话，发一条开始吧。',
-
-  'agentTeams.group.placeholder': '说点什么…（@名字 定向发送，留空发全员）',
-
-    'agentTeams.group.send': '发送',
   'agentTeams.inspector.independentContext': '{role} · 独立上下文',
   'agentTeams.inspector.current': '当前',
   'agentTeams.inspector.completedTasks': '已完成',
@@ -5330,22 +5337,4 @@ export const zh: Record<TranslationKey, string> = {
   'sidebar.draftResumed': '已返回未发送的草稿，可在输入框中更改项目。',
   'workspace.annotation.add': '添加批注',
   'workspace.annotation.selectCells': '选择单元格，或按住 Shift 点击选择范围',
-  'sidebar.daily': '日报',
-  'dailyReport.title': '日报',
-  'dailyReport.subtitle': '今天做了什么：用量、自动任务、定时任务，以及出过什么错。',
-  'dailyReport.messages': '消息',
-  'dailyReport.sessions': '会话',
-  'dailyReport.toolCalls': '工具调用',
-  'dailyReport.tokens': 'Token',
-  'dailyReport.cost': '费用',
-  'dailyReport.costEstimated': '估算',
-  'dailyReport.costPartial': '未含无单价模型',
-  'dailyReport.weekTitle': '近 7 天',
-  'dailyReport.tasksTitle': '今天跑过的任务',
-  'dailyReport.taskCount': '完成 {done}，失败 {failed}',
-  'dailyReport.schedulesTitle': '定时任务',
-  'dailyReport.problemsTitle': '最近的异常',
-  'dailyReport.noTasks': '今天没有任务记录',
-  'dailyReport.noProblems': '没有异常',
-  'dailyReport.paused': '已暂停',
 }

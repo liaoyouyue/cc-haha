@@ -869,6 +869,26 @@ export const zh: Record<TranslationKey, string> = {
   // ─── Sidebar ──────────────────────────────────────
   'sidebar.newSession': '新建會話',
   'sidebar.scheduled': '定時任務',
+
+  'sidebar.groupChat': '開群聊',
+
+  'agentTeams.view.chat': '群聊',
+
+  'agentTeams.view.board': '看板',
+
+  'agentTeams.view.switch': '檢視切換',
+
+  'agentTeams.chat.empty': '群裡還沒人說話，發一條開始吧。',
+
+  'agentTeams.chat.memberCount': '{count} 名成員',
+
+  'agentTeams.chat.online': '在線',
+
+  'agentTeams.chat.day': '{day}',
+
+  'agentTeams.group.placeholder': '說點什麼…（@名字 定向傳送，留空發全員）',
+
+  'agentTeams.group.send': '傳送',
   'sidebar.skills': '技能',
   'sidebar.terminal': '終端',
   'sidebar.settings': '設定',
@@ -4083,19 +4103,6 @@ export const zh: Record<TranslationKey, string> = {
   'agentTeams.communication.open': '展開通訊面板',
   'agentTeams.communication.close': '收合通訊面板',
   'agentTeams.communication.backToFeed': '返回通訊流',
-
-  'agentTeams.view.chat': '群聊',
-
-  'agentTeams.view.board': '看板',
-
-  'agentTeams.view.switch': '檢視切換',
-
-
-  'agentTeams.chat.empty': '群裡還沒人說話，發一條開始吧。',
-
-  'agentTeams.group.placeholder': '說點什麼…（@名字 定向傳送，留空發全員）',
-
-    'agentTeams.group.send': '傳送',
   'agentTeams.inspector.independentContext': '{role} · 獨立內容',
   'agentTeams.inspector.current': '目前',
   'agentTeams.inspector.completedTasks': '已完成',
@@ -5332,22 +5339,4 @@ export const zh: Record<TranslationKey, string> = {
   'sidebar.draftResumed': '已返回尚未傳送的草稿，可在輸入框中變更專案。',
   'workspace.annotation.add': '新增批註',
   'workspace.annotation.selectCells': '選取儲存格，或按住 Shift 點擊選取範圍',
-  'sidebar.daily': '日報',
-  'dailyReport.title': '日報',
-  'dailyReport.subtitle': '今天做了什麼：用量、自動任務、定時任務，以及出過什麼錯。',
-  'dailyReport.messages': '訊息',
-  'dailyReport.sessions': '工作階段',
-  'dailyReport.toolCalls': '工具呼叫',
-  'dailyReport.tokens': 'Token',
-  'dailyReport.cost': '費用',
-  'dailyReport.costEstimated': '估算',
-  'dailyReport.costPartial': '未含無單價模型',
-  'dailyReport.weekTitle': '近 7 天',
-  'dailyReport.tasksTitle': '今天跑過的任務',
-  'dailyReport.taskCount': '完成 {done}，失敗 {failed}',
-  'dailyReport.schedulesTitle': '定時任務',
-  'dailyReport.problemsTitle': '最近的異常',
-  'dailyReport.noTasks': '今天沒有任務紀錄',
-  'dailyReport.noProblems': '沒有異常',
-  'dailyReport.paused': '已暫停',
 }

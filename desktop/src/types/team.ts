@@ -5,6 +5,10 @@ export type TeamSummary = {
   memberCount: number
   createdAt?: string
   incarnationId?: string
+  /** The newest line said in this group, for the chat list. */
+  lastMessage?: { from: string; text: string; timestamp: string }
+  updatedAt?: string
+  leadSessionId?: string
 }
 
 /**

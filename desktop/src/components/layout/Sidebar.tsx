@@ -1,8 +1,9 @@
 import { SessionScheduleMark } from '@/components/tasks/SessionScheduleMark'
 import { forwardRef, useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef } from 'react'
-import { Archive, Bell, CalendarClock, Check, ChevronRight, ClipboardList, Clock, Ellipsis, Folder, FolderOpen, FolderPlus, GitBranch, ListChecks, Pencil, Pin, PinOff, Plus, RefreshCw, RotateCcw, Search, Settings, Smartphone, SquarePen, Store, Trash2, X } from 'lucide-react'
+import { Archive, Bell, CalendarClock, Check, ChevronRight, Clock, Ellipsis, Folder, FolderOpen, FolderPlus, GitBranch, ListChecks, Pencil, Pin, PinOff, Plus, RefreshCw, RotateCcw, Search, Settings, Smartphone, SquarePen, Store, Trash2, UsersRound, X } from 'lucide-react'
 import { releaseWorkspaceSession } from '../../lib/workspace/releaseSession'
 import { useSessionStore } from '../../stores/sessionStore'
+import { useTeamStore } from '../../stores/teamStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useTranslation, type TranslationKey } from '../../i18n'
 import { BrandSeal } from '@/components/composite/BrandSeal'
@@ -31,7 +32,7 @@ import {
 } from './sidebarTaskGroups'
 import { sessionsApi } from '../../api/sessions'
 import type { SessionListItem } from '../../types/session'
-import { useTabStore, SETTINGS_TAB_ID, SCHEDULED_TAB_ID, DAILY_TAB_ID, MARKET_TAB_ID, CONNECTORS_TAB_ID } from '../../stores/tabStore'
+import { useTabStore, SETTINGS_TAB_ID, SCHEDULED_TAB_ID, MARKET_TAB_ID, CONNECTORS_TAB_ID } from '../../stores/tabStore'
 import { useChatStore } from '../../stores/chatStore'
 import { useShallow } from 'zustand/react/shallow'
 import { useOpenTargetStore } from '../../stores/openTargetStore'
@@ -1152,6 +1153,24 @@ export function Sidebar({
           {t('sidebar.newSession')}
         </NavItem>
         <NavItem
+          active={false}
+          collapsed={!expanded}
+          label={t('sidebar.groupChat')}
+          onClick={() => {
+            const store = useTeamStore.getState()
+            void store.fetchTeams().then(() => {
+              const teams = useTeamStore.getState().teams
+              const withLead = teams.filter((team) => team.leadSessionId)
+              if (!withLead.length) return
+              const latest = withLead.reduce((a, b) => ((b.updatedAt ?? '') > (a.updatedAt ?? '') ? b : a))
+              useTabStore.getState().openTeamWorkbenchTab(latest.leadSessionId!, latest.name)
+            })
+          }}
+          icon={<UsersRound size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />}
+        >
+          {t('sidebar.groupChat')}
+        </NavItem>
+        <NavItem
           active={activeTabId === SCHEDULED_TAB_ID}
           collapsed={!expanded}
           label={t('sidebar.scheduled')}
@@ -1161,17 +1180,6 @@ export function Sidebar({
           icon={<CalendarClock size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />}
         >
           {t('sidebar.scheduled')}
-        </NavItem>
-        <NavItem
-          active={activeTabId === DAILY_TAB_ID}
-          collapsed={!expanded}
-          label={t('sidebar.daily')}
-          onClick={() => {
-            useTabStore.getState().openTab(DAILY_TAB_ID, t('sidebar.daily'), 'daily')
-          }}
-          icon={<ClipboardList size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />}
-        >
-          {t('sidebar.daily')}
         </NavItem>
         {showPhoneConnection && <NavItem
           active={phoneConnectionActive}

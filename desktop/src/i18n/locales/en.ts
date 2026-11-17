@@ -868,6 +868,26 @@ export const en = {
   // ─── Sidebar ──────────────────────────────────────
   'sidebar.newSession': 'New session',
   'sidebar.scheduled': 'Scheduled',
+
+  'sidebar.groupChat': 'Group chat',
+
+  'agentTeams.view.chat': 'Chat',
+
+  'agentTeams.view.board': 'Board',
+
+  'agentTeams.view.switch': 'Switch view',
+
+  'agentTeams.chat.empty': 'Nobody has spoken yet. Say something to start.',
+
+  'agentTeams.chat.memberCount': '{count} members',
+
+  'agentTeams.chat.online': 'online',
+
+  'agentTeams.chat.day': '{day}',
+
+  'agentTeams.group.placeholder': 'Message the team… (@name to target, empty for everyone)',
+
+  'agentTeams.group.send': 'Send',
   'sidebar.skills': 'Skills',
   'sidebar.terminal': 'Terminal',
   'sidebar.settings': 'Settings',
@@ -4083,19 +4103,6 @@ Row 9, all 8 cells: continuing from straight down, turning left through lower-le
   'agentTeams.communication.open': 'Open communication panel',
   'agentTeams.communication.close': 'Close communication panel',
   'agentTeams.communication.backToFeed': 'Back to communication',
-
-  'agentTeams.view.chat': 'Chat',
-
-  'agentTeams.view.board': 'Board',
-
-  'agentTeams.view.switch': 'Switch view',
-
-
-  'agentTeams.chat.empty': 'Nobody has spoken yet. Say something to start.',
-
-  'agentTeams.group.placeholder': 'Message the team… (@name to target, empty for everyone)',
-
-    'agentTeams.group.send': 'Send',
   'agentTeams.inspector.independentContext': '{role} · independent context',
   'agentTeams.inspector.current': 'Current',
   'agentTeams.inspector.completedTasks': 'Completed',
@@ -5332,24 +5339,6 @@ Row 9, all 8 cells: continuing from straight down, turning left through lower-le
   'sidebar.draftResumed': 'Returned to your unsent draft. You can change its project in the composer.',
   'workspace.annotation.add': 'Add comment',
   'workspace.annotation.selectCells': 'Select a cell or Shift-click to select a range',
-  'sidebar.daily': 'Daily report',
-  'dailyReport.title': 'Daily report',
-  'dailyReport.subtitle': 'What ran today: usage, tasks, schedules and anything that broke.',
-  'dailyReport.messages': 'Messages',
-  'dailyReport.sessions': 'Sessions',
-  'dailyReport.toolCalls': 'Tool calls',
-  'dailyReport.tokens': 'Tokens',
-  'dailyReport.cost': 'Cost',
-  'dailyReport.costEstimated': 'estimated',
-  'dailyReport.costPartial': 'excludes unpriced models',
-  'dailyReport.weekTitle': 'Last 7 days',
-  'dailyReport.tasksTitle': 'Tasks that ran today',
-  'dailyReport.taskCount': '{done} done, {failed} failed',
-  'dailyReport.schedulesTitle': 'Scheduled tasks',
-  'dailyReport.problemsTitle': 'Recent problems',
-  'dailyReport.noTasks': 'Nothing ran today',
-  'dailyReport.noProblems': 'Nothing reported',
-  'dailyReport.paused': 'paused',
 } as const
 
 export type TranslationKey = keyof typeof en

@@ -869,6 +869,26 @@ export const jp: Record<TranslationKey, string> = {
   // ─── Sidebar ──────────────────────────────────────
   'sidebar.newSession': '新しいセッション',
   'sidebar.scheduled': 'スケジュール',
+
+  'sidebar.groupChat': 'グループチャット',
+
+  'agentTeams.view.chat': 'チャット',
+
+  'agentTeams.view.board': 'ボード',
+
+  'agentTeams.view.switch': '表示切替',
+
+  'agentTeams.chat.empty': 'まだ誰も話していません。何か送って始めましょう。',
+
+  'agentTeams.chat.memberCount': '{count} 名のメンバー',
+
+  'agentTeams.chat.online': 'オンライン',
+
+  'agentTeams.chat.day': '{day}',
+
+  'agentTeams.group.placeholder': 'チームにメッセージ…（@名前でメンション、空で全員）',
+
+  'agentTeams.group.send': '送信',
   'sidebar.skills': 'スキル',
   'sidebar.terminal': 'ターミナル',
   'sidebar.settings': '設定',
@@ -4084,19 +4104,6 @@ export const jp: Record<TranslationKey, string> = {
   'agentTeams.communication.open': '通信パネルを開く',
   'agentTeams.communication.close': '通信パネルを閉じる',
   'agentTeams.communication.backToFeed': '通信一覧に戻る',
-
-  'agentTeams.view.chat': 'チャット',
-
-  'agentTeams.view.board': 'ボード',
-
-  'agentTeams.view.switch': '表示切替',
-
-
-  'agentTeams.chat.empty': 'まだ誰も話していません。何か送って始めましょう。',
-
-  'agentTeams.group.placeholder': 'チームにメッセージ…（@名前でメンション、空で全員）',
-
-    'agentTeams.group.send': '送信',
   'agentTeams.inspector.independentContext': '{role} · 独立コンテキスト',
   'agentTeams.inspector.current': '現在',
   'agentTeams.inspector.completedTasks': '完了',
@@ -5333,22 +5340,4 @@ export const jp: Record<TranslationKey, string> = {
   'sidebar.draftResumed': '未送信の下書きに戻りました。入力欄でプロジェクトを変更できます。',
   'workspace.annotation.add': 'コメントを追加',
   'workspace.annotation.selectCells': 'セルを選択、または Shift を押しながらクリックして範囲を選択',
-  'sidebar.daily': 'デイリーレポート',
-  'dailyReport.title': 'デイリーレポート',
-  'dailyReport.subtitle': '今日の動作：使用量、自動タスク、スケジュール、そして発生した問題。',
-  'dailyReport.messages': 'メッセージ',
-  'dailyReport.sessions': 'セッション',
-  'dailyReport.toolCalls': 'ツール呼び出し',
-  'dailyReport.tokens': 'Token',
-  'dailyReport.cost': 'コスト',
-  'dailyReport.costEstimated': '推定',
-  'dailyReport.costPartial': '価格未設定のモデルを除く',
-  'dailyReport.weekTitle': '直近 7 日間',
-  'dailyReport.tasksTitle': '今日実行されたタスク',
-  'dailyReport.taskCount': '完了 {done}、失敗 {failed}',
-  'dailyReport.schedulesTitle': '定期タスク',
-  'dailyReport.problemsTitle': '最近の問題',
-  'dailyReport.noTasks': '今日のタスク記録はありません',
-  'dailyReport.noProblems': '問題はありません',
-  'dailyReport.paused': '一時停止中',
 }

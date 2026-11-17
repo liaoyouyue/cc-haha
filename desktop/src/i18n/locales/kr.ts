@@ -871,6 +871,26 @@ export const kr: Record<TranslationKey, string> = {
   // ─── Sidebar ──────────────────────────────────────
   'sidebar.newSession': '새 세션',
   'sidebar.scheduled': '예약 작업',
+
+  'sidebar.groupChat': '그룹 채팅',
+
+  'agentTeams.view.chat': '채팅',
+
+  'agentTeams.view.board': '보드',
+
+  'agentTeams.view.switch': '보기 전환',
+
+  'agentTeams.chat.empty': '아직 아무도 말하지 않았습니다. 먼저 말을 걸어 보세요.',
+
+  'agentTeams.chat.memberCount': '멤버 {count}명',
+
+  'agentTeams.chat.online': '온라인',
+
+  'agentTeams.chat.day': '{day}',
+
+  'agentTeams.group.placeholder': '팀에 메시지…(@이름 멘션, 비우면 전체)',
+
+  'agentTeams.group.send': '보내기',
   'sidebar.skills': '스킬',
   'sidebar.terminal': '터미널',
   'sidebar.settings': '설정',
@@ -4086,19 +4106,6 @@ export const kr: Record<TranslationKey, string> = {
   'agentTeams.communication.open': '통신 패널 열기',
   'agentTeams.communication.close': '통신 패널 닫기',
   'agentTeams.communication.backToFeed': '통신 목록으로',
-
-  'agentTeams.view.chat': '채팅',
-
-  'agentTeams.view.board': '보드',
-
-  'agentTeams.view.switch': '보기 전환',
-
-
-  'agentTeams.chat.empty': '아직 아무도 말하지 않았습니다. 먼저 말을 걸어 보세요.',
-
-  'agentTeams.group.placeholder': '팀에 메시지…(@이름 멘션, 비우면 전체)',
-
-    'agentTeams.group.send': '보내기',
   'agentTeams.inspector.independentContext': '{role} · 독립 컨텍스트',
   'agentTeams.inspector.current': '현재',
   'agentTeams.inspector.completedTasks': '완료',
@@ -5335,22 +5342,4 @@ export const kr: Record<TranslationKey, string> = {
   'sidebar.draftResumed': '전송하지 않은 초안으로 돌아왔습니다. 입력창에서 프로젝트를 변경할 수 있습니다.',
   'workspace.annotation.add': '주석 추가',
   'workspace.annotation.selectCells': '셀을 선택하거나 Shift 키를 누른 채 클릭하여 범위 선택',
-  'sidebar.daily': '데일리 리포트',
-  'dailyReport.title': '데일리 리포트',
-  'dailyReport.subtitle': '오늘 한 일: 사용량, 자동 작업, 예약 작업, 그리고 발생한 문제.',
-  'dailyReport.messages': '메시지',
-  'dailyReport.sessions': '세션',
-  'dailyReport.toolCalls': '도구 호출',
-  'dailyReport.tokens': 'Token',
-  'dailyReport.cost': '비용',
-  'dailyReport.costEstimated': '추정',
-  'dailyReport.costPartial': '가격 미정 모델 제외',
-  'dailyReport.weekTitle': '최근 7일',
-  'dailyReport.tasksTitle': '오늘 실행된 작업',
-  'dailyReport.taskCount': '완료 {done}, 실패 {failed}',
-  'dailyReport.schedulesTitle': '예약 작업',
-  'dailyReport.problemsTitle': '최근 문제',
-  'dailyReport.noTasks': '오늘 작업 기록 없음',
-  'dailyReport.noProblems': '문제 없음',
-  'dailyReport.paused': '일시 중지',
 }
