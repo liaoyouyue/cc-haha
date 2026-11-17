@@ -1450,6 +1450,11 @@ export const SDKResultSuccessSchema = lazySchema(() =>
     subtype: z.literal('success'),
     duration_ms: z.number(),
     duration_api_ms: z.number(),
+    // Generation-only timings for the turn. The desktop derives the measured
+    // output rate and the first-token latency from these, so a result without
+    // them leaves the context panel's speed rows empty.
+    ttft_ms: z.number().optional(),
+    decode_ms: z.number().optional(),
     is_error: z.boolean(),
     num_turns: z.number(),
     result: z.string(),
@@ -1554,6 +1559,10 @@ export const SDKPartialAssistantMessageSchema = lazySchema(() =>
     parent_tool_use_id: z.string().nullable(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
+    // Per-event generation timings, reported alongside the raw event: the
+    // first-token wait on message_start, the emission span on message_stop.
+    ttftMs: z.number().optional(),
+    decodeMs: z.number().optional(),
   }),
 )
 

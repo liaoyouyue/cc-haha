@@ -1377,6 +1377,11 @@ export class QueryEngine {
       is_error: isApiError,
       duration_ms: Date.now() - startTime,
       duration_api_ms: getTotalAPIDuration(),
+      // Generation-only timings for this turn. `duration_api_ms` covers the whole request
+      // including prefill, so a tokens/sec reading built from it understates fast models on
+      // long contexts; decode_ms is the span tokens were actually being emitted over.
+      ttft_ms: this.totalTtftMs,
+      decode_ms: this.totalDecodeMs,
       num_turns: turnCount,
       result: textResult,
       stop_reason: lastStopReason,
