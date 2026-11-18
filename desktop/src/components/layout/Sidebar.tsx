@@ -3,6 +3,7 @@ import { forwardRef, useEffect, useLayoutEffect, useState, useCallback, useMemo,
 import { Archive, Bell, CalendarClock, Check, ChevronRight, Clock, Ellipsis, Folder, FolderOpen, FolderPlus, GitBranch, ListChecks, Pencil, Pin, PinOff, Plus, RefreshCw, RotateCcw, Search, Settings, Smartphone, SquarePen, Store, Trash2, UsersRound, X } from 'lucide-react'
 import { releaseWorkspaceSession } from '../../lib/workspace/releaseSession'
 import { useSessionStore } from '../../stores/sessionStore'
+import { useTeamStore } from '../../stores/teamStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useTranslation, type TranslationKey } from '../../i18n'
 import { BrandSeal } from '@/components/composite/BrandSeal'
@@ -31,7 +32,7 @@ import {
 } from './sidebarTaskGroups'
 import { sessionsApi } from '../../api/sessions'
 import type { SessionListItem } from '../../types/session'
-import { useTabStore, SETTINGS_TAB_ID, SCHEDULED_TAB_ID, MARKET_TAB_ID, CONNECTORS_TAB_ID, GROUP_CHAT_TAB_ID } from '../../stores/tabStore'
+import { useTabStore, SETTINGS_TAB_ID, SCHEDULED_TAB_ID, MARKET_TAB_ID, CONNECTORS_TAB_ID } from '../../stores/tabStore'
 import { useChatStore } from '../../stores/chatStore'
 import { useShallow } from 'zustand/react/shallow'
 import { useOpenTargetStore } from '../../stores/openTargetStore'
@@ -161,6 +162,8 @@ export function Sidebar({
   const openModal = useUIStore((s) => s.openModal)
   const closeModal = useUIStore((s) => s.closeModal)
   const activeTabId = useTabStore((s) => s.activeTabId)
+  const [groupsOpen, setGroupsOpen] = useState(false)
+  const groups = useTeamStore((s) => s.teams)
   const tabs = useTabStore((s) => s.tabs)
   const activeSettingsTab = useUIStore((s) => s.activeSettingsTab)
   const showPhoneConnection = getDesktopHost().isDesktop
@@ -1152,10 +1155,14 @@ export function Sidebar({
           {t('sidebar.newSession')}
         </NavItem>
         <NavItem
-          active={false}
+          active={groupsOpen}
           collapsed={!expanded}
           label={t('sidebar.groupChat')}
-          onClick={() => useTabStore.getState().openTab(GROUP_CHAT_TAB_ID, t('sidebar.groupChat'), 'group-chat')}
+          onClick={() => {
+            const next = !groupsOpen
+            setGroupsOpen(next)
+            if (next) void useTeamStore.getState().fetchTeams()
+          }}
           icon={<UsersRound size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />}
         >
           {t('sidebar.groupChat')}
@@ -1217,6 +1224,32 @@ export function Sidebar({
               <kbd className={KBD_CLASS}>{MOD_KEY}K</kbd>
             </button>
           </div>
+
+          {groupsOpen ? (
+            <div data-testid="sidebar-group-list" className="flex-none px-2 pb-2">
+              {groups.length ? groups.map((group) => (
+                <button
+                  key={group.name}
+                  type="button"
+                  data-testid={`sidebar-group-${group.name}`}
+                  onClick={() => useTabStore.getState().openGroupChatTab(group.name)}
+                  className="flex w-full min-w-0 items-center gap-2 rounded-[var(--radius-sm)] px-2 py-1.5 text-left hover:bg-[var(--color-sidebar-item-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
+                >
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--color-surface-container)]">
+                    <UsersRound size={14} className="text-[var(--color-text-secondary)]" aria-hidden="true" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[12px] font-medium text-[var(--color-text-primary)]">{group.name}</span>
+                    <span className="block truncate text-[11px] text-[var(--color-text-tertiary)]">
+                      {group.lastMessage ? `${group.lastMessage.from}: ${group.lastMessage.text}` : `${group.memberCount} 名成员`}
+                    </span>
+                  </span>
+                </button>
+              )) : (
+                <p className="px-2 py-1 text-[11px] text-[var(--color-text-tertiary)]">还没有群聊</p>
+              )}
+            </div>
+          ) : null}
 
           <div
             data-testid="sidebar-session-list-section"

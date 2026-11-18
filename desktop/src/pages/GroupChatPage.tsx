@@ -8,90 +8,50 @@ import type { TeamMember, TeamSummary, TeamWorkbenchMessage, TeamWorkbenchSnapsh
 
 const DAY_LABEL = new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric' })
 
-/** 群聊独立页：左群列表，右微信式聊天窗。 */
-export function GroupChatPage() {
+/**
+ * 群聊窗：一屏聊天，内容区就是聊天窗本身（群列表在侧栏）。
+ * 成员的回答是异步回来的，所以这里轮询，收到就显示。
+ */
+export function GroupChatPage({ groupName }: { groupName: string }) {
   const teams = useTeamStore((state) => state.teams)
-  const [selected, setSelected] = useState<string | null>(null)
   const [snapshot, setSnapshot] = useState<TeamWorkbenchSnapshot | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    void useTeamStore.getState().fetchTeams()
-  }, [])
-
-  useEffect(() => {
-    if (!teams.length) return
-    const found = selected && teams.some((team) => team.name === selected)
-      ? selected
-      : teams.reduce((a, b) => ((b.updatedAt ?? '') > (a.updatedAt ?? '') ? b : a)).name
-    if (!found) return
-    setSelected(found)
     let alive = true
-    void teamsApi.getWorkbench(found).then((next) => {
-      if (alive) { setSnapshot(next); setError(null) }
-    }).catch((err: unknown) => {
-      if (alive) setError(err instanceof Error ? err.message : String(err))
-    })
-    return () => { alive = false }
-  }, [teams, selected])
+    const load = async () => {
+      try {
+        const next = await teamsApi.getWorkbench(groupName)
+        if (alive) { setSnapshot(next); setError(null) }
+      } catch (err: unknown) {
+        if (alive) setError(err instanceof Error ? err.message : String(err))
+      }
+    }
+    void load()
+    const timer = window.setInterval(() => void load(), 3000)
+    return () => { alive = false; window.clearInterval(timer) }
+  }, [groupName])
 
-  const active = teams.find((team) => team.name === selected) ?? null
+  const active = teams.find((team) => team.name === groupName)
 
   return (
     <div data-testid="group-chat-page" className="flex h-full min-h-0">
-      <GroupList teams={teams} selected={selected} onSelect={setSelected} />
       {error && !snapshot ? (
         <div className="flex flex-1 items-center justify-center text-sm text-[var(--color-error)]">{error}</div>
-      ) : active && snapshot ? (
-        <GroupChat team={active} snapshot={snapshot} onSent={setSnapshot} />
+      ) : snapshot ? (
+        <GroupChat team={active} groupName={groupName} snapshot={snapshot} onSent={setSnapshot} />
       ) : (
         <div className="flex flex-1 items-center justify-center text-sm text-[var(--color-text-tertiary)]">
-          没有群聊。先在会话里组建一个团队，它就会出现在这里。
+          这个群还没有成员，先在会话里组建一个团队。
         </div>
       )}
     </div>
   )
 }
 
-function GroupList({ teams, selected, onSelect }: {
-  teams: TeamSummary[]
-  selected: string | null
-  onSelect: (name: string) => void
-}) {
-  return (
-    <aside data-testid="group-chat-list" className="flex w-[260px] shrink-0 flex-col border-r border-[var(--color-border)] bg-[var(--color-surface-container-lowest)]">
-      <div className="border-b border-[var(--color-border)] px-3 py-2.5 text-[13px] font-semibold">群聊</div>
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {teams.map((team) => (
-          <button
-            key={team.name}
-            type="button"
-            data-testid={`group-chat-row-${team.name}`}
-            onClick={() => onSelect(team.name)}
-            aria-pressed={selected === team.name}
-            className={`flex w-full items-center gap-2.5 border-b border-[var(--color-border)] px-3 py-2.5 text-left ${selected === team.name ? 'bg-[var(--color-surface-selected)]' : 'hover:bg-[var(--color-surface-hover)]'}`}
-          >
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[var(--radius-md)] bg-[var(--color-surface-container)]">
-              <UsersRound size={18} className="text-[var(--color-text-secondary)]" aria-hidden="true" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="flex items-baseline justify-between gap-2">
-                <span className="truncate text-[13px] font-medium">{team.name}</span>
-                {team.updatedAt ? <span className="shrink-0 text-[10px] text-[var(--color-text-tertiary)]">{timeLabel(team.updatedAt)}</span> : null}
-              </div>
-              <div className="truncate text-[11px] text-[var(--color-text-tertiary)]">
-                {team.lastMessage ? `${team.lastMessage.from}: ${team.lastMessage.text}` : `${team.memberCount} 名成员`}
-              </div>
-            </div>
-          </button>
-        ))}
-      </div>
-    </aside>
-  )
-}
-
-function GroupChat({ team, snapshot, onSent }: {
-  team: TeamSummary
+function GroupChat({ team, groupName, snapshot, onSent }: {
+  team: TeamSummary | undefined
+  groupName: string
   snapshot: TeamWorkbenchSnapshot
   onSent: (next: TeamWorkbenchSnapshot) => void
 }) {
@@ -115,7 +75,7 @@ function GroupChat({ team, snapshot, onSent }: {
 
   // The composer takes the first click: a chat you have to aim at is a chat
   // that feels broken.
-  useEffect(() => { inputRef.current?.focus() }, [team.name])
+  useEffect(() => { inputRef.current?.focus() }, [groupName])
 
   const send = async () => {
     const body = text.trim()
@@ -133,9 +93,9 @@ function GroupChat({ team, snapshot, onSent }: {
     setSending(true)
     setSendError(null)
     try {
-      await useTeamStore.getState().sendTeamMessage(team.name, clean, to)
+      await useTeamStore.getState().sendTeamMessage(groupName, clean, to)
       setText('')
-      onSent(await teamsApi.getWorkbench(team.name))
+      onSent(await teamsApi.getWorkbench(groupName))
     } catch (err) {
       setSendError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -148,10 +108,10 @@ function GroupChat({ team, snapshot, onSent }: {
     if (!name) return
     setAddError(null)
     try {
-      await teamsApi.addMember(team.name, { name, agentType: 'general-purpose' })
+      await teamsApi.addMember(groupName, { name, agentType: 'general-purpose' })
       setNewName('')
       setAdding(false)
-      onSent(await teamsApi.getWorkbench(team.name))
+      onSent(await teamsApi.getWorkbench(team!.name))
     } catch (err) {
       setAddError(err instanceof Error ? err.message : String(err))
     }
@@ -165,7 +125,7 @@ function GroupChat({ team, snapshot, onSent }: {
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="truncate text-[15px] font-semibold">{team.name}</span>
+            <span className="truncate text-[15px] font-semibold">{team?.name ?? groupName}</span>
             <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-success)]" aria-hidden="true" />
             <span className="shrink-0 text-[11px] text-[var(--color-text-tertiary)]">{members.length} 名成员</span>
           </div>

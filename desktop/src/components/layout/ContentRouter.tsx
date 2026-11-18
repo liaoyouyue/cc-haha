@@ -71,7 +71,10 @@ export function ContentRouter({ homePage }: ContentRouterProps = {}) {
   } else if (activeTabType === 'scheduled') {
     page = <ScheduledTasks />
   } else if (activeTabType === 'group-chat') {
-    page = <GroupChatPage />
+    const groupTab = tabs.find((tab) => tab.sessionId === activeTabId)
+    page = groupTab?.groupChatName
+      ? <GroupChatPage groupName={groupTab.groupChatName} />
+      : <EmptySession />
   } else if (activeTabType === 'connectors' || activeTabType === 'market') {
     page = <ExtensionMarket />
   } else if (activeTabType === 'subagent') {

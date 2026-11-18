@@ -19,7 +19,7 @@ export const SETTINGS_TAB_ID = '__settings__'
 export const SCHEDULED_TAB_ID = '__scheduled__'
 export const CONNECTORS_TAB_ID = '__connectors__'
 export const MARKET_TAB_ID = '__market__'
-export const GROUP_CHAT_TAB_ID = '__group-chat__'
+export const GROUP_CHAT_TAB_PREFIX = '__group__'
 export const TERMINAL_TAB_PREFIX = '__terminal__'
 export const WORKBENCH_TAB_PREFIX = '__workbench__'
 export const SUBAGENT_TAB_PREFIX = '__subagent__'
@@ -27,7 +27,7 @@ export const TEAM_TAB_PREFIX = '__team__'
 export const TEAM_MEMBER_TAB_PREFIX = 'team-member:'
 
 export type TabType = 'session' | 'settings' | 'scheduled' | 'connectors' | 'market' | 'group-chat' | 'terminal' | 'workbench' | 'subagent' | 'team' | 'team-member'
-type PersistentSpecialTabType = 'settings' | 'scheduled' | 'connectors' | 'market' | 'group-chat'
+type PersistentSpecialTabType = 'settings' | 'scheduled' | 'connectors' | 'market'
 
 // Retired tab shapes that older builds persisted. `persistenceMigrations`
 // rewrites them at startup; restoreTabs tolerates them as a second guard.
@@ -50,6 +50,7 @@ export type Tab = {
   teamLeadSessionId?: string
   teamMemberAgentId?: string
   teamIncarnationId?: string
+  groupChatName?: string
   returnTabId?: string
 }
 
@@ -89,6 +90,7 @@ type TabStore = {
     returnTabId?: string,
   ) => string
   returnFromSubagent: (tabId: string) => void
+  openGroupChatTab: (groupName: string) => string
   openTeamWorkbenchTab: (leadSessionId: string, title?: string) => string
   returnFromTeamWorkbench: (tabId: string) => void
   openTeamMemberTab: (
@@ -119,7 +121,6 @@ const PERSISTENT_SPECIAL_TAB_IDS: Record<PersistentSpecialTabType, string> = {
   scheduled: SCHEDULED_TAB_ID,
   market: MARKET_TAB_ID,
   connectors: CONNECTORS_TAB_ID,
-  'group-chat': GROUP_CHAT_TAB_ID,
 }
 
 function getPersistentSpecialTabType(tab: { sessionId: string; type?: string }): PersistentSpecialTabType | null {
@@ -127,8 +128,7 @@ function getPersistentSpecialTabType(tab: { sessionId: string; type?: string }):
   if (tab.sessionId === SCHEDULED_TAB_ID) return 'scheduled'
   if (tab.sessionId === CONNECTORS_TAB_ID) return 'market'
   if (tab.sessionId === MARKET_TAB_ID) return 'market'
-  if (tab.sessionId === GROUP_CHAT_TAB_ID) return 'group-chat'
-  if (tab.type === 'connectors' || tab.type === 'settings' || tab.type === 'scheduled' || tab.type === 'market' || tab.type === 'group-chat') {
+  if (tab.type === 'connectors' || tab.type === 'settings' || tab.type === 'scheduled' || tab.type === 'market') {
     return tab.type === 'connectors' ? 'market' : tab.type
   }
   return null
@@ -256,6 +256,26 @@ export const useTabStore = create<TabStore>((set, get) => ({
       get().setActiveTab(returnTabId)
     }
     get().closeTab(tabId)
+  },
+
+  openGroupChatTab: (groupName) => {
+    const tabId = `${GROUP_CHAT_TAB_PREFIX}${groupName}`
+    const { tabs } = get()
+    const tab: Tab = {
+      sessionId: tabId,
+      title: groupName,
+      type: 'group-chat',
+      status: 'idle',
+      groupChatName: groupName,
+    }
+    set({
+      tabs: tabs.some((current) => current.sessionId === tabId)
+        ? tabs.map((current) => current.sessionId === tabId ? tab : current)
+        : [...tabs, tab],
+      activeTabId: tabId,
+    })
+    get().saveTabs()
+    return tabId
   },
 
   openTeamWorkbenchTab: (leadSessionId, title = t('agentTeams.name')) => {

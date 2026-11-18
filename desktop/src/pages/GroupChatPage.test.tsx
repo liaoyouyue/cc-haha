@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useTeamStore } from '../stores/teamStore'
 import { useTabStore } from '../stores/tabStore'
 import { ContentRouter } from '../components/layout/ContentRouter'
-import { GROUP_CHAT_TAB_ID } from '../stores/tabStore'
 import { GroupChatPage } from './GroupChatPage'
 
 const getWorkbench = vi.fn()
@@ -64,12 +63,11 @@ beforeEach(() => {
 
 describe('群聊独立页', () => {
   it('打开就是整屏聊天：群列表、群头部、气泡、输入框', async () => {
-    useTabStore.getState().openTab(GROUP_CHAT_TAB_ID, '开群聊', 'group-chat')
+    useTabStore.getState().openGroupChatTab('demo-group')
     render(<ContentRouter />)
 
     expect(screen.getByTestId('group-chat-page')).toBeTruthy()
     await waitFor(() => expect(screen.getByTestId('group-chat-window')).toBeTruthy())
-    expect(screen.getByTestId('group-chat-list').textContent).toContain('demo-group')
     expect(screen.getByTestId('group-chat-header').textContent).toContain('demo-group')
     expect(screen.getByTestId('group-chat-bubble-m1').textContent).toContain('AI助手')
     expect(screen.getByTestId('group-chat-bubble-m2').getAttribute('data-from')).toBe('user')
@@ -77,7 +75,7 @@ describe('群聊独立页', () => {
   })
 
   it('输入框能打字，发送会调用 sendTeamMessage 并刷新消息流', async () => {
-    render(<GroupChatPage />)
+    render(<GroupChatPage groupName="demo-group" />)
     await waitFor(() => expect(screen.getByTestId('group-chat-window')).toBeTruthy())
     const send = useTeamStore.getState().sendTeamMessage as ReturnType<typeof vi.fn>
 
@@ -91,7 +89,7 @@ describe('群聊独立页', () => {
   })
 
   it('加成员按钮会调 addMember 接口', async () => {
-    render(<GroupChatPage />)
+    render(<GroupChatPage groupName="demo-group" />)
     await waitFor(() => expect(screen.getByTestId('group-chat-window')).toBeTruthy())
 
     fireEvent.click(screen.getByTestId('group-chat-members'))
