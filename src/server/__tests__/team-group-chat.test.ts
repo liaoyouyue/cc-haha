@@ -149,7 +149,7 @@ describe('TeamService.sendTeamMessage (group chat)', () => {
 
   it('merges duplicate mailbox copies with different ids', async () => {
     await writeTeamConfig('group-team', makeTeamConfig())
-    const timestamp = '2026-11-18T06:20:00.123Z'
+    const timestamp = '2026-11-18T06:20:00.877Z'
     const line = '大家好，我是 planner'
     await writeTeamInbox('group-team', 'Worker Agent', [{
       id: 'mailbox-1',
@@ -162,7 +162,7 @@ describe('TeamService.sendTeamMessage (group chat)', () => {
       id: 'mailbox-2',
       from: 'planner',
       text: line,
-      timestamp: '2026-11-18T06:20:00.987Z',
+      timestamp: '2026-11-18T06:20:01.018Z',
       read: true,
     }])
 

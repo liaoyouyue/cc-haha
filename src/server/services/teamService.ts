@@ -2671,7 +2671,7 @@ export class TeamService {
     }
 
     const grouped = new Map<string, MessageAccumulator>()
-    const byLine = new Map<string, string>()
+    const byRecentLine = new Map<string, { key: string; at: number }>()
     const occurrenceByRecipientAndContent = new Map<string, number>()
     for (const recipient of [...recipients].sort()) {
       try {
@@ -2698,16 +2698,19 @@ export class TeamService {
             summary ?? '',
             color ?? '',
           ]))
-          const lineKey = hash(JSON.stringify([raw.from, raw.text, timestampSecond]))
-          // New envelopes carry a stable upstream ID, shared by every copy of a
-          // broadcast. Older messages can have different IDs for the same line,
-          // so fall back to who said what in the same second.
+          const lineKey = hash(JSON.stringify([raw.from, raw.text]))
+          const lineAt = Date.parse(raw.timestamp)
+          // 同一个成员给不同人写同一句会落在不同文件里，投递时间常差几十毫秒；
+          // 2 秒窗口足够合掉这批副本，又不会把隔两轮重复说的话吞掉。
+          const recent = byRecentLine.get(lineKey)
           const occurrenceKey = `${recipient}\u0000${contentKey}`
           const occurrence = occurrenceByRecipientAndContent.get(occurrenceKey) ?? 0
           occurrenceByRecipientAndContent.set(occurrenceKey, occurrence + 1)
           const candidateKey = messageId ? `mailbox:${messageId}` : `legacy:${contentKey}:${occurrence}`
-          const key = byLine.get(lineKey) ?? candidateKey
-          byLine.set(lineKey, key)
+          const key = recent && Number.isFinite(lineAt) && lineAt - recent.at <= 2000
+            ? recent.key
+            : candidateKey
+          byRecentLine.set(lineKey, { key, at: Number.isFinite(lineAt) ? lineAt : recent?.at ?? 0 })
           const existing = grouped.get(key)
           if (existing) {
             existing.recipients.add(recipient)
