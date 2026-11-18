@@ -64,6 +64,7 @@ function GroupChat({ team, groupName, snapshot, onSent }: {
   const [newName, setNewName] = useState('')
   const [addError, setAddError] = useState<string | null>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const messagesRef = useRef<HTMLDivElement>(null)
 
   const members = snapshot.team.members
   const online = members.filter((member) => member.activity === 'active' || member.status === 'running')
@@ -104,6 +105,10 @@ function GroupChat({ team, groupName, snapshot, onSent }: {
   // The composer takes the first click: a chat you have to aim at is a chat
   // that feels broken.
   useEffect(() => { inputRef.current?.focus() }, [groupName])
+  useEffect(() => {
+    const node = messagesRef.current
+    if (node) node.scrollTop = node.scrollHeight
+  }, [filtered.length])
 
   const send = async () => {
     const body = text.trim()
@@ -208,7 +213,7 @@ function GroupChat({ team, groupName, snapshot, onSent }: {
         />
       ) : null}
 
-      <div data-testid="group-chat-messages" className="min-h-0 flex-1 overflow-y-auto px-5 py-3">
+      <div ref={messagesRef} data-testid="group-chat-messages" className="min-h-0 flex-1 overflow-y-auto px-5 py-3">
         {filtered.map((message, index) => (
           <DayRow key={message.id} message={message} previous={filtered[index - 1]}>
             <Bubble message={message} members={members} />
