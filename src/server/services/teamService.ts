@@ -2671,6 +2671,7 @@ export class TeamService {
     }
 
     const grouped = new Map<string, MessageAccumulator>()
+    const byLine = new Map<string, string>()
     const occurrenceByRecipientAndContent = new Map<string, number>()
     for (const recipient of [...recipients].sort()) {
       try {
@@ -2697,13 +2698,16 @@ export class TeamService {
             summary ?? '',
             color ?? '',
           ]))
+          const lineKey = hash(JSON.stringify([raw.from, raw.text, timestampSecond]))
           // New envelopes carry a stable upstream ID, shared by every copy of a
-          // broadcast. The occurrence fallback is only for legacy mailbox data
-          // written before IDs were introduced.
+          // broadcast. Older messages can have different IDs for the same line,
+          // so fall back to who said what in the same second.
           const occurrenceKey = `${recipient}\u0000${contentKey}`
           const occurrence = occurrenceByRecipientAndContent.get(occurrenceKey) ?? 0
           occurrenceByRecipientAndContent.set(occurrenceKey, occurrence + 1)
-          const key = messageId ? `mailbox:${messageId}` : `legacy:${contentKey}:${occurrence}`
+          const candidateKey = messageId ? `mailbox:${messageId}` : `legacy:${contentKey}:${occurrence}`
+          const key = byLine.get(lineKey) ?? candidateKey
+          byLine.set(lineKey, key)
           const existing = grouped.get(key)
           if (existing) {
             existing.recipients.add(recipient)

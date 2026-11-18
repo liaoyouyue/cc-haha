@@ -146,6 +146,31 @@ describe('TeamService.sendTeamMessage (group chat)', () => {
     expect(latest.text).toContain('Worker Agent: 我建议先做 A')
     expect(latest.text).toContain('那继续')
   })
+
+  it('merges duplicate mailbox copies with different ids', async () => {
+    await writeTeamConfig('group-team', makeTeamConfig())
+    const timestamp = '2026-11-18T06:20:00.123Z'
+    const line = '大家好，我是 planner'
+    await writeTeamInbox('group-team', 'Worker Agent', [{
+      id: 'mailbox-1',
+      from: 'planner',
+      text: line,
+      timestamp,
+      read: true,
+    }])
+    await writeTeamInbox('group-team', 'team-lead', [{
+      id: 'mailbox-2',
+      from: 'planner',
+      text: line,
+      timestamp: '2026-11-18T06:20:00.987Z',
+      read: true,
+    }])
+
+    const snapshot = await teamService.getWorkbench('group-team')
+    const plannerLines = snapshot.messages.filter((m) => m.from === 'planner' && m.text === line)
+    expect(plannerLines.length).toBe(1)
+    expect(plannerLines[0]!.recipients.length).toBe(2)
+  })
 })
 
 
