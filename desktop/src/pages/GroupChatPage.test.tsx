@@ -46,6 +46,7 @@ const SNAPSHOT = {
   messages: [
     { id: 'm1', from: 'arch', to: '*', recipients: ['arch'], kind: 'broadcast' as const, text: '架构观点', timestamp: '2026-11-17T18:22:00.000Z' },
     { id: 'm2', from: 'user', to: '*', recipients: ['arch'], kind: 'broadcast' as const, text: '我知道了', timestamp: '2026-11-17T18:23:00.000Z' },
+    { id: 's1', from: 'arch', to: 'team-lead', recipients: ['team-lead'], kind: 'system' as const, protocolType: 'idle_notification', text: JSON.stringify({ type: 'idle_notification', result: '收到，我来答' }), timestamp: '2026-11-17T18:23:30.000Z' },
   ],
 }
 
@@ -71,6 +72,8 @@ describe('群聊独立页', () => {
     expect(screen.getByTestId('group-chat-header').textContent).toContain('demo-group')
     expect(screen.getByTestId('group-chat-bubble-m1').textContent).toContain('AI助手')
     expect(screen.getByTestId('group-chat-bubble-m2').getAttribute('data-from')).toBe('user')
+    expect(screen.getByTestId('group-chat-bubble-s1').textContent).toContain('收到，我来答')
+    expect(screen.queryByTestId('group-chat-bubble-m1')).toBeTruthy()
     expect(screen.getByTestId('group-chat-online').textContent).toContain('在线')
   })
 

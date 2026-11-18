@@ -67,7 +67,35 @@ function GroupChat({ team, groupName, snapshot, onSent }: {
 
   const members = snapshot.team.members
   const online = members.filter((member) => member.activity === 'active' || member.status === 'running')
-  const messages = snapshot.messages.filter((message) => message.kind !== 'system')
+  // 成员跑完一轮是用 idle_notification 回话的。别把历史协议消息全翻出来，
+  // 只把用户最后一句之后、每人最新的一条 result 当群里的发言显示。
+  const messages = useMemo(() => {
+    const visible = snapshot.messages.filter((message) => message.kind !== 'system')
+    const lastUserAt = visible.reduce(
+      (latest, message) => message.from === 'user' && message.timestamp > latest ? message.timestamp : latest,
+      '',
+    )
+    if (!lastUserAt) return visible
+    const replies = new Map<string, TeamWorkbenchMessage>()
+    const alreadySpoke = new Set(
+      visible.filter((message) => message.from !== 'user' && message.timestamp > lastUserAt).map((message) => message.from),
+    )
+    for (const message of snapshot.messages) {
+      if (message.kind !== 'system' || message.protocolType !== 'idle_notification') continue
+      if (message.timestamp <= lastUserAt || alreadySpoke.has(message.from)) continue
+      try {
+        const result = (JSON.parse(message.text) as { result?: unknown }).result
+        if (typeof result !== 'string' || !result.trim() || result.trim().startsWith('{')) continue
+        const previous = replies.get(message.from)
+        if (!previous || message.timestamp > previous.timestamp) {
+          replies.set(message.from, { ...message, kind: 'broadcast', text: result.trim() })
+        }
+      } catch {
+        // 不是协议 JSON，跳过。
+      }
+    }
+    return [...visible, ...replies.values()].sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+  }, [snapshot.messages])
   const filtered = useMemo(
     () => (find ? messages.filter((message) => message.text.toLowerCase().includes(find.toLowerCase())) : messages),
     [messages, find],
