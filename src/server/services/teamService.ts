@@ -1926,6 +1926,13 @@ export class TeamService {
       this.pendingMemberMessages -= 1
       powerActivityClock.changed()
     }
+    // Members whose tasks finished have no process left. Rehydrate the team
+    // runtime so its supervisor sees the user message and restarts them.
+    const leadSessionId = config.leadSessionId
+    if (leadSessionId) {
+      const { wakeTeamForGroupMessage } = await import('./teamPlanRuntime.js')
+      await wakeTeamForGroupMessage(leadSessionId)
+    }
     return { recipients, broadcast }
   }
 

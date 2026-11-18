@@ -1427,3 +1427,14 @@ export async function endTeamOfPlan(plan: TeamPlanRecord, options: { unlessStart
 // Restarts of a lead (and of the server itself) must find the hooks in place
 // before any launch happens in this process.
 ensureRuntimeHooks()
+
+/** A user message in the group chat: wake every member of this team now. */
+export async function wakeTeamForGroupMessage(sessionId: string): Promise<void> {
+  await rehydrateTeamPlanRuntimesForSession(sessionId)
+  for (const launch of launches.values()) {
+    if (launch.parentId !== sessionId || launch.stopped) continue
+    launch.pausedAt = undefined
+    launch.resumeAllowedAt = undefined
+    await superviseLaunch(launch)
+  }
+}
