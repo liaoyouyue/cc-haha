@@ -12,7 +12,6 @@ import {
   latestMemberMessage,
   layoutWorkbenchTasks,
   parseWorkbenchMessageBody,
-  nebulaGraphData,
   resolveMemberModel,
   taskElapsedLabel,
   resolveTeamMemberIdentity,
@@ -806,99 +805,5 @@ describe('getMemberWorkState', () => {
     const lead = member({ agentId: 'lead@team-a', activity: 'stopped', autoRetry: retry })
     expect(getMemberWorkState(lead, { isLead: true, leadIsStreaming: true })).toBe('working')
     expect(getMemberWorkState(lead, { isLead: true, leadIsStreaming: false })).toBe('idle')
-  })
-})
-
-describe('Agent Teams star map', () => {
-  const lead: TeamMember = {
-    agentId: 'lead@team-a',
-    name: 'lead',
-    role: 'Lead',
-    status: 'running',
-    activity: 'active',
-  }
-  const worker: TeamMember = {
-    agentId: 'builder@team-a',
-    name: 'builder',
-    role: 'Frontend',
-    status: 'running',
-    activity: 'active',
-  }
-  const idleWorker: TeamMember = {
-    agentId: 'scout@team-a',
-    name: 'scout',
-    role: 'Research',
-    status: 'idle',
-    activity: 'idle',
-  }
-
-  function snapshot(
-    messages: TeamWorkbenchSnapshot['messages'] = [],
-    tasks: TeamWorkbenchTask[] = [],
-  ): TeamWorkbenchSnapshot {
-    return {
-      version: '1',
-      generatedAt: '2026-08-08T07:00:00.000Z',
-      team: {
-        name: 'team-a',
-        leadAgentId: 'lead@team-a',
-        leadSessionId: 'session-a',
-        members: [lead, worker, idleWorker],
-      },
-      tasks,
-      messages,
-    }
-  }
-
-  it('maps members to nodes with lead flag, work state and the task each is doing', () => {
-    const graph = nebulaGraphData(snapshot([], [
-      {
-        id: '1',
-        subject: 'Ship the map',
-        description: '',
-        owner: 'builder@team-a',
-        status: 'in_progress',
-        blocks: [],
-        blockedBy: [],
-        taskListId: 'list-a',
-      },
-    ]))
-    expect(graph.nodes.map((node) => node.id)).toEqual(['lead@team-a', 'builder@team-a', 'scout@team-a'])
-    expect(graph.nodes[0]!.isLead).toBe(true)
-    expect(graph.nodes[1]!.state).toBe('working')
-    expect(graph.nodes[1]!.doing).toBe('Ship the map')
-    expect(graph.nodes[2]!.state).toBe('idle')
-    expect(graph.nodes[2]!.doing).toBeUndefined()
-  })
-
-  it('turns recent messages into weighted directed links and drops unknown senders', () => {
-    const message = (from: string, to: string, timestamp: string): TeamWorkbenchSnapshot['messages'][number] => ({
-      id: `${from}-${to}-${timestamp}`,
-      from,
-      to,
-      recipients: to === '*' ? ['builder@team-a', 'scout@team-a'] : [to],
-      kind: to === '*' ? 'broadcast' : 'direct',
-      text: 'hello',
-      timestamp,
-    })
-    const graph = nebulaGraphData(snapshot([
-      message('lead', 'builder@team-a', '2026-08-08T07:00:01.000Z'),
-      message('lead', 'builder@team-a', '2026-08-08T07:00:02.000Z'),
-      message('lead', '*', '2026-08-08T07:00:03.000Z'),
-      message('stranger@elsewhere', 'builder@team-a', '2026-08-08T07:00:04.000Z'),
-    ]))
-    expect(graph.links).toEqual(expect.arrayContaining([
-      { source: 'lead@team-a', target: 'builder@team-a', weight: 3 },
-      { source: 'lead@team-a', target: 'scout@team-a', weight: 1 },
-    ]))
-    expect(graph.links).toHaveLength(2)
-  })
-
-  it('falls back to lead spokes when no messages exist so the formation still renders', () => {
-    const graph = nebulaGraphData(snapshot())
-    expect(graph.links).toEqual([
-      { source: 'lead@team-a', target: 'builder@team-a', weight: 0 },
-      { source: 'lead@team-a', target: 'scout@team-a', weight: 0 },
-    ])
   })
 })

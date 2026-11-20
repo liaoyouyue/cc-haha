@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { teamPlansApi } from '../../api/teamPlans'
 import { ChevronLeft, ChevronRight, Pause, Play, Radio, X } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
@@ -14,9 +14,6 @@ import type {
 } from '../../types/team'
 import { AgentTeamsCanvas } from './AgentTeamsCanvas'
 
-const AgentTeamsNebula = lazy(() =>
-  import('./AgentTeamsNebula').then((module) => ({ default: module.AgentTeamsNebula })),
-)
 import { AgentTeamsCommunicationFeed } from './AgentTeamsCommunicationFeed'
 import { AgentTeamsMemberInspector } from './AgentTeamsMemberInspector'
 import {
@@ -165,21 +162,6 @@ export function AgentTeamsWorkbench({ sessionId }: { sessionId: string }) {
   const seenMessageIdsRef = useRef<Set<string> | null>(null)
   const [planState, setPlanState] = useState<string | null>(null)
   const [stopping, setStopping] = useState(false)
-  const [viewMode, setViewMode] = useState<'canvas' | 'nebula'>(() => {
-    try {
-      return localStorage.getItem('agentTeams.viewMode') === 'nebula' ? 'nebula' : 'canvas'
-    } catch {
-      return 'canvas'
-    }
-  })
-  const changeView = (mode: 'canvas' | 'nebula') => {
-    setViewMode(mode)
-    try {
-      localStorage.setItem('agentTeams.viewMode', mode)
-    } catch {
-      // Storage is optional; the in-memory choice still applies.
-    }
-  }
 
   const snapshots = timeline?.snapshots ?? []
   const latestIndex = snapshots.length - 1
@@ -585,56 +567,21 @@ export function AgentTeamsWorkbench({ sessionId }: { sessionId: string }) {
       <div className="relative flex min-h-0 flex-1">
         <div
           data-testid="agent-teams-office-viewport"
-          className="relative min-h-0 min-w-0 flex-1 overflow-auto bg-[var(--color-surface)]"
+          className="min-h-0 min-w-0 flex-1 overflow-auto bg-[var(--color-surface)]"
         >
-          <div data-testid="agent-teams-view-toggle" className="absolute right-3 top-3 z-30 flex rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)]/90 p-0.5 backdrop-blur-sm">
-            {(['canvas', 'nebula'] as const).map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                data-active={viewMode === mode}
-                onClick={() => changeView(mode)}
-                className={`rounded-[calc(var(--radius-md)-2px)] px-2.5 py-1 font-mono text-[11px] tracking-wide transition-colors ${
-                  viewMode === mode
-                    ? 'bg-[var(--color-surface-container-high)] text-[var(--color-text-primary)]'
-                    : 'text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]'
-                }`}
-              >
-                {t(`agentTeams.view.${mode}` as TranslationKey)}
-              </button>
-            ))}
-          </div>
-          {viewMode === 'nebula' ? (
-            <Suspense
-              fallback={
-                <div className="flex h-full items-center justify-center text-xs text-[var(--color-text-tertiary)]">
-                  {t('agentTeams.loading')}
-                </div>
-              }
-            >
-              <AgentTeamsNebula
-                snapshot={snapshot}
-                leadIsStreaming={leadIsStreaming}
-                selectedMemberId={selectedMemberId}
-                onSelectMember={(member) => selectMember(member)}
-                t={t}
-              />
-            </Suspense>
-          ) : (
-            <AgentTeamsCanvas
-              snapshots={snapshots}
-              selectedIndex={selectedIndex}
-              snapshot={snapshot}
-              previousSnapshot={previousSnapshot}
-              leadIsStreaming={leadIsStreaming}
-              activeMessageId={activeMessageId}
-              focusedTaskId={feedFocusedTaskId}
-              taskStartTimes={taskStartTimes}
-              selectedMemberId={selectedMemberId}
-              onSelectMember={(member) => selectMember(member)}
-              onSelectTask={setSelectedTask}
-            />
-          )}
+          <AgentTeamsCanvas
+            snapshots={snapshots}
+            selectedIndex={selectedIndex}
+            snapshot={snapshot}
+            previousSnapshot={previousSnapshot}
+            leadIsStreaming={leadIsStreaming}
+            activeMessageId={activeMessageId}
+            focusedTaskId={feedFocusedTaskId}
+            taskStartTimes={taskStartTimes}
+            selectedMemberId={selectedMemberId}
+            onSelectMember={(member) => selectMember(member)}
+            onSelectTask={setSelectedTask}
+          />
         </div>
 
         {communicationOpen ? (

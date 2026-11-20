@@ -114,6 +114,7 @@ describe('AgentTeamsWorkbench', () => {
       await useTeamStore.getState().fetchWorkbench('visual-team')
     })
     expect(screen.getByTestId('agent-teams-canvas-task-1')).toBeTruthy()
+    expect(screen.queryByTestId('agent-teams-view-toggle')).toBeNull()
   })
 
   it('keeps live controls simple, then supports seeking, speed, playback, and returning live', async () => {
