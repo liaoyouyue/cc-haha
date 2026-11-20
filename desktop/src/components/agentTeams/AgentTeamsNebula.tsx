@@ -393,7 +393,7 @@ export function AgentTeamsNebula({
   const ownerName = (owner?: string | null): string => {
     if (!owner) return '—'
     const member = members.find((m) => m.agentId === owner)
-    return member?.name ?? member?.role ?? owner.split('@')[0]
+    return member?.name ?? member?.role ?? owner.split('@')[0] ?? owner
   }
 
   return (
