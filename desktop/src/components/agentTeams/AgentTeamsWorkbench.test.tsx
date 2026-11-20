@@ -11,9 +11,10 @@ import type { TeamWorkbenchSnapshot, TeamWorkbenchTask } from '@/types/team'
 import { AgentTeamsWorkbench } from './AgentTeamsWorkbench'
 import { REVEAL_PAGE_SIZE } from './useProgressiveReveal'
 
-const { getWorkbenchForSessionMock, getWorkbenchMock } = vi.hoisted(() => ({
+const { getWorkbenchForSessionMock, getWorkbenchMock, getMemberTranscriptMock } = vi.hoisted(() => ({
   getWorkbenchForSessionMock: vi.fn(),
   getWorkbenchMock: vi.fn(),
+  getMemberTranscriptMock: vi.fn(),
 }))
 
 vi.mock('@/api/teams', () => ({
@@ -22,7 +23,7 @@ vi.mock('@/api/teams', () => ({
     get: vi.fn(),
     getWorkbenchForSession: getWorkbenchForSessionMock,
     getWorkbench: getWorkbenchMock,
-    getMemberTranscript: vi.fn(),
+    getMemberTranscript: getMemberTranscriptMock,
     sendMemberMessage: vi.fn(),
     delete: vi.fn(),
   },
@@ -99,9 +100,20 @@ describe('AgentTeamsWorkbench', () => {
   beforeEach(() => {
     getWorkbenchMock.mockReset()
     getWorkbenchForSessionMock.mockReset()
+    getMemberTranscriptMock.mockReset().mockResolvedValue({ messages: [] })
     useTeamStore.getState().clearTeam()
     useTabStore.setState({ tabs: [], activeTabId: null })
     useSettingsStore.setState({ locale: 'en' })
+  })
+
+  it('renders when the team loads after the initial loading screen', async () => {
+    getWorkbenchMock.mockResolvedValueOnce(workbench('v1', ['pending', 'pending', 'pending']))
+    render(<AgentTeamsWorkbench sessionId="lead-session" />)
+    expect(screen.getByText('Waiting for Agent Teams activity…')).toBeTruthy()
+    await act(async () => {
+      await useTeamStore.getState().fetchWorkbench('visual-team')
+    })
+    expect(screen.getByTestId('agent-teams-canvas-task-1')).toBeTruthy()
   })
 
   it('keeps live controls simple, then supports seeking, speed, playback, and returning live', async () => {
@@ -401,6 +413,22 @@ describe('AgentTeamsWorkbench', () => {
       container.querySelectorAll('[data-testid="agent-teams-canvas-member-builder@visual-team"]'),
     ).toHaveLength(1)
     expect(within(screen.getByTestId('agent-teams-canvas-task-2')).getByText('builder')).toBeTruthy()
+  })
+
+  it('shows unfinished archived work without marking it complete', async () => {
+    const archived = { ...workbench('v1', ['in_progress', 'completed', 'pending']), deletedAt: '2026-08-08T00:10:00.000Z' }
+    getWorkbenchForSessionMock.mockResolvedValueOnce({
+      sessionId: 'lead-session', teamName: 'visual-team', source: 'archive', snapshots: [archived],
+    })
+    await act(async () => {
+      await useTeamStore.getState().fetchTeamForSession('lead-session', { force: true })
+    })
+    render(<AgentTeamsWorkbench sessionId="lead-session" />)
+    expect(within(screen.getByTestId('agent-teams-canvas-task-1')).getByText('Unfinished at end')).toBeTruthy()
+    expect(within(screen.getByTestId('agent-teams-canvas-task-2')).getByText('Completed')).toBeTruthy()
+    expect(within(screen.getByTestId('agent-teams-canvas-task-3')).getByText('Unfinished at end')).toBeTruthy()
+    expect(screen.getByText('1/3')).toBeTruthy()
+    expect(screen.getAllByText('Unfinished at end')[0]!.parentElement!.textContent).toContain('2')
   })
 
   it('restores archived roster members and task owners across replay snapshots', async () => {

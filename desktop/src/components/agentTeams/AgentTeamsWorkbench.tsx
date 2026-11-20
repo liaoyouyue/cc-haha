@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { teamPlansApi } from '../../api/teamPlans'
 import { ChevronLeft, ChevronRight, Pause, Play, Radio, X } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
@@ -13,6 +13,10 @@ import type {
   TeamWorkbenchTask,
 } from '../../types/team'
 import { AgentTeamsCanvas } from './AgentTeamsCanvas'
+
+const AgentTeamsNebula = lazy(() =>
+  import('./AgentTeamsNebula').then((module) => ({ default: module.AgentTeamsNebula })),
+)
 import { AgentTeamsCommunicationFeed } from './AgentTeamsCommunicationFeed'
 import { AgentTeamsMemberInspector } from './AgentTeamsMemberInspector'
 import {
@@ -127,9 +131,29 @@ export function AgentTeamsWorkbench({ sessionId }: { sessionId: string }) {
   )
   const setHistoryIndex = useTeamStore((state) => state.setWorkbenchHistoryIndex)
   const openMemberSession = useTeamStore((state) => state.openMemberSession)
+  const memberTaskAnchorsByMemberSession = useTeamStore((state) => state.memberTaskAnchorsBySession)
   const leadIsStreaming = useChatStore(
     (state) => (state.sessions[sessionId]?.chatState ?? 'idle') !== 'idle',
   )
+  // Latest in_progress TaskUpdate anchor per task across member sessions,
+  // for elapsed labels on canvas task cards.
+  const taskStartTimes = useMemo(() => {
+    const map = new Map<string, string>()
+    const memberSessions = (timeline?.snapshots ?? []).flatMap((snapshot) =>
+      snapshot.team.members.map((member) => member.sessionId).filter((value): value is string => Boolean(value)),
+    )
+    for (const memberSessionId of memberSessions) {
+      const anchors = memberTaskAnchorsByMemberSession[memberSessionId]
+      if (!anchors) continue
+      for (const anchor of anchors) {
+        if (anchor.status !== 'in_progress') continue
+        const existing = map.get(anchor.taskId)
+        if (!existing || anchor.timestamp > existing) map.set(anchor.taskId, anchor.timestamp)
+      }
+    }
+    return map
+  }, [timeline, memberTaskAnchorsByMemberSession])
+
   const [communicationOpen, setCommunicationOpen] = useState(false)
   const [selectedMemberId, setSelectedMemberId] = useState<string | null>(null)
   const [selectedTask, setSelectedTask] = useState<TeamWorkbenchTask | null>(null)
@@ -141,6 +165,21 @@ export function AgentTeamsWorkbench({ sessionId }: { sessionId: string }) {
   const seenMessageIdsRef = useRef<Set<string> | null>(null)
   const [planState, setPlanState] = useState<string | null>(null)
   const [stopping, setStopping] = useState(false)
+  const [viewMode, setViewMode] = useState<'canvas' | 'nebula'>(() => {
+    try {
+      return localStorage.getItem('agentTeams.viewMode') === 'nebula' ? 'nebula' : 'canvas'
+    } catch {
+      return 'canvas'
+    }
+  })
+  const changeView = (mode: 'canvas' | 'nebula') => {
+    setViewMode(mode)
+    try {
+      localStorage.setItem('agentTeams.viewMode', mode)
+    } catch {
+      // Storage is optional; the in-memory choice still applies.
+    }
+  }
 
   const snapshots = timeline?.snapshots ?? []
   const latestIndex = snapshots.length - 1
@@ -210,6 +249,24 @@ export function AgentTeamsWorkbench({ sessionId }: { sessionId: string }) {
     if (followingLive) setPlaying(false)
   }, [followingLive])
 
+  const leadSessionId = snapshot?.team.leadSessionId ?? sessionId
+  const hasSnapshot = Boolean(snapshot)
+  useEffect(() => {
+    if (!hasSnapshot || !followingLive) return
+    let cancelled = false
+    const load = () => {
+      void teamPlansApi.get(leadSessionId)
+        .then(({ plan }) => { if (!cancelled) setPlanState(plan?.state ?? null) })
+        .catch(() => { if (!cancelled) setPlanState(null) })
+    }
+    load()
+    const timer = window.setInterval(load, 5000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [hasSnapshot, followingLive, leadSessionId])
+
   if (!snapshot) {
     return (
       <section
@@ -261,24 +318,6 @@ export function AgentTeamsWorkbench({ sessionId }: { sessionId: string }) {
   const timelinePosition = latestIndex <= 0
     ? 100
     : Math.max(0, Math.min(100, (timelineValue / timelineExtent) * 100))
-
-  // running, which is what gates the stop control.
-  const leadSessionId = snapshot?.team.leadSessionId ?? sessionId
-  useEffect(() => {
-    if (!followingLive) return
-    let cancelled = false
-    const load = () => {
-      void teamPlansApi.get(leadSessionId)
-        .then(({ plan }) => { if (!cancelled) setPlanState(plan?.state ?? null) })
-        .catch(() => { if (!cancelled) setPlanState(null) })
-    }
-    load()
-    const timer = window.setInterval(load, 5000)
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-    }
-  }, [followingLive, leadSessionId])
 
   const stopTeam = async () => {
     if (stopping) return
@@ -391,9 +430,15 @@ export function AgentTeamsWorkbench({ sessionId }: { sessionId: string }) {
               label={t('agentTeams.stats.completed')}
               value={`${counts.completed}/${snapshot.tasks.length}`}
             />
-            <TimelineStat label={t('agentTeams.stats.running')} value={counts.running} tone="info" />
-            <TimelineStat label={t('agentTeams.stats.available')} value={counts.open} />
-            <TimelineStat label={t('agentTeams.stats.blocked')} value={counts.blocked} tone="muted" />
+            {snapshot.deletedAt ? (
+              <TimelineStat label={t('agentTeams.task.unfinishedAtEnd')} value={snapshot.tasks.length - counts.completed} />
+            ) : (
+              <>
+                <TimelineStat label={t('agentTeams.stats.running')} value={counts.running} tone="info" />
+                <TimelineStat label={t('agentTeams.stats.available')} value={counts.open} />
+                <TimelineStat label={t('agentTeams.stats.blocked')} value={counts.blocked} tone="muted" />
+              </>
+            )}
           </div>
 
           {followingLive ? (
@@ -540,20 +585,56 @@ export function AgentTeamsWorkbench({ sessionId }: { sessionId: string }) {
       <div className="relative flex min-h-0 flex-1">
         <div
           data-testid="agent-teams-office-viewport"
-          className="min-h-0 min-w-0 flex-1 overflow-auto bg-[var(--color-surface)]"
+          className="relative min-h-0 min-w-0 flex-1 overflow-auto bg-[var(--color-surface)]"
         >
-          <AgentTeamsCanvas
-            snapshots={snapshots}
-            selectedIndex={selectedIndex}
-            snapshot={snapshot}
-            previousSnapshot={previousSnapshot}
-            leadIsStreaming={leadIsStreaming}
-            activeMessageId={activeMessageId}
-            focusedTaskId={feedFocusedTaskId}
-            selectedMemberId={selectedMemberId}
-            onSelectMember={(member) => selectMember(member)}
-            onSelectTask={setSelectedTask}
-          />
+          <div data-testid="agent-teams-view-toggle" className="absolute right-3 top-3 z-30 flex rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)]/90 p-0.5 backdrop-blur-sm">
+            {(['canvas', 'nebula'] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                data-active={viewMode === mode}
+                onClick={() => changeView(mode)}
+                className={`rounded-[calc(var(--radius-md)-2px)] px-2.5 py-1 font-mono text-[11px] tracking-wide transition-colors ${
+                  viewMode === mode
+                    ? 'bg-[var(--color-surface-container-high)] text-[var(--color-text-primary)]'
+                    : 'text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]'
+                }`}
+              >
+                {t(`agentTeams.view.${mode}` as TranslationKey)}
+              </button>
+            ))}
+          </div>
+          {viewMode === 'nebula' ? (
+            <Suspense
+              fallback={
+                <div className="flex h-full items-center justify-center text-xs text-[var(--color-text-tertiary)]">
+                  {t('agentTeams.loading')}
+                </div>
+              }
+            >
+              <AgentTeamsNebula
+                snapshot={snapshot}
+                leadIsStreaming={leadIsStreaming}
+                selectedMemberId={selectedMemberId}
+                onSelectMember={(member) => selectMember(member)}
+                t={t}
+              />
+            </Suspense>
+          ) : (
+            <AgentTeamsCanvas
+              snapshots={snapshots}
+              selectedIndex={selectedIndex}
+              snapshot={snapshot}
+              previousSnapshot={previousSnapshot}
+              leadIsStreaming={leadIsStreaming}
+              activeMessageId={activeMessageId}
+              focusedTaskId={feedFocusedTaskId}
+              taskStartTimes={taskStartTimes}
+              selectedMemberId={selectedMemberId}
+              onSelectMember={(member) => selectMember(member)}
+              onSelectTask={setSelectedTask}
+            />
+          )}
         </div>
 
         {communicationOpen ? (

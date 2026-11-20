@@ -119,6 +119,38 @@ describe('AgentTeamsCanvas', () => {
     expect(screen.getByTestId('agent-teams-canvas-tether-builder@canvas-team')).toBeTruthy()
   })
 
+  it('shows what each member is doing and what it last produced', () => {
+    const current = snapshot('current')
+    current.messages.push({
+      id: 'builder-report',
+      from: 'builder',
+      to: 'team-lead',
+      recipients: ['team-lead'],
+      kind: 'broadcast',
+      text: 'Task 2 is ready for review.',
+      timestamp: '2026-08-12T02:31:00.000Z',
+    })
+    render(<AgentTeamsCanvas {...props({ snapshots: [current], selectedIndex: 0, snapshot: current })} />)
+
+    const builder = screen.getByTestId('agent-teams-canvas-member-builder@canvas-team')
+    expect(builder.textContent).toContain('Task 2')
+    expect(builder.textContent).toContain('Task 2 is ready for review.')
+  })
+
+  it('flags the members and tasks that need the user', () => {
+    const current = snapshot('current')
+    current.team.members = current.team.members.map(member => (
+      member.agentId === 'builder@canvas-team'
+        ? { ...member, status: 'error' as const, activity: 'stopped' as const, lastError: 'provider refused the request' }
+        : member
+    ))
+    render(<AgentTeamsCanvas {...props({ snapshots: [current], selectedIndex: 0, snapshot: current })} />)
+
+    const attention = screen.getByTestId('agent-teams-attention')
+    expect(attention.textContent).toContain('builder')
+    expect(attention.textContent).toContain('provider refused the request')
+  })
+
   it('does not describe an ownerless running task as waiting to be claimed', () => {
     const current = snapshot('current')
     current.tasks.push(task('5', 'in_progress'))
@@ -166,10 +198,10 @@ describe('AgentTeamsCanvas', () => {
     expect(container.querySelectorAll('[data-testid^="agent-teams-canvas-member-"]')).toHaveLength(4)
 
     expect(container.querySelectorAll('[data-testid^="agent-teams-canvas-lane-"]')).toHaveLength(3)
-    expect(screen.getByTestId('agent-teams-canvas-task-1').style.top).toBe('442px')
+    expect(screen.getByTestId('agent-teams-canvas-task-1').style.top).toBe('466px')
     expect(screen.getByTestId('agent-teams-canvas-task-1').className).toContain('h-[92px]')
     expect(screen.getByTestId('agent-teams-canvas-task-1').className).toContain('w-[200px]')
-    expect(screen.getByTestId('agent-teams-legend').style.top).toBe('684px')
+    expect(screen.getByTestId('agent-teams-legend').style.top).toBe('708px')
   })
 
   it('draws dependency state, a maximum-one-per-active-member tether, and indeterminate real work', () => {

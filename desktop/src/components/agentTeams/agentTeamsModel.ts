@@ -63,8 +63,8 @@ const LANE_GAP = 20
 const TASK_WIDTH = 200
 const TASK_HEIGHT = 92
 const HORIZONTAL_PADDING = 32
-const LANE_TOP = 410
-const TASK_TOP = 442
+const LANE_TOP = 434
+const TASK_TOP = 466
 const ROW_GAP = 14
 const LEGEND_GAP = 12
 const CANVAS_BOTTOM_PADDING = 46
@@ -143,6 +143,8 @@ export type MemberModelDisplay = {
   /** Short chip label, e.g. 'opus'. */
   label: string
   /** Full model id or alias, used for the hover tooltip. */
+ /** Effort level when member set one, e.g. 'high'. */
+  effort?: string
   full: string
   /** True when the member runs on the lead's model rather than one of its own. */
   inherited: boolean
@@ -165,6 +167,7 @@ export function resolveMemberModel(
     return {
       label: shortModelLabel(memberModel),
       full: memberModel,
+  effort: member.effortLevel?.trim() || undefined,
       inherited: false,
     }
   }
@@ -173,6 +176,7 @@ export function resolveMemberModel(
     return {
       label: shortModelLabel(resolvedLead),
       full: resolvedLead,
+  effort: member.effortLevel?.trim() || undefined,
       inherited: true,
     }
   }
@@ -404,6 +408,86 @@ export function getWorkbenchTaskState(
     return dependency !== undefined && dependency.status !== 'completed'
   })
   return hasOpenDependency ? 'blocked' : 'open'
+}
+
+/**
+ * The newest message a member actually sent, so the board can show what each
+ * teammate produced instead of only its name and token count.
+ */
+export function latestMemberMessage(
+  snapshot: TeamWorkbenchSnapshot,
+  member: Pick<TeamMember, 'agentId' | 'name'>,
+): TeamWorkbenchMessage | undefined {
+  const aliases = [
+    ...identityAliases(member.agentId),
+    ...(member.name ? identityAliases(member.name) : []),
+  ]
+  let latest: TeamWorkbenchMessage | undefined
+  for (const message of snapshot.messages) {
+    if (!aliases.includes(message.from.trim().toLowerCase())) continue
+    if (!latest || message.timestamp > latest.timestamp) latest = message
+  }
+  return latest
+}
+
+/**
+ * What the user has to act on: members whose run failed or stopped, and tasks
+ * that cannot start because a dependency is still open. Every entry is read
+ * from the snapshot's own records, never inferred from progress bars.
+ */
+export type WorkbenchAttentionItem = {
+  kind: 'member' | 'task'
+  id: string
+  title: string
+  detail?: string
+}
+
+export function workbenchAttention(snapshot: TeamWorkbenchSnapshot): WorkbenchAttentionItem[] {
+  const items: WorkbenchAttentionItem[] = []
+
+  for (const member of snapshot.team.members) {
+    const state = getMemberWorkState(member)
+    if (state !== 'error' && state !== 'stopped' && state !== 'retrying') continue
+    items.push({
+      kind: 'member',
+      id: member.agentId,
+      title: member.name || member.role || member.agentId,
+      ...(member.lastError ? { detail: member.lastError } : {}),
+    })
+  }
+
+  const tasksById = new Map(snapshot.tasks.map(task => [task.id, task]))
+  for (const task of snapshot.tasks) {
+    if (task.status === 'in_progress') {
+      // Work marked as running whose owner is not running it any more: the
+      // board would otherwise animate a task nobody is doing.
+      const stalled = stalledTaskOwnerState(task, snapshot)
+      if (!stalled) continue
+      const owner = inferTaskOwner(task, snapshot)
+      items.push({
+        kind: 'task',
+        id: task.id,
+        title: task.subject,
+        detail: owner?.identity,
+      })
+      continue
+    }
+    if (getWorkbenchTaskState(task, tasksById) !== 'blocked') continue
+    // Waiting for a task someone is working on is the normal flow. A task
+    // blocked by work that never started is what actually needs a decision.
+    const blocker = task.blockedBy
+      .map(id => tasksById.get(id))
+      .find(candidate => candidate !== undefined && candidate.status !== 'completed')
+    if (!blocker || blocker.status === 'in_progress') continue
+    items.push({
+      kind: 'task',
+      id: task.id,
+      title: task.subject,
+      detail: blocker.subject,
+    })
+  }
+
+  return items
 }
 
 /** Longest dependency path with deterministic fallbacks for missing nodes/cycles. */
@@ -717,6 +801,104 @@ export function formatWorkbenchMessageTime(timestamp: string): string {
   return Number.isNaN(time.getTime())
     ? ''
     : time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+/**
+ Elapsed label for a running task anchored at `startedAt` ISO timestamp,
+ relative to `nowMs`. Empty when the anchor is unusable. Under a minute
+ shows seconds, then minutes, then hours+minutes.
+ */
+export function taskElapsedLabel(startedAt: string, nowMs: number): string {
+  const start = new Date(startedAt).getTime()
+  if (!Number.isFinite(start) || start > nowMs) return ''
+  const elapsedMs = Math.max(0, nowMs - start)
+  const totalSeconds = Math.floor(elapsedMs / 1000)
+  if (totalSeconds < 60) return `${totalSeconds}s`
+  const minutes = Math.floor(totalSeconds / 60)
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  const restMinutes = minutes % 60
+  return restMinutes === 0 ? `${hours}h` : `${hours}h${restMinutes}m`
+}
+
+export type NebulaNode = {
+  id: string
+  name: string
+  role: string
+  isLead: boolean
+  state: MemberWorkState
+  doing?: string
+  member: TeamMember
+}
+
+export type NebulaLink = {
+  source: string
+  target: string
+  weight: number
+}
+
+/**
+ * Star-map data for the sci-fi view: every member is a node, and recent
+ * inter-member messages become weighted links so real collaboration shows up
+ * as animated flow. With no messages yet, fall back to lead spokes so the
+ * formation is still visible.
+ */
+export function nebulaGraphData(
+  snapshot: TeamWorkbenchSnapshot,
+  options: { leadIsStreaming?: boolean } = {},
+): { nodes: NebulaNode[]; links: NebulaLink[] } {
+  const seen = new Set<string>()
+  const nodes: NebulaNode[] = []
+  for (const member of snapshot.team.members) {
+    if (seen.has(member.agentId)) continue
+    seen.add(member.agentId)
+    const isLead = member.agentId === snapshot.team.leadAgentId
+    const doing = snapshot.tasks.find(
+      (task) => task.status === 'in_progress' && taskOwnedByMember(task, member, snapshot),
+    )?.subject
+    nodes.push({
+      id: member.agentId,
+      name: member.name || member.role || member.agentId.split('@')[0] || member.agentId,
+      role: member.role,
+      isLead,
+      state: getMemberWorkState(member, { isLead, leadIsStreaming: options.leadIsStreaming }),
+      ...(doing ? { doing } : {}),
+      member,
+    })
+  }
+  const byId = new Set(nodes.map((node) => node.id))
+  const links: NebulaLink[] = []
+  const edges = new Map<string, NebulaLink>()
+  const recent = [...snapshot.messages]
+    .sort((left, right) => left.timestamp.localeCompare(right.timestamp))
+    .slice(-40)
+  for (const message of recent) {
+    const from = resolveTeamMemberIdentity(snapshot.team, message.from).member.agentId
+    const targets = message.to === '*' ? message.recipients : [message.to]
+    for (const target of targets) {
+      if (!target) continue
+      const to = resolveTeamMemberIdentity(snapshot.team, target).member.agentId
+      if (from === to || !byId.has(from) || !byId.has(to)) continue
+      const key = `${from}->${to}`
+      const existing = edges.get(key)
+      if (existing) {
+        existing.weight += 1
+      } else {
+        const link: NebulaLink = { source: from, target: to, weight: 1 }
+        edges.set(key, link)
+        links.push(link)
+      }
+    }
+  }
+  if (links.length === 0) {
+    const lead = nodes.find((node) => node.isLead)
+    if (lead) {
+      for (const node of nodes) {
+        if (node.id !== lead.id) links.push({ source: lead.id, target: node.id, weight: 0 })
+      }
+    }
+  }
+  return { nodes, links }
 }
 
 export function memberInitials(member: TeamMember): string {

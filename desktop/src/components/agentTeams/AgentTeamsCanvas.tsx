@@ -15,12 +15,15 @@ import {
   getMemberWorkState,
   getWorkbenchTaskState,
   inferTaskOwner,
+  latestMemberMessage,
   layoutWorkbenchTasks,
   parseWorkbenchMessageBody,
   resolveMemberModel,
   resolveTeamMemberIdentity,
   stalledTaskOwnerState,
+  taskElapsedLabel,
   taskOwnedByMember,
+  workbenchAttention,
   type MemberWorkState,
   type PositionedWorkbenchTask,
   type StalledTaskOwnerState,
@@ -36,6 +39,8 @@ export type AgentTeamsCanvasProps = {
   activeMessageId: string | null
   focusedTaskId?: string | null
   selectedMemberId?: string | null
+  /** taskId -> ISO start time of the latest in_progress anchor. */
+  taskStartTimes?: Map<string, string>
   onSelectMember: (member: TeamMember, isLead: boolean) => void
   onSelectTask: (task: TeamWorkbenchTask) => void
 }
@@ -48,8 +53,9 @@ type MemberPosition = {
   centerX: number
   accent: string
   workState: MemberWorkState
-  currentTask?: TeamWorkbenchTask
-  completed: number
+ currentTask?: TeamWorkbenchTask
+ archived: boolean
+ completed: number
   total: number
   percent: number
   inbox: number
@@ -82,13 +88,13 @@ const ZOOM_STEP = 1.15
 const MEMBER_USAGE_POLL_MS = 3000
 const FORMATION_TITLE_X = 14
 const FORMATION_TITLE_Y = 12
-const TASKS_TITLE_Y = 388
+const TASKS_TITLE_Y = 412
 const LEAD_TOP = 20
 const LEAD_FOOT = 150
 const LEAD_BUS_Y = 196
 const MEMBER_TOP = 222
 const MEMBER_FOOT = 352
-const PEER_BUS_Y = 372
+const PEER_BUS_Y = 396
 const MEMBER_PITCH = 200
 const MEMBER_SLOT_WIDTH = 176
 const TASK_WIDTH = 200
@@ -125,6 +131,19 @@ function memberStatusColor(state: MemberWorkState): string {
   if (state === 'working') return 'var(--color-text-primary)'
   if (state === 'exited' || state === 'stopped') return 'var(--color-text-tertiary)'
   return 'var(--color-text-secondary)'
+}
+
+function readableMemberOutput(
+  message: TeamWorkbenchMessage | undefined,
+  t: TranslationFn,
+): string | undefined {
+  if (!message) return undefined
+  const body = parseWorkbenchMessageBody(message)
+  if (body.kind === 'text') return body.text
+  if (body.kind === 'assignment') {
+    return body.subject ?? (body.taskId ? `#${body.taskId}` : undefined)
+  }
+  return t(`agentTeams.communication.lifecycle.${body.type}` as TranslationKey)
 }
 
 function memberDotColor(state: MemberWorkState): string {
@@ -502,6 +521,7 @@ function MemberNode({
   leadStatus,
   leadModel,
   tokenLabel,
+  latestOutput,
   onSelect,
   t,
 }: {
@@ -512,6 +532,7 @@ function MemberNode({
   leadStatus?: string
   leadModel?: string
   tokenLabel?: string
+  latestOutput?: string
   onSelect: () => void
   t: TranslationFn
 }) {
@@ -592,11 +613,11 @@ function MemberNode({
         {model ? (
           <span
             className="max-w-[54px] shrink-0 truncate rounded-full border border-[var(--color-border)] px-1.5 py-px text-[11px] font-semibold text-[var(--color-text-tertiary)]"
-            title={model.full}
+            title={model.effort? `${model.full} · effort ${model.effort}` : model.full}
             data-testid={`agent-teams-canvas-member-model-${member.agentId}`}
             data-model-inherited={model.inherited ? 'true' : 'false'}
           >
-            {model.label}
+ {model.effort ? `${model.label}·${model.effort[0]}` : model.label}
           </span>
         ) : null}
         {isLead ? (
@@ -640,6 +661,42 @@ function MemberNode({
           <span className="mt-1.5 block h-1 w-[150px] overflow-hidden rounded-full bg-[var(--color-surface-container-high)]">
             <span className="block h-full rounded-full" style={{ width: `${position.percent}%`, backgroundColor: accent }} />
           </span>
+        {member.lastError && !member.autoRetry ? (
+          <span
+            className="mt-1.5 block max-w-[168px] truncate rounded bg-[var(--color-danger-container)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--color-danger)]"
+            data-testid={`agent-teams-canvas-error-${member.agentId}`}
+            title={member.lastError}
+          >
+            {t('agentTeams.member.errorLabel')} {member.lastError}
+          </span>
+        ) : null}
+        {member.autoRetry ? (
+          <span
+            className="mt-1.5 block max-w-[168px] truncate rounded bg-[var(--color-warning-container)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--color-warning)]"
+            data-testid={`agent-teams-canvas-retry-${member.agentId}`}
+            title={member.lastError ?? undefined}
+          >
+            {t('agentTeams.member.retryingLabel', { attempt: member.autoRetry.attempt, max: member.autoRetry.max })}
+          </span>
+        ) : null}
+      {position.currentTask ? (
+        <span
+          className="mt-1 block max-w-[168px] truncate text-[11px] font-medium text-[var(--color-text-secondary)]"
+          data-testid={`agent-teams-canvas-doing-${member.agentId}`}
+          title={position.currentTask.subject}
+        >
+          {t(position.archived ? 'agentTeams.member.lastDoingLabel' : 'agentTeams.member.doingLabel')} {position.currentTask.subject}
+        </span>
+      ) : null}
+      {latestOutput ? (
+        <span
+          className="mt-0.5 block max-w-[168px] truncate text-[11px] text-[var(--color-text-tertiary)]"
+          data-testid={`agent-teams-canvas-output-${member.agentId}`}
+          title={latestOutput}
+        >
+          {t('agentTeams.member.outputLabel')} {latestOutput}
+        </span>
+      ) : null}
           <span className="mt-1.5 flex max-w-[172px] items-center justify-center gap-1 overflow-hidden">
             {[...position.recentTasks, ...(position.nextTask ? [position.nextTask] : [])].map(task => {
               const next = task === position.nextTask
@@ -669,6 +726,7 @@ function TaskCard({
   snapshot,
   members,
   focused,
+  taskStartTimes,
   dimmed,
   justUnlocked,
   onHover,
@@ -679,6 +737,7 @@ function TaskCard({
   t,
 }: {
   positioned: PositionedWorkbenchTask
+  taskStartTimes?: Map<string, string>
   snapshot: TeamWorkbenchSnapshot
   members: TeamMember[]
   focused: boolean
@@ -699,8 +758,11 @@ function TaskCard({
   // retry: say so instead of animating work nobody is doing.
   const stalled = owner ? stalledTaskOwnerState(task, snapshot) : undefined
   const stall = stalled ? stalledColors(stalled) : undefined
+  const unfinishedAtEnd = Boolean(snapshot.deletedAt) && task.status !== 'completed'
   const progress = taskProgress(task)
   const dependencies = task.blockedBy.map(id => `#${id}`).join(' ')
+  const startedAt = taskStartTimes?.get(task.id) ?? ''
+  const nowMs = Date.now()
   const ownerLabel = owner
     ? owner.inferred
       ? t('agentTeams.task.inferredOwner', { name: owner.name })
@@ -719,7 +781,7 @@ function TaskCard({
       data-depth={depth}
       data-chain-active={focused ? 'true' : 'false'}
       data-stalled={stalled}
-      aria-label={`${task.subject}, ${stalled && owner ? memberStateLabel(stalled, owner.member, t) : taskStateLabel(state, t)}`}
+      aria-label={`${task.subject}, ${unfinishedAtEnd ? t('agentTeams.task.unfinishedAtEnd') : stalled && owner ? memberStateLabel(stalled, owner.member, t) : taskStateLabel(state, t)}`}
       onClick={onSelect}
       onMouseEnter={onHover}
       onMouseLeave={onHoverEnd}
@@ -735,7 +797,7 @@ function TaskCard({
       }}
     >
       <span className="flex items-center justify-between gap-1.5">
-        <span data-task-id={task.id} className="shrink-0 font-mono text-[13px] font-semibold text-[var(--color-text-secondary)]">
+        <span data-task-id={task.id} className="shrink-0 font-mono text-[13px] text-[var(--color-text-secondary)]">
           #{task.id}
         </span>
         <span
@@ -746,9 +808,11 @@ function TaskCard({
             color: justUnlocked ? 'var(--color-on-success-container)' : stall?.foreground ?? colors.pillForeground,
           }}
         >
-          {justUnlocked
-            ? t('agentTeams.task.unlocked')
-            : stalled && owner
+          {unfinishedAtEnd
+            ? t('agentTeams.task.unfinishedAtEnd')
+            : justUnlocked
+              ? t('agentTeams.task.unlocked')
+              : stalled && owner
               ? memberStateLabel(stalled, owner.member, t)
               : taskStateLabel(state, t)}
         </span>
@@ -767,6 +831,14 @@ function TaskCard({
         <span className="min-w-0 flex-1 truncate font-mono text-[11px] font-medium text-[var(--color-text-secondary)]" title={owner?.inferred ? t('agentTeams.task.reconstructedOwner') : undefined}>
           {ownerLabel}
         </span>
+        {startedAt ? (
+          <span
+            className="shrink-0 whitespace-nowrap rounded bg-[var(--color-surface-container-high)] px-1 font-mono text-[10px] font-medium text-[var(--color-text-secondary)]"
+            title={t('agentTeams.task.elapsedTitle')}
+          >
+            {taskElapsedLabel(startedAt, nowMs)}
+          </span>
+        ) : null}
         <span className="shrink-0 whitespace-nowrap font-mono text-[11px] text-[var(--color-text-tertiary)]">
           {dependencies
             ? state === 'blocked'
@@ -784,7 +856,7 @@ function TaskCard({
             : 'var(--color-surface-container-high)',
         }}
       >
-        {stalled && progress === null ? null : progress === null ? (
+        {(stalled || unfinishedAtEnd) && progress === null ? null : progress === null ? (
           <span
             data-progress="indeterminate"
             className="agent-teams-task-running-fill block h-full rounded-full"
@@ -811,6 +883,7 @@ export function AgentTeamsCanvas({
   activeMessageId,
   focusedTaskId: externallyFocusedTaskId,
   selectedMemberId,
+  taskStartTimes,
   onSelectMember,
   onSelectTask,
 }: AgentTeamsCanvasProps) {
@@ -894,6 +967,7 @@ export function AgentTeamsCanvas({
       clearInterval(timer)
     }
   }, [snapshot.team.members])
+  const attentionItems = useMemo(() => workbenchAttention(snapshot), [snapshot])
   const uniqueMembers = useMemo(
     () => Array.from(new Map(snapshot.team.members.map(member => [member.agentId, member])).values()),
     [snapshot.team.members],
@@ -929,8 +1003,9 @@ export function AgentTeamsCanvas({
         centerX,
         accent: memberAccentColor(member.color, index),
         workState: workState(member, snapshot, isLead, leadIsStreaming),
-        currentTask,
-        completed,
+ currentTask,
+ archived: Boolean(snapshot.deletedAt),
+ completed,
         total: ownedTasks.length,
         percent: ownedTasks.length === 0 ? 0 : Math.round((completed / ownedTasks.length) * 100),
         inbox: memberInboxCount(member, snapshot.messages),
@@ -1024,6 +1099,29 @@ export function AgentTeamsCanvas({
           transform: `translate(${view.x}px, ${view.y}px) scale(${view.zoom})`,
         }}
       >
+        {attentionItems.length > 0 ? (
+          <div
+            data-testid="agent-teams-attention"
+            className="absolute z-[var(--z-raised)] flex w-[228px] flex-col gap-1 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] p-2"
+            style={{ left: 14, top: 30 }}
+          >
+            <span className="text-[11px] font-semibold text-[var(--color-text-tertiary)]">
+              {t('agentTeams.attention.title', { count: attentionItems.length })}
+            </span>
+            {attentionItems.slice(0, 3).map(item => (
+              <span key={`${item.kind}-${item.id}`} className="flex min-w-0 flex-col">
+                <span className="truncate text-[11px] font-medium text-[var(--color-text-primary)]" title={item.title}>
+                  {item.title}
+                </span>
+                {item.detail ? (
+                  <span className="truncate text-[11px] text-[var(--color-text-tertiary)]" title={item.detail}>
+                    {item.detail}
+                  </span>
+                ) : null}
+              </span>
+            ))}
+          </div>
+        ) : null}
         <div
           data-testid="agent-teams-formation-layer"
           role="group"
@@ -1240,6 +1338,7 @@ export function AgentTeamsCanvas({
               leadStatus={position.isLead ? leadStatusLabel(snapshot, t) : undefined}
               leadModel={leadModel}
               tokenLabel={tokenLabel}
+              latestOutput={readableMemberOutput(latestMemberMessage(snapshot, position.member), t)}
               onSelect={() => onSelectMember(position.member, position.isLead)}
               t={t}
             />
@@ -1252,6 +1351,7 @@ export function AgentTeamsCanvas({
             positioned={positioned}
             snapshot={snapshot}
             members={uniqueMembers}
+        taskStartTimes={taskStartTimes}
             focused={Boolean(focusedChain?.has(positioned.task.id))}
             dimmed={Boolean(focusedChain && !focusedChain.has(positioned.task.id))}
             justUnlocked={justUnlockedIds.has(positioned.task.id)}

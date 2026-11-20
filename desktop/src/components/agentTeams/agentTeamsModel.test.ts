@@ -9,15 +9,19 @@ import {
   getWorkbenchTaskState,
   getMemberAvatarKey,
   inferTaskOwner,
+  latestMemberMessage,
   layoutWorkbenchTasks,
   parseWorkbenchMessageBody,
+  nebulaGraphData,
   resolveMemberModel,
+  taskElapsedLabel,
   resolveTeamMemberIdentity,
   runningTaskForMember,
   shortModelLabel,
   snapshotWithHistoricalMembers,
   stalledTaskOwnerState,
   taskOwnedByMember,
+  workbenchAttention,
   WORKBENCH_TASK_WIDTH,
 } from './agentTeamsModel'
 
@@ -55,6 +59,82 @@ function snapshot(tasks: TeamWorkbenchTask[]): TeamWorkbenchSnapshot {
 }
 
 describe('Agent Teams workbench model', () => {
+  it('finds the newest message a member sent, so the board can show what it produced', () => {
+    const base = snapshot([task('1', 'in_progress')])
+    const withMessages: TeamWorkbenchSnapshot = {
+      ...base,
+      team: {
+        ...base.team,
+        members: [
+          { agentId: 'worker@team-a', name: 'worker', role: 'builder', status: 'running', activity: 'active' },
+        ],
+      },
+      messages: [
+        { id: 'm1', from: 'worker', to: 'lead', recipients: ['lead'], kind: 'direct', text: 'First pass done.', timestamp: '2026-08-08T00:00:01.000Z' },
+        { id: 'm2', from: 'team-lead', to: 'worker', recipients: ['worker'], kind: 'direct', text: 'Ship it.', timestamp: '2026-08-08T00:00:02.000Z' },
+        { id: 'm3', from: 'worker@team-a', to: 'lead', recipients: ['lead'], kind: 'direct', text: 'Rebased and green.', timestamp: '2026-08-08T00:00:03.000Z' },
+      ],
+    }
+
+    expect(latestMemberMessage(withMessages, { agentId: 'worker@team-a', name: 'worker' })?.text).toBe('Rebased and green.')
+    expect(latestMemberMessage(withMessages, { agentId: 'nobody@team-a' })).toBeUndefined()
+  })
+
+  it('lists the members and tasks that need the user, with the reason', () => {
+    const base = snapshot([
+      task('1', 'completed'),
+      task('2', 'pending'),
+      task('3', 'pending', ['2']),
+    ])
+    const withMembers: TeamWorkbenchSnapshot = {
+      ...base,
+      team: {
+        ...base.team,
+        members: [
+          { agentId: 'lead@team-a', name: 'team-lead', role: 'lead', status: 'running', activity: 'active' },
+          { agentId: 'worker@team-a', name: 'worker', role: 'builder', status: 'error', activity: 'stopped', lastError: 'provider refused the request' },
+        ],
+      },
+    }
+
+    const attention = workbenchAttention(withMembers)
+    expect(attention).toEqual([
+      { kind: 'member', id: 'worker@team-a', title: 'worker', detail: 'provider refused the request' },
+      { kind: 'task', id: '3', title: 'Task 3', detail: 'Task 2' },
+    ])
+  })
+
+  it('says nothing needs attention while every member works and nothing is blocked', () => {
+    const base = snapshot([task('1', 'in_progress'), task('2', 'pending', ['1'])])
+    const withMembers: TeamWorkbenchSnapshot = {
+      ...base,
+      team: {
+        ...base.team,
+        members: [
+          { agentId: 'lead@team-a', name: 'team-lead', role: 'lead', status: 'running', activity: 'active' },
+          { agentId: 'worker@team-a', name: 'worker', role: 'builder', status: 'running', activity: 'active' },
+        ],
+      },
+    }
+    expect(workbenchAttention(withMembers)).toEqual([])
+  })
+
+  it('keeps a retrying member in the attention list until the retry lands', () => {
+    const base = snapshot([task('1', 'in_progress')])
+    const withMembers: TeamWorkbenchSnapshot = {
+      ...base,
+      team: {
+        ...base.team,
+        members: [
+          { agentId: 'worker@team-a', name: 'worker', role: 'builder', status: 'running', activity: 'idle', autoRetry: { attempt: 1, max: 3, nextAt: Date.now() + 1000 } },
+        ],
+      },
+    }
+    expect(workbenchAttention(withMembers)).toEqual([
+      { kind: 'member', id: 'worker@team-a', title: 'worker', detail: undefined },
+    ])
+  })
+
   it('lays out dependency depth as horizontal lanes and keeps edge states honest', () => {
     const tasks = [
       task('1', 'completed'),
@@ -73,12 +153,12 @@ describe('Agent Teams workbench model', () => {
     expect(layout.byId.get('2')!.row).toBe(1)
     expect(layout.byId.get('4')!.row).toBe(2)
     expect(layout.byId.get('3')!.row).toBe(0)
-    expect(layout.height).toBe(824)
+    expect(layout.height).toBe(848)
     expect(layout.lanes).toEqual([
-      { depth: 0, x: 76, y: 410, width: 216, height: 368, count: 3 },
-      { depth: 1, x: 312, y: 410, width: 216, height: 368, count: 1 },
+      { depth: 0, x: 76, y: 434, width: 216, height: 368, count: 3 },
+      { depth: 1, x: 312, y: 434, width: 216, height: 368, count: 1 },
     ])
-    expect(layout.legendY).toBe(790)
+    expect(layout.legendY).toBe(814)
     expect(getWorkbenchTaskState(tasks[2]!, byId)).toBe('blocked')
     // A blocker that is no longer in the task list was deleted. `claimTask`
     // only counts blockers it can still find and that are not completed
@@ -231,12 +311,12 @@ describe('Agent Teams workbench model', () => {
       { depth: 5, x: 1212, count: 1 },
     ])
     expect(layout.tasks.map(({ depth, row, x, y }) => ({ depth, row, x, y }))).toEqual([
-      { depth: 0, row: 0, x: 40, y: 442 },
-      { depth: 1, row: 0, x: 276, y: 442 },
-      { depth: 2, row: 0, x: 512, y: 442 },
-      { depth: 3, row: 0, x: 748, y: 442 },
-      { depth: 4, row: 0, x: 984, y: 442 },
-      { depth: 5, row: 0, x: 1220, y: 442 },
+      { depth: 0, row: 0, x: 40, y: 466 },
+      { depth: 1, row: 0, x: 276, y: 466 },
+      { depth: 2, row: 0, x: 512, y: 466 },
+      { depth: 3, row: 0, x: 748, y: 466 },
+      { depth: 4, row: 0, x: 984, y: 466 },
+      { depth: 5, row: 0, x: 1220, y: 466 },
     ])
   })
 
@@ -259,12 +339,12 @@ describe('Agent Teams workbench model', () => {
       x,
       y,
     }))).toEqual([
-      { id: 'task-1', depth: 0, row: 0, x: 182, y: 442 },
-      { id: 'task-2', depth: 0, row: 1, x: 182, y: 548 },
-      { id: 'task-10', depth: 0, row: 2, x: 182, y: 654 },
-      { id: 'next', depth: 1, row: 0, x: 418, y: 442 },
+      { id: 'task-1', depth: 0, row: 0, x: 182, y: 466 },
+      { id: 'task-2', depth: 0, row: 1, x: 182, y: 572 },
+      { id: 'task-10', depth: 0, row: 2, x: 182, y: 678 },
+      { id: 'next', depth: 1, row: 0, x: 418, y: 466 },
     ])
-    expect(layout.height).toBe(824)
+    expect(layout.height).toBe(848)
   })
 
   it('normalizes bare owner names and full agent ids for active work', () => {
@@ -580,6 +660,32 @@ describe('Agent Teams member model display', () => {
       .toEqual({ label: 'opus', full: 'claude-opus-4-8', inherited: true })
   })
 
+  it('carries member effort level through both own and inherited model branches', () => {
+    expect(resolveMemberModel({ ...worker, model: 'claude-sonnet-5', effortLevel: 'high' })).toEqual({
+      label: 'sonnet',
+      effort: 'high',
+      full: 'claude-sonnet-5',
+      inherited: false,
+    })
+    expect(resolveMemberModel({ ...worker, model: 'inherit', effortLevel: 'medium' }, 'claude-opus-4-8')).toEqual({
+      label: 'opus',
+      effort: 'medium',
+      full: 'claude-opus-4-8',
+      inherited: true,
+    })
+    expect(resolveMemberModel({ ...worker, model: 'claude-sonnet-5' })?.effort).toBeUndefined()
+  })
+
+  it('formats running task elapsed labels in seconds minutes and hours', () => {
+    const t0 = Date.parse('2026-08-08T07:00:00.000Z')
+    expect(taskElapsedLabel('2026-08-08T07:00:00.000Z', t0 + 45_000)).toBe('45s')
+    expect(taskElapsedLabel('2026-08-08T07:00:00.000Z', t0 + 12 * 60_000)).toBe('12m')
+    expect(taskElapsedLabel('2026-08-08T07:00:00.000Z', t0 + 65 * 60_000)).toBe('1h5m')
+    expect(taskElapsedLabel('2026-08-08T07:00:00.000Z', t0 + 2 * 3_600_000)).toBe('2h')
+    expect(taskElapsedLabel('not-a-date', t0)).toBe('')
+    expect(taskElapsedLabel('2026-08-08T08:00:00.000Z', t0)).toBe('')
+  })
+
   it('returns undefined when nothing is known, so callers render no empty label', () => {
     expect(resolveMemberModel({ ...worker })).toBeUndefined()
     expect(resolveMemberModel({ ...worker, model: '' })).toBeUndefined()
@@ -700,5 +806,99 @@ describe('getMemberWorkState', () => {
     const lead = member({ agentId: 'lead@team-a', activity: 'stopped', autoRetry: retry })
     expect(getMemberWorkState(lead, { isLead: true, leadIsStreaming: true })).toBe('working')
     expect(getMemberWorkState(lead, { isLead: true, leadIsStreaming: false })).toBe('idle')
+  })
+})
+
+describe('Agent Teams star map', () => {
+  const lead: TeamMember = {
+    agentId: 'lead@team-a',
+    name: 'lead',
+    role: 'Lead',
+    status: 'running',
+    activity: 'active',
+  }
+  const worker: TeamMember = {
+    agentId: 'builder@team-a',
+    name: 'builder',
+    role: 'Frontend',
+    status: 'running',
+    activity: 'active',
+  }
+  const idleWorker: TeamMember = {
+    agentId: 'scout@team-a',
+    name: 'scout',
+    role: 'Research',
+    status: 'idle',
+    activity: 'idle',
+  }
+
+  function snapshot(
+    messages: TeamWorkbenchSnapshot['messages'] = [],
+    tasks: TeamWorkbenchTask[] = [],
+  ): TeamWorkbenchSnapshot {
+    return {
+      version: '1',
+      generatedAt: '2026-08-08T07:00:00.000Z',
+      team: {
+        name: 'team-a',
+        leadAgentId: 'lead@team-a',
+        leadSessionId: 'session-a',
+        members: [lead, worker, idleWorker],
+      },
+      tasks,
+      messages,
+    }
+  }
+
+  it('maps members to nodes with lead flag, work state and the task each is doing', () => {
+    const graph = nebulaGraphData(snapshot([], [
+      {
+        id: '1',
+        subject: 'Ship the map',
+        description: '',
+        owner: 'builder@team-a',
+        status: 'in_progress',
+        blocks: [],
+        blockedBy: [],
+        taskListId: 'list-a',
+      },
+    ]))
+    expect(graph.nodes.map((node) => node.id)).toEqual(['lead@team-a', 'builder@team-a', 'scout@team-a'])
+    expect(graph.nodes[0]!.isLead).toBe(true)
+    expect(graph.nodes[1]!.state).toBe('working')
+    expect(graph.nodes[1]!.doing).toBe('Ship the map')
+    expect(graph.nodes[2]!.state).toBe('idle')
+    expect(graph.nodes[2]!.doing).toBeUndefined()
+  })
+
+  it('turns recent messages into weighted directed links and drops unknown senders', () => {
+    const message = (from: string, to: string, timestamp: string): TeamWorkbenchSnapshot['messages'][number] => ({
+      id: `${from}-${to}-${timestamp}`,
+      from,
+      to,
+      recipients: to === '*' ? ['builder@team-a', 'scout@team-a'] : [to],
+      kind: to === '*' ? 'broadcast' : 'direct',
+      text: 'hello',
+      timestamp,
+    })
+    const graph = nebulaGraphData(snapshot([
+      message('lead', 'builder@team-a', '2026-08-08T07:00:01.000Z'),
+      message('lead', 'builder@team-a', '2026-08-08T07:00:02.000Z'),
+      message('lead', '*', '2026-08-08T07:00:03.000Z'),
+      message('stranger@elsewhere', 'builder@team-a', '2026-08-08T07:00:04.000Z'),
+    ]))
+    expect(graph.links).toEqual(expect.arrayContaining([
+      { source: 'lead@team-a', target: 'builder@team-a', weight: 3 },
+      { source: 'lead@team-a', target: 'scout@team-a', weight: 1 },
+    ]))
+    expect(graph.links).toHaveLength(2)
+  })
+
+  it('falls back to lead spokes when no messages exist so the formation still renders', () => {
+    const graph = nebulaGraphData(snapshot())
+    expect(graph.links).toEqual([
+      { source: 'lead@team-a', target: 'builder@team-a', weight: 0 },
+      { source: 'lead@team-a', target: 'scout@team-a', weight: 0 },
+    ])
   })
 })
