@@ -1,11 +1,24 @@
 import { useEffect, useMemo, useRef } from 'react'
 import ForceGraph3D from 'react-force-graph-3d'
 import type { ForceGraphMethods } from 'react-force-graph-3d'
-import { Vector2 } from 'three'
+import {
+  AdditiveBlending,
+  BackSide,
+  CylinderGeometry,
+  Group,
+  Mesh,
+  MeshBasicMaterial,
+  SphereGeometry,
+  Sprite,
+  SpriteMaterial,
+  CanvasTexture,
+  Vector2,
+} from 'three'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 import type { TeamMember, TeamWorkbenchSnapshot } from '../../types/team'
 import { useTranslation, type TranslationKey } from '../../i18n'
 import {
+  getMemberWorkState,
   nebulaGraphData,
   type MemberWorkState,
   type NebulaNode,
@@ -25,6 +38,103 @@ const STATE_COLORS: Record<MemberWorkState, string> = {
 function nodeColor(node: NebulaNode): string {
   if (node.isLead) return '#c084fc'
   return STATE_COLORS[node.state]
+}
+
+/** 名牌贴图：canvas 画字，避免 DOM 叠 3D 的错位。 */
+function makeLabelTexture(name: string, color: string): CanvasTexture {
+  const canvas = document.createElement('canvas')
+  const scale = 3
+  canvas.width = 512 * scale / 3
+  canvas.height = 96 * scale / 3
+  const ctx = canvas.getContext('2d')
+  if (ctx) {
+    ctx.fillStyle = 'rgba(2, 6, 15, 0.72)'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    ctx.strokeStyle = color
+    ctx.globalAlpha = 0.7
+    ctx.strokeRect(1, 1, canvas.width - 2, canvas.height - 2)
+    ctx.globalAlpha = 1
+    ctx.font = `600 34px "Segoe UI", system-ui, sans-serif`
+    ctx.fillStyle = '#eafaff'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(name.slice(0, 18), canvas.width / 2, canvas.height / 2 + 2)
+  }
+  const texture = new CanvasTexture(canvas)
+  texture.needsUpdate = true
+  return texture
+}
+
+/** 3D 节点：核心发光球 + 大气光晕 + 赤道轨道环 + 名牌。 */
+function makeNodeObject(node: NebulaNode): Group {
+  const group = new Group()
+  const color = nodeColor(node)
+  const base = node.isLead ? 11 : 7
+  const active = node.state === 'working'
+
+  // 核心：不透亮球，bloom 会给它辉光
+  const core = new Mesh(
+    new SphereGeometry(base * 0.36, 24, 24),
+    new MeshBasicMaterial({ color }),
+  )
+  group.add(core)
+
+  // 内光晕：正面半透明壳
+  const halo = new Mesh(
+    new SphereGeometry(base * 0.62, 24, 24),
+    new MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: active ? 0.34 : 0.16,
+      blending: AdditiveBlending,
+      depthWrite: false,
+    }),
+  )
+  group.add(halo)
+
+  // 大气边缘：只画背面，形成轮廓光
+  const rim = new Mesh(
+    new SphereGeometry(base * 0.78, 24, 24),
+    new MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: active ? 0.2 : 0.1,
+      side: BackSide,
+      blending: AdditiveBlending,
+      depthWrite: false,
+    }),
+  )
+  group.add(rim)
+
+  // 赤道轨道环：工作成员才转得出存在感
+  if (active || node.isLead) {
+    const ring = new Mesh(
+      new CylinderGeometry(base * 1.15, base * 1.15, 0.4, 48, 1, true),
+      new MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: node.isLead ? 0.5 : 0.35,
+        blending: AdditiveBlending,
+        depthWrite: false,
+      }),
+    )
+    ring.rotation.x = Math.PI / 2
+    group.add(ring)
+  }
+
+  // 名牌
+  const label = new Sprite(
+    new SpriteMaterial({
+      map: makeLabelTexture(node.name, color),
+      transparent: true,
+      depthWrite: false,
+    }),
+  )
+  label.scale.set(base * 3.4, base * 0.64, 1)
+  label.position.set(0, base * 1.25, 0)
+  group.add(label)
+
+  return group
 }
 
 function nodeSize(node: NebulaNode): number {
@@ -105,6 +215,23 @@ export function AgentTeamsNebula({
     >
       <div
         aria-hidden="true"
+        className="pointer-events-none absolute inset-0 z-[5] opacity-70"
+        style={{
+          backgroundImage:
+            'radial-gradient(1px 1px at 12% 22%, rgba(255,255,255,0.9) 50%, transparent 51%),' +
+            'radial-gradient(1px 1px at 34% 68%, rgba(190,227,248,0.75) 50%, transparent 51%),' +
+            'radial-gradient(1.5px 1.5px at 56% 14%, rgba(255,255,255,0.8) 50%, transparent 51%),' +
+            'radial-gradient(1px 1px at 72% 44%, rgba(148,197,255,0.7) 50%, transparent 51%),' +
+            'radial-gradient(1px 1px at 88% 76%, rgba(255,255,255,0.65) 50%, transparent 51%),' +
+            'radial-gradient(1.5px 1.5px at 22% 84%, rgba(190,227,248,0.6) 50%, transparent 51%),' +
+            'radial-gradient(1px 1px at 44% 38%, rgba(255,255,255,0.55) 50%, transparent 51%),' +
+            'radial-gradient(1px 1px at 64% 88%, rgba(255,255,255,0.6) 50%, transparent 51%),' +
+            'radial-gradient(1px 1px at 8% 58%, rgba(148,197,255,0.6) 50%, transparent 51%),' +
+            'radial-gradient(1.5px 1.5px at 80% 26%, rgba(255,255,255,0.7) 50%, transparent 51%)',
+        }}
+      />
+      <div
+        aria-hidden="true"
         className="pointer-events-none absolute inset-0 z-10"
         style={{
           background: 'radial-gradient(ellipse at 50% 40%, rgba(14,116,144,0.16) 0%, rgba(2,6,15,0) 62%)',
@@ -120,6 +247,7 @@ export function AgentTeamsNebula({
         ref={fgRef}
         graphData={graph}
         backgroundColor="#02060f"
+        nodeThreeObject={(node) => makeNodeObject(node as NebulaNode)}
         nodeVal={(node) => nodeSize(node as NebulaNode)}
         nodeColor={(node) => nodeColor(node as NebulaNode)}
         nodeLabel={(node) => nodeLabel(node as NebulaNode, t)}
@@ -148,6 +276,26 @@ export function AgentTeamsNebula({
         }}
       />
 
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20">
+        <div className="mx-4 mb-3 flex flex-wrap items-center gap-x-5 gap-y-1 border-t border-cyan-400/25 bg-[#03101d]/80 px-4 py-2 font-mono text-[11px] text-cyan-200/80">
+          {(['working', 'idle', 'retrying', 'error', 'stopped', 'exited'] as MemberWorkState[]).map((state) => {
+            const STATE_LABELS: Record<MemberWorkState, string> = {
+              working: '工作中', idle: '空闲', retrying: '重试中', error: '出错', stopped: '已停止', exited: '已退出',
+            }
+            const count = snapshot.team.members.filter((member) => {
+              const isLead = member.agentId === snapshot.team.leadAgentId
+              return getMemberWorkState(member, { isLead, leadIsStreaming }) === state
+            }).length
+            if (!count) return null
+            return (
+              <span key={state} className="flex items-center gap-1.5">
+                <span className="inline-block h-2 w-2 rounded-full" style={{ background: STATE_COLORS[state], boxShadow: `0 0 6px ${STATE_COLORS[state]}` }} />
+                {STATE_LABELS[state]} ×{count}
+              </span>
+            )
+          })}
+        </div>
+      </div>
       <div className="pointer-events-none absolute inset-0 z-20">
         <div className="absolute left-4 top-4 border border-cyan-400/40 bg-[#03101d]/85 px-4 py-3 shadow-[0_0_24px_rgba(34,211,238,0.18)]">
           <div className="font-mono text-[11px] uppercase tracking-[0.28em] text-cyan-300/80">
