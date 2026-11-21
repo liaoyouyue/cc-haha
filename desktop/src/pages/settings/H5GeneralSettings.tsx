@@ -38,6 +38,7 @@ export function H5GeneralSettings() {
     { value: 'white', label: t('settings.general.appearance.white') }, { value: 'paper', label: t('settings.general.appearance.paper') },
     { value: 'warm-classic', label: t('settings.general.appearance.warmClassic') }, { value: 'celadon', label: t('settings.general.appearance.celadon') },
     { value: 'dark', label: t('settings.general.appearance.dark') }, { value: 'ink-blue', label: t('settings.general.appearance.inkBlue') },
+    { value: 'neutral-dark', label: t('settings.general.appearance.neutralDark') },
   ]
   const effortLabels: Record<SelectableEffortLevel, string> = {
     auto: t('settings.general.effort.auto'),

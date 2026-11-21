@@ -16,6 +16,7 @@ import { AgentTeamsCanvas } from './AgentTeamsCanvas'
 
 import { AgentTeamsCommunicationFeed } from './AgentTeamsCommunicationFeed'
 import { AgentTeamsMemberInspector } from './AgentTeamsMemberInspector'
+import { AgentTeamsRuntimeControls } from './AgentTeamsRuntimeControls'
 import {
   getMemberWorkState,
   getWorkbenchPhase,
@@ -563,6 +564,8 @@ export function AgentTeamsWorkbench({ sessionId }: { sessionId: string }) {
           )}
         </div>
       </header>
+
+      <AgentTeamsRuntimeControls team={snapshot.team} readOnly={!followingLive || timeline?.source === 'archive' || timeline?.source === 'transcript'} />
 
       <div className="relative flex min-h-0 flex-1">
         <div

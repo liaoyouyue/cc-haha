@@ -22,7 +22,13 @@ import { searchTransportBunOptions } from './searchTransportOptions'
 import { runLeanNotificationProvenanceScenario, runLeanProfileScenario } from './leanProfile'
 import { runAgentModelRoutingScenario } from './agentModelRouting'
 import { runAgentProviderRoutingScenario } from './agentProviderRouting'
+import { runTeamReviewScenario } from './teamReview'
+import { runTeamRuntimeControlsScenario } from './teamRuntimeControls'
 import { runProviderMediaScenario } from './providerMedia'
+import { runConnectorProxyScenario } from './connectorProxy'
+import { runContextUsageScenario } from './contextUsage'
+import { runBackgroundNotificationScenario } from './backgroundNotifications'
+import { runPlanModeModelSwitchScenario } from './planModeModelSwitch'
 import { createMockOnlyRunners, describeRequests, MOCK_AGENT_SCENARIOS } from './scenarios'
 
 const MOCK_MODEL = 'mock-model'
@@ -31,6 +37,12 @@ const LEAN_SCENARIO = 'mock-lean-profile'
 const MODEL_ROUTING_SCENARIO = 'mock-agent-model-routing'
 const PROVIDER_ROUTING_SCENARIO = 'mock-agent-provider-routing'
 const PROVIDER_MEDIA_SCENARIO = 'mock-provider-media'
+const CONNECTOR_PROXY_SCENARIO = 'mock-connector-proxy'
+const TEAM_REVIEW_SCENARIO = 'mock-team-review'
+const TEAM_RUNTIME_SCENARIO = 'mock-team-runtime-controls'
+const CONTEXT_SUMMARY_SCENARIO = 'mock-context-summary'
+const BACKGROUND_NOTIFICATIONS_SCENARIO = 'mock-background-notifications'
+const PLAN_MODE_MODEL_SWITCH_SCENARIO = 'mock-plan-mode-model-switch'
 
 function listArg(argv: string[], name: string) {
   const index = argv.indexOf(name)
@@ -42,10 +54,16 @@ function listArg(argv: string[], name: string) {
 async function main() {
   const argv = process.argv.slice(2)
   if (argv.includes('--list')) {
+    console.log(`  ${BACKGROUND_NOTIFICATIONS_SCENARIO.padEnd(32)} Settled background agents receive one internal-update instruction while preserving transcript and SDK facts`)
+    console.log(`  ${PLAN_MODE_MODEL_SWITCH_SCENARIO.padEnd(32)} ExitPlanMode switches models in-process on Keep planning and across providers on Approve`)
+    console.log(`  ${CONTEXT_SUMMARY_SCENARIO.padEnd(32)} Resumed Qwen/DeepSeek context summary, full details and fast repeat controls without model requests`)
+    console.log(`  ${CONNECTOR_PROXY_SCENARIO.padEnd(32)} Proxied connector save, persisted plugin reload and real old/new CLI tool calls`)
     console.log(`  ${LEAN_SCENARIO.padEnd(32)} Lean CLI tools, recovery, project instructions and request comparison`)
     console.log(`  ${MODEL_ROUTING_SCENARIO.padEnd(32)} Flash inheritance, saved Claude presets and explicit Agent model selection`)
     console.log(`  ${PROVIDER_ROUTING_SCENARIO.padEnd(32)} Per-agent provider endpoints, credentials, concurrency and resume metadata`)
     console.log(`  ${PROVIDER_MEDIA_SCENARIO.padEnd(32)} DeepSeek request size, image upload, tool pairing and cached file reuse`)
+    console.log(`  ${TEAM_REVIEW_SCENARIO.padEnd(32)} Initial team and running-team additions wait for human review before workers start`)
+    console.log(`  ${TEAM_RUNTIME_SCENARIO.padEnd(32)} Main Stop, paused runtime edits and explicit Resume Team survive a real application server restart`)
     for (const scenario of MOCK_AGENT_SCENARIOS) console.log(`  ${scenario.id.padEnd(32)} ${scenario.title}`)
     return
   }
@@ -58,11 +76,43 @@ async function main() {
   const runModelRouting = only.length === 0 || only.includes(MODEL_ROUTING_SCENARIO)
   const runProviderRouting = only.length === 0 || only.includes(PROVIDER_ROUTING_SCENARIO)
   const runProviderMedia = only.length === 0 || only.includes(PROVIDER_MEDIA_SCENARIO)
-  if (scenarios.length === 0 && !runLean && !runModelRouting && !runProviderRouting && !runProviderMedia) throw new Error(`--only ${only.join(',')} matches no scenario. Use --list.`)
+  const runConnectorProxy = only.length === 0 || only.includes(CONNECTOR_PROXY_SCENARIO)
+  const runTeamReview = only.length === 0 || only.includes(TEAM_REVIEW_SCENARIO)
+  const runTeamRuntime = only.length === 0 || only.includes(TEAM_RUNTIME_SCENARIO)
+  const runContextSummary = only.length === 0 || only.includes(CONTEXT_SUMMARY_SCENARIO)
+  const runBackgroundNotifications = only.length === 0 || only.includes(BACKGROUND_NOTIFICATIONS_SCENARIO)
+  const runPlanModeModelSwitch = only.length === 0 || only.includes(PLAN_MODE_MODEL_SWITCH_SCENARIO)
+  if (scenarios.length === 0 && !runLean && !runModelRouting && !runProviderRouting && !runProviderMedia && !runConnectorProxy && !runTeamReview && !runTeamRuntime && !runContextSummary && !runBackgroundNotifications && !runPlanModeModelSwitch) {
+    throw new Error(`--only ${only.join(',')} matches no scenario. Use --list.`)
+  }
 
   const rootDir = resolve(import.meta.dir, '../../..')
   const artifactDir = join(rootDir, 'artifacts', 'agent-e2e')
   mkdirSync(artifactDir, { recursive: true })
+  if (runPlanModeModelSwitch) {
+    await runPlanModeModelSwitchScenario(rootDir, join(artifactDir, 'plan-mode-model-switch'))
+    console.log(`[agent-e2e] PASS ${PLAN_MODE_MODEL_SWITCH_SCENARIO}`)
+  }
+  if (runBackgroundNotifications) {
+    await runBackgroundNotificationScenario(rootDir, join(artifactDir, 'background-notifications'))
+    console.log(`[agent-e2e] PASS ${BACKGROUND_NOTIFICATIONS_SCENARIO}`)
+  }
+  if (runContextSummary) {
+    await runContextUsageScenario(rootDir, join(artifactDir, 'context-summary'))
+    console.log(`[agent-e2e] PASS ${CONTEXT_SUMMARY_SCENARIO}`)
+  }
+  if (runTeamRuntime) {
+    await runTeamRuntimeControlsScenario(rootDir, join(artifactDir, 'team-runtime-controls'))
+    console.log(`[agent-e2e] PASS ${TEAM_RUNTIME_SCENARIO}`)
+  }
+  if (runConnectorProxy) {
+    await runConnectorProxyScenario(rootDir, join(artifactDir, 'connector-proxy'))
+    console.log(`[agent-e2e] PASS ${CONNECTOR_PROXY_SCENARIO}`)
+  }
+  if (runTeamReview) {
+    await runTeamReviewScenario(rootDir, join(artifactDir, 'team-review'))
+    console.log(`[agent-e2e] PASS ${TEAM_REVIEW_SCENARIO}`)
+  }
   if (runProviderRouting) {
     await runAgentProviderRoutingScenario(rootDir, join(artifactDir, 'provider-routing'))
     console.log(`[agent-e2e] PASS ${PROVIDER_ROUTING_SCENARIO}`)

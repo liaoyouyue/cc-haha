@@ -1,5 +1,6 @@
 import * as fs from 'fs'
 import * as path from 'path'
+import { isEnvTruthy } from '../../utils/envUtils.js'
 
 import {
   getClaudeCodeModelCapabilities,
@@ -37,6 +38,7 @@ import {
   ModelContextWindowsSchema,
   OPENAI_OFFICIAL_PROVIDER_ID,
   PROVIDER_DEEPSEEK_ACCOUNT_MODEL_IDS_SCHEMA_VERSION,
+  PROVIDER_ENV_OWNER_SCHEMA_VERSION,
   PROVIDER_TOOL_SEARCH_OPT_IN_SCHEMA_VERSION,
 } from '../types/provider.js'
 import {
@@ -578,7 +580,7 @@ export function readUserModelContextWindows(configDir: string): Record<string, n
   }
 }
 
-function applyUserModelContextWindows(
+export function applyUserModelContextWindows(
   env: Record<string, string>,
   configDir?: string,
   providerWindows?: Record<string, number>,
@@ -698,45 +700,49 @@ export function buildProviderManagedEnv(
   }, options?.configDir, provider.modelContextWindows)
 }
 
+function readActiveProviderSnapshot(
+  configDir: string,
+  options?: { serverPort?: number },
+): { providerId: string; schemaVersion: number; env: Record<string, string> } | null {
+  try {
+    const raw = fs.readFileSync(path.join(configDir, 'cc-haha', 'providers.json'), 'utf-8')
+    const value = JSON.parse(raw)
+    const index = normalizeProvidersIndex(value)
+    if (!index?.activeId) return null
+
+    let env: Record<string, string>
+    if (isOpenAIOfficialProviderId(index.activeId)) {
+      const windows = index.officialProviderContextWindows[OPENAI_OFFICIAL_PROVIDER_ID]
+      env = applyUserModelContextWindows(
+        buildOpenAIOfficialRuntimeEnv(index.officialProviderModels[OPENAI_OFFICIAL_PROVIDER_ID], windows),
+        configDir,
+      )
+    } else if (isGrokOfficialProviderId(index.activeId)) {
+      env = applyUserModelContextWindows(
+        buildGrokOfficialRuntimeEnv(index.officialProviderModels[GROK_OFFICIAL_PROVIDER_ID]), configDir,
+      )
+    } else if (isDeepSeekAccountProviderId(index.activeId)) {
+      const models = index.officialProviderModels[DEEPSEEK_ACCOUNT_PROVIDER_ID]
+      env = buildProviderManagedEnv(
+        { ...DEEPSEEK_ACCOUNT_PROVIDER, ...(models && { models }) },
+        { serverPort: options?.serverPort, configDir },
+      )
+    } else {
+      const provider = index.providers.find((entry) => entry.id === index.activeId)
+      if (!provider) return null
+      env = buildProviderManagedEnv(provider, { serverPort: options?.serverPort, configDir })
+    }
+    return { providerId: index.activeId, schemaVersion: typeof value.schemaVersion === 'number' ? value.schemaVersion : 1, env }
+  } catch {
+    return null
+  }
+}
+
 export function readActiveProviderManagedEnv(
   configDir: string,
   options?: { serverPort?: number },
 ): Record<string, string> | null {
-  try {
-    const raw = fs.readFileSync(path.join(configDir, 'cc-haha', 'providers.json'), 'utf-8')
-    const index = normalizeProvidersIndex(JSON.parse(raw))
-    if (!index?.activeId) return null
-
-    if (isOpenAIOfficialProviderId(index.activeId)) {
-      const windows = index.officialProviderContextWindows[OPENAI_OFFICIAL_PROVIDER_ID]
-      return applyUserModelContextWindows(
-        buildOpenAIOfficialRuntimeEnv(index.officialProviderModels[OPENAI_OFFICIAL_PROVIDER_ID], windows),
-        configDir,
-      )
-    }
-    if (isGrokOfficialProviderId(index.activeId)) {
-      return applyUserModelContextWindows(
-        buildGrokOfficialRuntimeEnv(index.officialProviderModels[GROK_OFFICIAL_PROVIDER_ID]), configDir,
-      )
-    }
-    if (isDeepSeekAccountProviderId(index.activeId)) {
-      const models = index.officialProviderModels[DEEPSEEK_ACCOUNT_PROVIDER_ID]
-      return buildProviderManagedEnv(
-        { ...DEEPSEEK_ACCOUNT_PROVIDER, ...(models && { models }) },
-        { serverPort: options?.serverPort, configDir },
-      )
-    }
-
-    const provider = index.providers.find((entry) => entry.id === index.activeId)
-    if (!provider) return null
-
-    return buildProviderManagedEnv(provider, {
-      serverPort: options?.serverPort,
-      configDir,
-    })
-  } catch {
-    return null
-  }
+  return readActiveProviderSnapshot(configDir, options)?.env ?? null
 }
 
 export type SavedProviderRuntime = {
@@ -806,19 +812,31 @@ export function activeProviderNeedsProxy(configDir: string): boolean {
 export function mergeActiveProviderManagedEnv(
   settingsEnv: Record<string, string>,
   configDir: string,
-  options?: { serverPort?: number },
+  options?: { serverPort?: number; settingsProviderId?: unknown },
 ): Record<string, string> {
-  const activeProviderEnv = readActiveProviderManagedEnv(configDir, options)
-  if (!activeProviderEnv) {
-    return settingsEnv
-  }
-
+  const active = readActiveProviderSnapshot(configDir, options)
   const cleanedEnv = { ...settingsEnv }
-  for (const key of getManagedEnvKeys()) {
-    delete cleanedEnv[key]
+  if (active) {
+    for (const key of getManagedEnvKeys()) {
+      delete cleanedEnv[key]
+    }
+    Object.assign(cleanedEnv, active.env)
+    // The active provider's JSON can override a preset with any explicit
+    // string, including empty/inherit. Standalone CLI reloads keep that choice.
+    const ownsSettings = options?.settingsProviderId === active.providerId ||
+      (options?.settingsProviderId === undefined && active.schemaVersion < PROVIDER_ENV_OWNER_SCHEMA_VERSION)
+    if (ownsSettings && typeof settingsEnv.CLAUDE_CODE_SUBAGENT_MODEL === 'string') {
+      cleanedEnv.CLAUDE_CODE_SUBAGENT_MODEL = settingsEnv.CLAUDE_CODE_SUBAGENT_MODEL
+    }
+  } else if (typeof options?.settingsProviderId === 'string') {
+    // A failed switch to Official may leave the previous provider's file behind.
+    delete cleanedEnv.CLAUDE_CODE_SUBAGENT_MODEL
   }
-  return {
-    ...cleanedEnv,
-    ...activeProviderEnv,
+  // Official desktop OAuth gets its preferences from original user settings,
+  // never the active custom provider's shared Haha env (including preset defaults).
+  if (process.env.CLAUDE_CODE_ENTRYPOINT === 'claude-desktop' &&
+    !isEnvTruthy(process.env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST)) {
+    delete cleanedEnv.CLAUDE_CODE_SUBAGENT_MODEL
   }
+  return cleanedEnv
 }

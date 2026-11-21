@@ -26,6 +26,7 @@ import { useUIStore } from '../../stores/uiStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useSessionRuntimeStore } from '../../stores/sessionRuntimeStore'
 import { useTeamStore } from '../../stores/teamStore'
+import { teamRuntimeControlKey, teamRuntimeScope, useTeamRuntimeControlStore } from '@/stores/teamRuntimeControlStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { isTouchH5Document } from '../../lib/touchH5'
 import {
@@ -34,7 +35,7 @@ import {
   useWorkspaceChatContextStore,
   type WorkspaceChatReference,
 } from '../../stores/workspaceChatContextStore'
-import { sessionsApi, type SessionGitInfo } from '../../api/sessions'
+import { sessionsApi } from '../../api/sessions'
 import { agentsApi } from '../../api/agents'
 import { PermissionModeSelector, type PermissionModeSelectorHandle } from '../controls/PermissionModeSelector'
 import { PERMISSION_MODE_LABEL_KEYS, useResolvedPermissionMode } from '../controls/permissionModeState'
@@ -102,11 +103,10 @@ import {
 import type { PermissionMode } from '../../types/settings'
 import { getSessionWorkspaceState, getSessionSeedWorkDir } from '../../lib/sessionWorkspace'
 import { useSessionStopOffer } from '../../hooks/useSessionStopOffer'
+import { useSessionGitInfo } from '../../hooks/useSessionGitInfo'
 import { useComposerDictation } from '@/features/voiceInput/useComposerDictation'
 import { VoiceInputButton } from '@/features/voiceInput/VoiceInputButton'
 import { VoiceRecordingBar } from '@/features/voiceInput/VoiceRecordingBar'
-
-type GitInfo = SessionGitInfo
 
 type Attachment = ComposerAttachment
 
@@ -313,7 +313,17 @@ export function ChatInput({ variant = 'default', compact = false, sessionId, vis
   const loadedMessageCount = sessionState?.messages?.length ?? 0
   const messageCount = Math.max(loadedMessageCount, activeSession?.messageCount ?? 0)
   const memberInfo = useTeamStore((s) => activeTabId ? s.getMemberBySessionId(activeTabId) : null)
-  const [gitInfo, setGitInfo] = useState<GitInfo | null>(null)
+  const memberTeam = useTeamStore((s) => activeTabId ? s.getTeamByMemberSessionId(activeTabId) : null)
+  const memberRuntimeReadOnly = useTeamStore((s) => {
+    const leadId = memberTeam?.leadSessionId
+    const timeline = leadId ? s.workbenchesBySession[leadId] : undefined
+    const historyIndex = leadId ? s.workbenchHistoryIndexBySession[leadId] : null
+    return Boolean(
+      (activeTabId && s.memberSnapshotBySession[activeTabId]?.deletedAt) ||
+      timeline?.source === 'archive' || timeline?.source === 'transcript' ||
+      (historyIndex !== null && historyIndex !== undefined),
+    )
+  })
   const workspaceReferences = useWorkspaceChatContextStore(
     (s) => activeTabId ? s.referencesBySession[activeTabId] ?? EMPTY_WORKSPACE_REFERENCES : EMPTY_WORKSPACE_REFERENCES,
   )
@@ -365,6 +375,15 @@ export function ChatInput({ variant = 'default', compact = false, sessionId, vis
   }, [])
 
   const isMemberSession = !!memberInfo || activeTabType === 'subagent'
+  const { gitInfo, refreshGitInfo } = useSessionGitInfo({
+    sessionId: activeTabId,
+    enabled: Boolean(activeTabId) && !isMemberSession,
+    visible,
+    workDir: activeSession?.workDir,
+    chatState,
+    messageCount,
+    secondaryRefreshKey: slashCommands.length,
+  })
   // A desktop team member runs in its own CLI. That CLI's session, not this
   // page's tab id, answers for the member's commands, context and model. A
   // SubAgent run, or a member without a CLI of its own, has none of them.
@@ -383,6 +402,23 @@ export function ChatInput({ variant = 'default', compact = false, sessionId, vis
   const memberRuntimeKey = memberRuntimeSelection
     ? `${memberRuntimeSelection.providerId ?? 'official'}:${memberRuntimeSelection.modelId}:${memberRuntimeSelection.effortLevel ?? 'auto'}`
     : undefined
+  const memberTeamName = memberTeam?.name
+  const memberLeadId = memberTeam?.leadSessionId
+  const memberIncarnationId = memberTeam?.incarnationId
+  const memberScope = useMemo(() => memberTeamName
+    ? teamRuntimeScope({ name: memberTeamName, leadSessionId: memberLeadId, incarnationId: memberIncarnationId })
+    : null, [memberTeamName, memberLeadId, memberIncarnationId])
+  const memberControlKey = memberScope ? teamRuntimeControlKey(memberScope) : null
+  const memberControlEntry = useTeamRuntimeControlStore(state => memberControlKey ? state.byTeam[memberControlKey] : undefined)
+  const memberRuntimeEditable = !memberRuntimeReadOnly && memberControlEntry?.control?.status === 'paused' &&
+    !memberControlEntry.busy && !memberControlEntry.pauseRequested && !memberControlEntry.error &&
+    memberControlEntry.control.members.some(member => member.agentId === memberInfo?.agentId && member.sessionId === memberCliSessionId)
+  useEffect(() => {
+    if (!memberScope || !memberCliSessionId || memberRuntimeReadOnly) return
+    void useTeamRuntimeControlStore.getState().refresh(memberScope)
+    const timer = window.setInterval(() => void useTeamRuntimeControlStore.getState().refresh(memberScope), 1500)
+    return () => window.clearInterval(timer)
+  }, [memberScope, memberCliSessionId, memberRuntimeReadOnly])
   const memberContextFull = memberInfo?.status === 'error' && memberHitContextLimit(memberInfo)
   const isActive = chatState !== 'idle'
   const resolvedPermissionMode = useResolvedPermissionMode(activeTabId ?? undefined)
@@ -484,7 +520,6 @@ export function ChatInput({ variant = 'default', compact = false, sessionId, vis
     ],
     [attachments, workspaceReferences],
   )
-  const slashCommandCount = slashCommands.length
 
   useEffect(() => {
     inputRef.current = input
@@ -530,8 +565,20 @@ export function ChatInput({ variant = 'default', compact = false, sessionId, vis
     mentionsRef.current = mentions
   }, [mentions])
 
+  const hadExternalFocusRef = useRef(false)
+  const lastComposerFocusRefreshRef = useRef<number | undefined>(undefined)
+  const programmaticFocusRef = useRef(false)
+
   useEffect(() => {
-    if (visible) composerRef.current?.focus()
+    hadExternalFocusRef.current = false
+    lastComposerFocusRefreshRef.current = undefined
+    if (!visible) return
+    programmaticFocusRef.current = true
+    try {
+      composerRef.current?.focus()
+    } finally {
+      programmaticFocusRef.current = false
+    }
   }, [activeTabId, visible])
 
   useEffect(() => {
@@ -657,27 +704,45 @@ export function ChatInput({ variant = 'default', compact = false, sessionId, vis
     setComposerInput,
   ])
 
-  const refreshGitInfo = useCallback(() => {
-    if (!activeTabId) {
-      setGitInfo(null)
-      return
-    }
-    if (isMemberSession) {
-      setGitInfo(null)
-      return
-    }
-    sessionsApi.getGitInfo(activeTabId).then(setGitInfo).catch(() => setGitInfo(null))
-  }, [activeTabId, isMemberSession])
-
   useEffect(() => {
-    refreshGitInfo()
-  }, [refreshGitInfo])
+    if (!visible || !activeTabId || isMemberSession) return
+    const handleDocumentFocusIn = (event: FocusEvent) => {
+      const target = event.target
+      if (target instanceof Node && !panelRef.current?.contains(target)) {
+        hadExternalFocusRef.current = true
+      }
+    }
+    document.addEventListener('focusin', handleDocumentFocusIn)
+    return () => {
+      document.removeEventListener('focusin', handleDocumentFocusIn)
+    }
+  }, [activeTabId, isMemberSession, visible])
 
-  useEffect(() => {
-    if (!activeTabId || isMemberSession || messageCount === 0) return
-    const timeout = setTimeout(refreshGitInfo, chatState === 'idle' ? 0 : 500)
-    return () => clearTimeout(timeout)
-  }, [activeTabId, chatState, isMemberSession, messageCount, refreshGitInfo, slashCommandCount])
+  const handlePanelBlurCapture = useCallback((event: React.FocusEvent<HTMLDivElement>) => {
+    if (!visible) return
+    const nextFocused = event.relatedTarget
+    if (!nextFocused || !event.currentTarget.contains(nextFocused)) {
+      hadExternalFocusRef.current = true
+    }
+  }, [visible])
+
+  const handlePanelFocusCapture = useCallback((event: React.FocusEvent<HTMLDivElement>) => {
+    if (programmaticFocusRef.current || !visible || !activeTabId || isMemberSession) return
+    const previousFocused = event.relatedTarget
+    const enteredFromOutside =
+      hadExternalFocusRef.current ||
+      (previousFocused instanceof Node && !event.currentTarget.contains(previousFocused))
+    if (!enteredFromOutside) return
+    hadExternalFocusRef.current = false
+    const now = Date.now()
+    const last = lastComposerFocusRefreshRef.current
+    if (last !== undefined && now >= last && now - last < 1_000) return
+    lastComposerFocusRefreshRef.current = now
+    if (showLaunchControls) {
+      launchControlsRef.current?.refreshContext()
+    }
+    void refreshGitInfo()
+  }, [activeTabId, isMemberSession, refreshGitInfo, showLaunchControls, visible])
 
   useEffect(() => {
     if (!isMemberSession) return
@@ -1144,9 +1209,26 @@ export function ChatInput({ variant = 'default', compact = false, sessionId, vis
       }
     }
     if (showLaunchControls && activeLaunchWorkDir && resolvedLaunchBranch) {
+      let currentSessionBranch = gitInfo?.branch ?? null
+      const shouldVerifyLiveBranch =
+        !launchUseWorktree && (
+          (!launchBranchAutomatic && currentSessionBranch === resolvedLaunchBranch) ||
+          (launchBranchAutomatic && currentSessionBranch !== resolvedLaunchBranch)
+        )
+      if (shouldVerifyLiveBranch) {
+        setLaunchTransitioning(true)
+        try {
+          const latestGitInfo = await refreshGitInfo()
+          if (latestGitInfo) {
+            currentSessionBranch = latestGitInfo.branch
+          }
+        } finally {
+          setLaunchTransitioning(false)
+        }
+      }
       const shouldReplaceForRepositoryLaunch =
         launchUseWorktree ||
-        (gitInfo?.branch ? resolvedLaunchBranch !== gitInfo.branch : true)
+        (currentSessionBranch ? resolvedLaunchBranch !== currentSessionBranch : true)
       if (shouldReplaceForRepositoryLaunch) {
         setLaunchTransitioning(true)
         const placeholderSessionId = targetSessionId
@@ -1514,7 +1596,7 @@ export function ChatInput({ variant = 'default', compact = false, sessionId, vis
   // same member. The session runtime path (`setSessionRuntime`) would restart
   // it as an ordinary chat and lose who it is, so the picker never takes it.
   const handleMemberRuntimeChange = (picked: RuntimeSelection) => {
-    if (!activeTabId || !memberRuntimeSelection) return
+    if (!activeTabId || !memberRuntimeSelection || !memberRuntimeEditable) return
     const sameModel = picked.providerId === memberRuntimeSelection.providerId &&
       picked.modelId === memberRuntimeSelection.modelId
     if (sameModel && picked.effortLevel === memberRuntimeSelection.effortLevel) return
@@ -1644,6 +1726,8 @@ export function ChatInput({ variant = 'default', compact = false, sessionId, vis
           // variant — the editor and the toolbar carry their own insets, so a
           // draft turning into a live session moves nothing.
           className={`glass-panel glass-panel--composer relative flex flex-col overflow-visible rounded-[var(--radius-xl)] p-2 ${isDragActive ? 'composer-drop-target-active' : ''}`}
+          onFocusCapture={handlePanelFocusCapture}
+          onBlurCapture={handlePanelBlurCapture}
           {...dragHandlers}
         >
           {isDragActive && (
@@ -2113,7 +2197,7 @@ export function ChatInput({ variant = 'default', compact = false, sessionId, vis
                   runtimeSelection={memberRuntimeSelection}
                   onRuntimeSelectionChange={handleMemberRuntimeChange}
                   effortEditable
-                  disabled={isActive || memberRuntimeSaving}
+                  disabled={isActive || memberRuntimeSaving || !memberRuntimeEditable}
                   compact={useCompactControls}
                   fluid={isMobileComposer}
                 />
@@ -2175,6 +2259,11 @@ export function ChatInput({ variant = 'default', compact = false, sessionId, vis
           </div>
 
         </div>
+
+        {memberRuntimeSelection && <div className="mt-2 space-y-1 px-1 text-[11px] leading-relaxed text-[var(--color-text-tertiary)]">
+          <p role="status">{t(memberRuntimeReadOnly ? 'agentTeams.runtime.historyReadOnly' : memberRuntimeEditable ? 'agentTeams.runtime.saveHint' : 'agentTeams.runtime.pauseToEdit')}</p>
+          <p>{t('agentTeams.runtime.memberMessageHint')}</p>
+        </div>}
 
         <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileSelect} />
 

@@ -8,6 +8,8 @@ import { useSessionStore } from '@/stores/sessionStore'
 import { useTeamStore } from '@/stores/teamStore'
 import { useTabStore } from '@/stores/tabStore'
 import { sessionsApi } from '@/api/sessions'
+import type { UIMessage } from '@/types/chat'
+import { createUnreadCompletion } from '@/lib/unreadCompletion'
 import type { MessageEntry } from '@/types/session'
 
 afterEach(() => {
@@ -57,6 +59,62 @@ it('does not retain replayed API errors when the first message opens a new chat'
   expect(useChatStore.getState().sessions.fresh!.messages).toHaveLength(1)
   expect(screen.queryAllByText(/API Error: 429/)).toHaveLength(0)
   expect(consoleError.mock.calls.filter(args => args.some(arg => String(arg).includes('same key')))).toHaveLength(0)
+})
+
+it('acknowledges the completed reply when visible and focused even if the next turn has started', () => {
+  const focused = vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+  const observe = vi.fn()
+  let reportIntersection: (visible: boolean) => void = () => { throw new Error('No observer') }
+  vi.stubGlobal('IntersectionObserver', class {
+    constructor(callback: (entries: Partial<IntersectionObserverEntry>[]) => void) {
+      reportIntersection = visible => callback([{
+        isIntersecting: visible,
+        intersectionRect: new DOMRect(0, 0, 100, visible ? 30 : 0),
+      }])
+    }
+    observe = observe
+    disconnect() {}
+    takeRecords() { return [] }
+  })
+  const previousUnread = useChatStore.getState().unreadCompletions
+  try {
+    const completed = { id: 'last', type: 'assistant_text', content: 'Completed reply', timestamp: 2 } as const
+    const messages: UIMessage[] = [
+      { id: 'first', type: 'user_text', content: 'First question', timestamp: 1 },
+      completed,
+    ]
+    const marker = createUnreadCompletion(messages, completed)
+    useChatStore.setState({
+      sessions: { old: {
+        ...createDefaultSessionState(),
+        chatState: 'thinking',
+        historyHydrated: true,
+        historyStatus: 'ready',
+        messages: [...messages,
+          { id: 'next', type: 'user_text', content: 'Next question', timestamp: 3 },
+          { id: 'preamble', type: 'assistant_text', content: 'Checking the files', timestamp: 4 },
+        ],
+      } },
+      unreadCompletions: new Map([['old', marker], ['fresh', marker]]),
+    })
+    const view = render(<MessageList sessionId="old" visible={false} />)
+    expect(observe).not.toHaveBeenCalled()
+    view.rerender(<MessageList sessionId="old" visible />)
+    const reply = screen.getByText('Completed reply').closest('[data-chat-selectable-message]')
+    expect(observe).toHaveBeenLastCalledWith(reply)
+    act(() => reportIntersection(true))
+    focused.mockReturnValue(true)
+    act(() => { window.dispatchEvent(new Event('focus')) })
+    expect(observe).toHaveBeenCalledTimes(2)
+    act(() => reportIntersection(false))
+    expect([...useChatStore.getState().unreadCompletions.keys()]).toEqual(['old', 'fresh'])
+    act(() => reportIntersection(true))
+    expect([...useChatStore.getState().unreadCompletions.keys()]).toEqual(['fresh'])
+    view.unmount()
+  } finally {
+    useChatStore.setState({ unreadCompletions: previousUnread })
+    vi.unstubAllGlobals()
+  }
 })
 
 it('keeps distinct parent projections without orphaning their shared record IDs in another chat', () => {
