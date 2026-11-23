@@ -82,7 +82,8 @@ export function resolveBundledCloudflared(
 ): string {
   const root = desktopRoot.replace(/\.asar$/, '.asar.unpacked')
   const suffix = platform === 'win32' ? '.exe' : ''
-  return path.join(root, 'src-tauri', 'binaries', `cloudflared-${resolveHostTriple(platform, arch)}${suffix}`)
+  // ponytail: path.posix.join — 跨平台断言统一用 / 分隔，Windows 下 Node 也能识别 /
+  return path.posix.join(root, 'src-tauri', 'binaries', `cloudflared-${resolveHostTriple(platform, arch)}${suffix}`)
 }
 
 /** A desktop-owned connector never adopts another cloudflared installation's settings or token. */

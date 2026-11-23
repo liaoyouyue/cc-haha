@@ -35,6 +35,21 @@ for (const baseUrl of ['https://api.minimax.io/anthropic', 'https://api.minimaxi
   })
 }
 
+test('Google 官方 Gemini 直接使用原生协议并保留官方路径', () => {
+  const preset = PROVIDER_PRESETS.find(entry => entry.id === 'google-gemini')
+  expect(preset).toBeDefined()
+  expect(preset!.baseUrl).toBe('https://generativelanguage.googleapis.com/v1beta')
+  expect(preset!.authStrategy).toBe('api_key')
+  expect(preset!.defaultModels).toEqual({
+    main: 'gemini-4-hydrogen', fable: 'gemini-4-hydrogen', haiku: 'gemini-4-hydrogen',
+    sonnet: 'gemini-4-hydrogen', opus: 'gemini-4-hydrogen',
+  })
+  expect(preset!.modelApiFormats).toEqual([{ prefixes: ['gemini-'], apiFormat: 'gemini' }])
+  expect(resolveModelApiFormat(preset!.modelApiFormats, 'gemini-4-hydrogen')).toBe('gemini')
+  expect(resolveModelApiFormat(preset!.modelApiFormats, 'other-model')).toBeUndefined()
+  expect(providerNeedsProxy(preset!.apiFormat, undefined)).toBe(true)
+})
+
 test.each(['gemini_native', 'xai_images'] as const)('keeps a preset image protocol %s through runtime configuration', protocol => {
   const preset = ProviderPresetSchema.parse({
     ...PROVIDER_PRESETS.find(p => p.id === 'apismart')!,

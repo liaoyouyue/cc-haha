@@ -39,13 +39,13 @@ export function MemoryHitNotice({ summary }: { summary: MemoryHitSummary }) {
       {visible.map((label) => (
         <span
           key={label}
-          className="rounded-[var(--radius-sm)] border border-[var(--color-memory-border)] bg-[var(--color-surface)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--color-text-secondary)]"
+          className="rounded-[var(--radius-sm)] border border-[var(--color-memory-border)] bg-[var(--color-surface)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--color-text-secondary)]"
         >
           {label}
         </span>
       ))}
       {hiddenCount > 0 ? (
-        <span className="font-mono text-[10px] text-[var(--color-text-tertiary)]">
+        <span className="font-mono text-[11px] text-[var(--color-text-tertiary)]">
           {t('chat.memoryMoreFiles', { count: hiddenCount })}
         </span>
       ) : null}

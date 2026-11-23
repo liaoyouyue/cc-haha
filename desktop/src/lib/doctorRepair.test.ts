@@ -75,7 +75,7 @@ describe('doctorRepair', () => {
 
     const report = await runDoctorCheck({ cwd: '/workspace/project' })
 
-    expect(doctorApiMock.report).toHaveBeenCalledWith('/workspace/project')
+    expect(doctorApiMock.report).toHaveBeenCalledWith('/workspace/project', { timeout: undefined, quick: undefined })
     expect(report.summary.total).toBe(0)
     expect(window.localStorage.getItem('cc-haha-theme')).toBe('dark')
   })

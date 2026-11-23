@@ -107,7 +107,26 @@ export async function resolveH5Session(input: {
   signal?: AbortSignal
 }): Promise<H5Resolution> {
   const { location } = input
-  const token = storedH5Token(location, input.storage)
+  let token = storedH5Token(location, input.storage)
+  if (typeof window !== 'undefined') {
+    try {
+      const u = new URLSearchParams(window.location.search)
+      const urlToken = (u.get('h5Token') || u.get('token'))?.trim()
+      if (urlToken && !/\s|[\u0000-\u001f\u007f]/.test(urlToken)) {
+        token = urlToken
+        try {
+          ;(input.storage as { setItem?: (k: string, v: string) => void } | null)?.setItem?.(
+            H5_SERVER_URL_STORAGE_KEY,
+            location.origin,
+          )
+          ;(input.storage as { setItem?: (k: string, v: string) => void } | null)?.setItem?.(
+            H5_TOKEN_STORAGE_KEY,
+            urlToken,
+          )
+        } catch {}
+      }
+    } catch {}
+  }
   if (token) {
     const credential = { kind: 'token', token } as const
     return { credential, host: h5Host(location, credential) }

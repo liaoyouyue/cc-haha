@@ -79,7 +79,7 @@ export function TaskInboxButton() {
         {unreadCount > 0 && (
           <span
             data-testid="task-inbox-badge"
-            className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--color-accent-brand)] px-1 text-[10px] font-medium leading-none text-white"
+            className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--color-primary)] px-1 text-[11px] font-medium leading-none text-white"
           >
             {unreadCount > 9 ? '9+' : unreadCount}
           </span>
@@ -139,7 +139,7 @@ export function TaskInboxButton() {
                   >
                     <span className="flex items-center gap-2">
                       <span
-                        className={`h-1.5 w-1.5 shrink-0 rounded-full ${entry.status === 'completed' ? 'bg-[var(--color-accent-success)]' : entry.status === 'failed' ? 'bg-[var(--color-accent-danger)]' : 'bg-[var(--color-text-tertiary)]'}`}
+                        className={`h-1.5 w-1.5 shrink-0 rounded-full ${entry.status === 'completed' ? 'bg-[var(--color-success)]' : entry.status === 'failed' ? 'bg-[var(--color-error)]' : 'bg-[var(--color-text-tertiary)]'}`}
                         aria-hidden="true"
                       />
                       <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--color-text-primary)]">

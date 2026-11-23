@@ -238,8 +238,8 @@ describe('createRendererUrlMatcher', () => {
 
   it('tolerates percent-encoding differences, and drive-letter case only on Windows', () => {
     const entry = '/Applications/My App/dist/index.html'
-    const encoded = 'file:///Applications/My%20App/dist/index.html'
-    const differentCase = 'file:///applications/my%20app/dist/index.html'
+    const encoded = pathToFileURL(entry).toString()
+    const differentCase = encoded.replace('Applications/My%20App', 'applications/my%20app')
     expect(createRendererUrlMatcher(entry, 'darwin')(encoded)).toBe(true)
     expect(createRendererUrlMatcher(entry, 'darwin')(differentCase)).toBe(false)
     expect(createRendererUrlMatcher(entry, 'win32')(differentCase)).toBe(true)

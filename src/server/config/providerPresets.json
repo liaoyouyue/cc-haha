@@ -14,6 +14,28 @@
     "websiteUrl": "https://www.anthropic.com/claude-code"
   },
   {
+    "id": "google-gemini",
+    "name": "Google Gemini 官方",
+    "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
+    "apiFormat": "openai_chat",
+    "defaultModels": {
+      "main": "gemini-4-hydrogen",
+      "fable": "gemini-4-hydrogen",
+      "haiku": "gemini-4-hydrogen",
+      "sonnet": "gemini-4-hydrogen",
+      "opus": "gemini-4-hydrogen"
+    },
+    "needsApiKey": true,
+    "websiteUrl": "https://aistudio.google.com",
+    "authStrategy": "api_key",
+    "modelApiFormats": [
+      {
+        "prefixes": ["gemini-"],
+        "apiFormat": "gemini"
+      }
+    ]
+  },
+  {
     "id": "deepseek",
     "name": "DeepSeek",
     "baseUrl": "https://api.deepseek.com/anthropic",

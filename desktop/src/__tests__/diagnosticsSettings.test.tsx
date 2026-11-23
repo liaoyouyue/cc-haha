@@ -781,7 +781,7 @@ describe('Settings > Diagnostics tab', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Run Doctor/i }))
 
     await waitFor(() => {
-      expect(doctorApiMock.report).toHaveBeenCalledWith('/workspace/project')
+      expect(doctorApiMock.report).toHaveBeenCalledWith('/workspace/project', { timeout: undefined, quick: undefined })
     })
     expect(window.localStorage.getItem('cc-haha-theme')).toBe('cc-haha-theme-value')
     expect(screen.getByText('~/.claude/cc-haha/providers.json')).toBeInTheDocument()
@@ -872,7 +872,7 @@ describe('Settings > Diagnostics tab', () => {
     fireEvent.click(screen.getByRole('button', { name: /Run Doctor/i }))
 
     await waitFor(() => {
-      expect(doctorApiMock.report).toHaveBeenCalledWith(undefined)
+      expect(doctorApiMock.report).toHaveBeenCalledWith(undefined, { timeout: undefined, quick: undefined })
     })
   })
 
@@ -916,7 +916,7 @@ describe('Settings > Diagnostics tab', () => {
 
     fireEvent.click(screen.getByText('Diagnostics'))
     fireEvent.click(await screen.findByRole('button', { name: /Run Doctor/i }))
-    expect(doctorApiMock.report).toHaveBeenCalledWith('/workspace/project')
+    expect(doctorApiMock.report).toHaveBeenCalledWith('/workspace/project', { timeout: undefined, quick: undefined })
 
     await act(async () => {
       useSessionStore.setState((state) => ({
@@ -936,7 +936,7 @@ describe('Settings > Diagnostics tab', () => {
       expect(screen.getByRole('button', { name: /Run Doctor/i })).not.toBeDisabled()
     })
     fireEvent.click(screen.getByRole('button', { name: /Run Doctor/i }))
-    expect(doctorApiMock.report).toHaveBeenCalledWith('/workspace/new')
+    expect(doctorApiMock.report).toHaveBeenCalledWith('/workspace/new', { timeout: undefined, quick: undefined })
     expect(screen.getByRole('button', { name: /Run Doctor/i })).toBeDisabled()
 
     await act(async () => {
