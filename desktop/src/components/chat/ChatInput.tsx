@@ -10,7 +10,7 @@ import { formatBytes } from '@/lib/formatBytes'
 import { checkUserMessageBudget } from '@/lib/userMessageBudget'
 import { useState, useRef, useEffect, useCallback, useMemo, useId } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { ArrowUp, CornerDownRight, Cpu, Feather, Gauge, Pencil, Plus, ShieldCheck, Square, Trash2 } from 'lucide-react'
+import { Sparkles, ArrowUp, CornerDownRight, Cpu, Feather, Gauge, Pencil, Plus, ShieldCheck, Square, Trash2 } from 'lucide-react'
 import { useDismissable } from '@/hooks/useDismissable'
 import { Button } from '@/components/ui/Button'
 import { IconButton } from '@/components/ui/IconButton'
@@ -2072,6 +2072,21 @@ export function ChatInput({ variant = 'default', compact = false, sessionId, vis
 
           {isHeroComposer ? (
             <div className="flex items-start">
+                {nextPromptSuggestionsEnabled && promptSuggestion && !input.trim() && (
+                  <button
+                    type="button"
+                    data-testid="next-prompt-suggestion"
+                    className="mb-2 flex w-full items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-left text-[13px] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-sidebar-item-hover)] hover:text-[var(--color-text-primary)]"
+                    onClick={() => {
+                      setComposerInput(promptSuggestion)
+                      setSlashMenuOpen(false)
+                      setTimeout(() => composerRef.current?.focus(), 0)
+                    }}
+                  >
+                    <Sparkles size={14} className="shrink-0 text-[var(--color-brand)]" aria-hidden="true" />
+                    <span className="min-w-0 flex-1 truncate">{promptSuggestion}</span>
+                  </button>
+                )}
               <MentionComposer
                 ref={composerRef}
                 rootRef={composerContainerRef}

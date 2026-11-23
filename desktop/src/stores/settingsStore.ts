@@ -231,7 +231,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   effortLevel: 'low',
   thinkingEnabled: true,
   workflowKeywordTriggerEnabled: true,
-  nextPromptSuggestionsEnabled: false,
+  nextPromptSuggestionsEnabled: true,
   leanModeEnabled: false,
   includeCyberRiskInstruction: true,
   agentTeamsEnabled: true,
