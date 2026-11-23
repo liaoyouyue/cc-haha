@@ -3621,6 +3621,8 @@ Row 9, all 8 cells: continuing from straight down, turning left through lower-le
   'slash.inspector.context.memoryFiles': 'Memory files',
   'slash.inspector.context.noMemoryFiles': 'No memory files are loaded in this session.',
   'slash.inspector.context.openMemory': 'Open Memory',
+  'contextIndicator.untilCompact': 'Until auto-compact: {n} tokens',
+  'contextIndicator.cacheSaved': 'Cache saved {tokens}',
   'contextIndicator.ariaLabel': 'Context usage {percent}',
   'contextIndicator.pendingAria': 'Context usage not calculated',
   'contextIndicator.loadingAria': 'Context usage loading',

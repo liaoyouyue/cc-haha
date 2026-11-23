@@ -3621,6 +3621,8 @@ export const zh: Record<TranslationKey, string> = {
   'slash.inspector.context.memoryFiles': '記憶檔案',
   'slash.inspector.context.noMemoryFiles': '當前會話沒有載入記憶檔案。',
   'slash.inspector.context.openMemory': '開啟記憶',
+  'contextIndicator.untilCompact': '距自動壓縮還有 {n}',
+  'contextIndicator.cacheSaved': '快取省了 {tokens}',
   'contextIndicator.ariaLabel': '上下文用量 {percent}',
   'contextIndicator.pendingAria': '上下文用量待計算',
   'contextIndicator.loadingAria': '上下文用量載入中',

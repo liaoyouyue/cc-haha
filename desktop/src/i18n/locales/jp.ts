@@ -3622,6 +3622,8 @@ export const jp: Record<TranslationKey, string> = {
   'slash.inspector.context.memoryFiles': 'メモリファイル',
   'slash.inspector.context.noMemoryFiles': 'このセッションにはメモリファイルが読み込まれていません。',
   'slash.inspector.context.openMemory': 'メモリを開く',
+  'contextIndicator.untilCompact': '自動圧縮まで残り {n}',
+  'contextIndicator.cacheSaved': 'キャッシュで {tokens} 節約',
   'contextIndicator.ariaLabel': 'コンテキスト使用量 {percent}',
   'contextIndicator.pendingAria': 'コンテキスト使用量は未計算',
   'contextIndicator.loadingAria': 'コンテキスト使用量を読み込み中',

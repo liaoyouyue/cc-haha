@@ -191,6 +191,9 @@ function SessionStatGrid({
         <div className={labelClass}>{labels.sessionCacheHit}</div>
         <div className={valueClass} data-testid="session-cache-hit">
           {stats.cacheHitRate === null ? '--' : formatCacheHitRate(stats.cacheHitRate)}
+              <div className="mt-0.5 text-[10px] text-[var(--color-text-tertiary)]">
+                {formatCompactTokens(stats.cacheReadTokens)}
+              </div>
         </div>
       </div>
       <div className="min-w-0">
@@ -278,6 +281,7 @@ function ReadyBody({
   'remainingLabel' | 'usedTokens' | 'maxTokens' | 'categories' | 'sessionStats' | 'updatedAtLabel' | 'autoCompactLabel' | 'labels'
 >) {
   const density = variant === 'sheet' ? 'comfortable' : 'compact'
+
   const [breakdownOpen, setBreakdownOpen] = useState(false)
 
   return (
@@ -289,8 +293,12 @@ function ReadyBody({
         <div
           className="shrink-0 text-[26px] font-semibold leading-none tabular-nums text-[var(--color-text-primary)]"
           data-testid="context-remaining"
+          title={autoCompactLabel}
         >
           {remainingLabel}
+          {autoCompactLabel ? (
+            <span className="ml-2 text-[11px] font-normal text-[var(--color-text-tertiary)]">{autoCompactLabel}</span>
+          ) : null}
         </div>
       </div>
 
@@ -338,6 +346,7 @@ function ReadyBody({
                 className={`text-[var(--color-text-tertiary)] transition-transform duration-150 ${breakdownOpen ? 'rotate-90' : ''}`}
               />
               {labels.breakdown}
+
             </span>
             <span className="shrink-0 font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]">
               {formatCompactTokens(usedTokens)}

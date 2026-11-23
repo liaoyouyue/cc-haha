@@ -406,9 +406,9 @@ export const ContextUsageIndicator = forwardRef<ContextUsageIndicatorHandle, Pro
   const maxTokens = displayContext?.rawMaxTokens ?? 0
   // Neutral ink until the window is genuinely tight; only then does the ring
   // borrow a status color (warning near the limit, error at it).
-  const strokeColor = percentage >= 90
+  const strokeColor = percentage >= 95
     ? 'var(--color-error)'
-    : percentage >= 75
+    : percentage >= 85
       ? 'var(--color-warning)'
       : 'var(--color-text-tertiary)'
   const displayPercent = displayContext ? formatPercent(percentage) : '--'

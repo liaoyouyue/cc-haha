@@ -3624,6 +3624,8 @@ export const kr: Record<TranslationKey, string> = {
   'slash.inspector.context.memoryFiles': '메모리 파일',
   'slash.inspector.context.noMemoryFiles': '이 세션에는 메모리 파일이 로드되어 있지 않습니다.',
   'slash.inspector.context.openMemory': '메모리 열기',
+  'contextIndicator.untilCompact': '자동 압축까지 {n} 남음',
+  'contextIndicator.cacheSaved': '캐시로 {tokens} 절약',
   'contextIndicator.ariaLabel': '컨텍스트 사용량 {percent}',
   'contextIndicator.pendingAria': '컨텍스트 사용량이 계산되지 않음',
   'contextIndicator.loadingAria': '컨텍스트 사용량 불러오는 중',

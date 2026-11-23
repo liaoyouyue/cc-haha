@@ -517,7 +517,6 @@ export function ChatInput({ variant = 'default', compact = false, sessionId, vis
     Boolean(activeTabId) &&
     !composerDisabled &&
     !dictationLive &&
-    (!showLaunchControls || launchReady) &&
     isOptimizablePrompt(input)
   const referenceCwd = activeLaunchWorkDir || resolvedWorkDir || ''
   const referenceProviderId = mentionProviderId(runtimeSelection)
