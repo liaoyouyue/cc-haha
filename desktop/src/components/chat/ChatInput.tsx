@@ -2072,7 +2072,7 @@ export function ChatInput({ variant = 'default', compact = false, sessionId, vis
 
           {isHeroComposer ? (
             <div className="flex items-start">
-                {nextPromptSuggestionsEnabled && promptSuggestion && !input.trim() && (
+                {nextPromptSuggestionsEnabled && promptSuggestion && (
                   <button
                     type="button"
                     data-testid="next-prompt-suggestion"

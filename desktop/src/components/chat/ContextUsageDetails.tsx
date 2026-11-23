@@ -324,7 +324,7 @@ function ReadyBody({
       {autoCompactLabel && (
         <div className="mt-1 text-xs tabular-nums text-[var(--color-text-secondary)]" data-testid="context-auto-compact">
           {autoCompactLabel}
-          {autoCompactThreshold != null && usedTokens < autoCompactThreshold ? (
+          {autoCompactThreshold != null ? (
             <span className="ml-2 font-medium text-[var(--color-brand)]">
               {t('contextIndicator.untilCompact', { n: formatCompactTokens(autoCompactThreshold - usedTokens) })}
             </span>
