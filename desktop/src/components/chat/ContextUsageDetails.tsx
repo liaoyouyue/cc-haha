@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useTranslation } from '../../i18n'
 import { ChevronRight } from 'lucide-react'
 import { Badge } from '@/components/ui/Badge'
 import {
@@ -62,6 +63,7 @@ export type ContextUsageDetailsProps = {
   updatedAtLabel?: string
   /** "Compacts automatically at about …", when the session reports its threshold. */
   autoCompactLabel?: string
+  autoCompactThreshold?: number | null
   estimate?: boolean
   status: ContextUsageDetailsStatus
   labels: {
@@ -273,14 +275,16 @@ function ReadyBody({
   sessionStats,
   updatedAtLabel,
   autoCompactLabel,
+  autoCompactThreshold,
   labels,
 }: {
   variant: 'popover' | 'sheet'
 } & Pick<
   ContextUsageDetailsProps,
-  'remainingLabel' | 'usedTokens' | 'maxTokens' | 'categories' | 'sessionStats' | 'updatedAtLabel' | 'autoCompactLabel' | 'labels'
+  'remainingLabel' | 'usedTokens' | 'maxTokens' | 'categories' | 'sessionStats' | 'updatedAtLabel' | 'autoCompactLabel' | 'autoCompactThreshold' | 'labels'
 >) {
   const density = variant === 'sheet' ? 'comfortable' : 'compact'
+  const t = useTranslation()
 
   const [breakdownOpen, setBreakdownOpen] = useState(false)
 
@@ -296,9 +300,7 @@ function ReadyBody({
           title={autoCompactLabel}
         >
           {remainingLabel}
-          {autoCompactLabel ? (
-            <span className="ml-2 text-[11px] font-normal text-[var(--color-text-tertiary)]">{autoCompactLabel}</span>
-          ) : null}
+
         </div>
       </div>
 
@@ -322,6 +324,11 @@ function ReadyBody({
       {autoCompactLabel && (
         <div className="mt-1 text-xs tabular-nums text-[var(--color-text-secondary)]" data-testid="context-auto-compact">
           {autoCompactLabel}
+          {autoCompactThreshold != null && usedTokens < autoCompactThreshold ? (
+            <span className="ml-2 font-medium text-[var(--color-brand)]">
+              {t('contextIndicator.untilCompact', { n: formatCompactTokens(autoCompactThreshold - usedTokens) })}
+            </span>
+          ) : null}
         </div>
       )}
 

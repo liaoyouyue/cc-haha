@@ -508,6 +508,7 @@ export const ContextUsageIndicator = forwardRef<ContextUsageIndicatorHandle, Pro
       autoCompactLabel={displayContext?.autoCompactThreshold
         ? t('contextIndicator.autoCompactAt', { tokens: new Intl.NumberFormat().format(displayContext.autoCompactThreshold) })
         : undefined}
+        autoCompactThreshold={displayContext?.autoCompactThreshold ?? undefined}
       estimate={contextSource === 'estimate'}
       status={detailsStatus}
       labels={detailLabels}
